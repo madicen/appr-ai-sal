@@ -1,0 +1,27 @@
+# Build artifacts
+/appr-ai-sal
+/dist/
+/bin/
+
+# Go
+*.test
+*.out
+coverage.txt
+
+# Local caches & state
+/.cache/
+/tmp/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Environment
+.env
+.env.local
+
+# jj-tui
+.jj-tui-config.json
