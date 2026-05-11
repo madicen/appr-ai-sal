@@ -32,6 +32,12 @@ type PR struct {
 	IsDraft    bool
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+
+	// ReviewState carries the per-PR review summary + viewer-relative flags
+	// (approvals, your-review-still-needed). Populated by
+	// ListReviewRequestedPRs and GetPR; zero-valued when those weren't able
+	// to fetch the review data so callers can render neutrally.
+	ReviewState ReviewState
 }
 
 // Ref points at a single PR. It's the smallest thing the rest of the app needs
@@ -104,84 +110,45 @@ func IsUserExplicitlyRequested(ctx context.Context, pr PR, login string) (bool, 
 // ListReviewRequestedPRs returns open PRs where the authenticated user has
 // been requested as a reviewer (including via team membership in GitHub search).
 // When explicitReviewerOnly is true, results are restricted to PRs where the
-// viewer's login appears in requested_reviewers.
+// viewer's login appears directly in reviewRequests (not only via a team).
+//
+// In addition to the basic PR metadata, each returned PR carries a populated
+// ReviewState (overall reviewDecision, approval counts, and viewer-relative
+// flags) used by the TUI to render badges and sort by actionability.
 func ListReviewRequestedPRs(ctx context.Context, explicitReviewerOnly bool) ([]PR, error) {
-	args := []string{
-		"search", "prs",
-		"--review-requested", "@me",
-		"--state", "open",
-		"--json", "number,title,url,repository,author,createdAt,updatedAt,isDraft,body",
-		"--limit", "50",
-	}
-	out, err := runJSON(ctx, args)
+	out, err := runGraphQL(ctx, graphqlReviewQuery, map[string]string{
+		"q": "is:pr is:open review-requested:@me archived:false",
+	})
 	if err != nil {
 		return nil, err
 	}
-
-	var raw []struct {
-		Number     int    `json:"number"`
-		Title      string `json:"title"`
-		URL        string `json:"url"`
-		Body       string `json:"body"`
-		Repository struct {
-			Name          string `json:"name"`
-			NameWithOwner string `json:"nameWithOwner"`
-		} `json:"repository"`
-		Author struct {
-			Login string `json:"login"`
-		} `json:"author"`
-		CreatedAt time.Time `json:"createdAt"`
-		UpdatedAt time.Time `json:"updatedAt"`
-		IsDraft   bool      `json:"isDraft"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parse search output: %w", err)
-	}
-
-	prs := make([]PR, 0, len(raw))
-	for _, r := range raw {
-		owner, repo := splitRepo(r.Repository.NameWithOwner)
-		prs = append(prs, PR{
-			Number:     r.Number,
-			Title:      r.Title,
-			URL:        r.URL,
-			Body:       r.Body,
-			Repository: r.Repository.NameWithOwner,
-			Owner:      owner,
-			Repo:       repo,
-			Author:     r.Author.Login,
-			IsDraft:    r.IsDraft,
-			CreatedAt:  r.CreatedAt,
-			UpdatedAt:  r.UpdatedAt,
-		})
+	prs, _, err := parseReviewSearchResponse(out)
+	if err != nil {
+		return nil, err
 	}
 	if !explicitReviewerOnly {
 		return prs, nil
 	}
-	login, err := ViewerLogin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("viewer login: %w", err)
-	}
 	filtered := make([]PR, 0, len(prs))
 	for _, pr := range prs {
-		ok, err := IsUserExplicitlyRequested(ctx, pr, login)
-		if err != nil {
-			return nil, fmt.Errorf("%s#%d: %w", pr.Repository, pr.Number, err)
-		}
-		if ok {
+		if pr.ReviewState.ViewerStillRequested {
 			filtered = append(filtered, pr)
 		}
 	}
 	return filtered, nil
 }
 
-// GetPR fetches a richer PR view (head SHA, base/head refs) for a single PR.
-// Use after a Ref has been obtained from search or URL parsing.
+// GetPR fetches a richer PR view (head SHA, base/head refs, review state)
+// for a single PR. Use after a Ref has been obtained from search or URL
+// parsing. The returned PR's ReviewState is populated when gh's pr view
+// returns the review fields and ViewerLogin succeeds; if the viewer lookup
+// fails the PR-wide counters are still filled (only viewer-scoped flags
+// drop to zero).
 func GetPR(ctx context.Context, ref Ref) (*PR, error) {
 	args := []string{
 		"pr", "view", strconv.Itoa(ref.Number),
 		"--repo", ref.Owner + "/" + ref.Repo,
-		"--json", "number,title,url,body,author,headRefName,headRefOid,baseRefName,isDraft,createdAt,updatedAt",
+		"--json", "number,title,url,body,author,headRefName,headRefOid,baseRefName,isDraft,createdAt,updatedAt,reviewDecision,latestReviews,reviewRequests",
 	}
 	out, err := runJSON(ctx, args)
 	if err != nil {
@@ -201,25 +168,56 @@ func GetPR(ctx context.Context, ref Ref) (*PR, error) {
 		Author      struct {
 			Login string `json:"login"`
 		} `json:"author"`
+		ReviewDecision string `json:"reviewDecision"`
+		LatestReviews  []struct {
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			State string `json:"state"`
+		} `json:"latestReviews"`
+		ReviewRequests []struct {
+			Typename string `json:"__typename"`
+			Login    string `json:"login"`
+			Slug     string `json:"slug"`
+		} `json:"reviewRequests"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("parse pr view output: %w", err)
 	}
+	// Best-effort viewer lookup; failure leaves viewer-scoped flags zeroed.
+	viewer, _ := ViewerLogin(ctx)
+	latest := make([]LatestReview, 0, len(raw.LatestReviews))
+	for _, lr := range raw.LatestReviews {
+		latest = append(latest, LatestReview{
+			AuthorLogin: lr.Author.Login,
+			State:       lr.State,
+		})
+	}
+	requests := make([]ReviewRequest, 0, len(raw.ReviewRequests))
+	for _, rr := range raw.ReviewRequests {
+		switch rr.Typename {
+		case "User":
+			requests = append(requests, ReviewRequest{Login: rr.Login})
+		case "Team":
+			requests = append(requests, ReviewRequest{TeamSlug: rr.Slug})
+		}
+	}
 	return &PR{
-		Number:     raw.Number,
-		Title:      raw.Title,
-		URL:        raw.URL,
-		Body:       raw.Body,
-		Repository: ref.Owner + "/" + ref.Repo,
-		Owner:      ref.Owner,
-		Repo:       ref.Repo,
-		Author:     raw.Author.Login,
-		BaseRef:    raw.BaseRefName,
-		HeadRef:    raw.HeadRefName,
-		HeadSHA:    raw.HeadRefOid,
-		IsDraft:    raw.IsDraft,
-		CreatedAt:  raw.CreatedAt,
-		UpdatedAt:  raw.UpdatedAt,
+		Number:      raw.Number,
+		Title:       raw.Title,
+		URL:         raw.URL,
+		Body:        raw.Body,
+		Repository:  ref.Owner + "/" + ref.Repo,
+		Owner:       ref.Owner,
+		Repo:        ref.Repo,
+		Author:      raw.Author.Login,
+		BaseRef:     raw.BaseRefName,
+		HeadRef:     raw.HeadRefName,
+		HeadSHA:     raw.HeadRefOid,
+		IsDraft:     raw.IsDraft,
+		CreatedAt:   raw.CreatedAt,
+		UpdatedAt:   raw.UpdatedAt,
+		ReviewState: DeriveReviewState(viewer, raw.ReviewDecision, latest, requests),
 	}, nil
 }
 

@@ -9,6 +9,13 @@ You are NOT reviewing a diff. Describe how this repo actually documents code
 today, grounded only in the inputs (convention files plus optional review
 history).
 
+A **language brief** is injected BEFORE your brief and already covers the
+language's doc-comment syntax and conventions (godoc framing for Go,
+docstrings for Python, JSDoc for TS, `///` outer doc comments for Rust,
+etc.). Do not restate that. Your job is to record **policy** — which
+exported APIs need docs *in this repo*, what gets a `doc.go`, when a README
+update is required — and any repo-specific tone or structural conventions.
+
 ## What to cover
 
 - **Doc-comment policy.** Are exported APIs always doc-commented? What about
