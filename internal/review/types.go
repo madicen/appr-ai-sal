@@ -57,6 +57,14 @@ type Finding struct {
 	// Suggestion is optional: only GitHub-ready replacement text for ```suggestion
 	// (see SuggestionPostsToGitHub). Narrative belongs in Comment alone.
 	Suggestion string `json:"suggestion,omitempty"`
+	// AnchorExcerpt is the model's verbatim copy of the post-image line at
+	// Path:Line. The reviewOutputContract asks specialists to include it on
+	// every inline finding so we can deterministically check that the model
+	// anchored where it thinks it did. Empty when the model omitted the
+	// field (older runs / backends that strip unknown keys); the
+	// validateAnchorExcerpt gate is silent in that case. Never posted to
+	// GitHub — diagnostic field only.
+	AnchorExcerpt string `json:"anchor_excerpt,omitempty"`
 	// SuggestionStrippedReason is set when validateAndPruneSuggestions cleared
 	// a non-empty Suggestion because applying it would clearly break the file
 	// (no-op replace, duplicates a nearby line, anchor-vs-comment mismatch).
@@ -402,14 +410,29 @@ func (d *Draft) FlatPostableFindingsForPost() []FlatFinding {
 	return out
 }
 
-// SpecialistsForVibeCoach returns a copy of specialists with inline findings removed
-// when they are suppressed by the repo arbiter (after FinalizeRepoArbiter). When the
-// arbiter did not apply suppressions, specialists is returned unchanged.
+// SpecialistsForVibeCoach returns a copy of specialists with inline
+// findings removed when they are either suppressed by the repo arbiter
+// (after FinalizeRepoArbiter) OR skipped by the user (d.UserSkipPostKeys).
+// This is the canonical "post-pipeline" view that vibe-coach receives so
+// its Summary / Prompts / Verdict reflect only the findings the reviewer
+// is actually going to ship. Returns specialists unchanged when neither
+// filter has anything to apply.
+//
+// Note that PR-wide findings (empty path / line 0) are intentionally
+// kept regardless of the skip set — they cannot be inline-suppressed and
+// the skip flow only targets inline cards.
 func SpecialistsForVibeCoach(d *Draft, specialists []SpecialistResult) []SpecialistResult {
-	if d == nil || d.RepoArbiter == nil || d.RepoArbiter.Err != nil || len(d.RepoArbiter.suppressKeySet) == 0 {
+	if d == nil {
 		return specialists
 	}
-	sup := d.RepoArbiter.suppressKeySet
+	var sup map[string]struct{}
+	if d.RepoArbiter != nil && d.RepoArbiter.Err == nil && len(d.RepoArbiter.suppressKeySet) > 0 {
+		sup = d.RepoArbiter.suppressKeySet
+	}
+	skips := d.UserSkipPostKeys
+	if len(sup) == 0 && len(skips) == 0 {
+		return specialists
+	}
 	out := make([]SpecialistResult, len(specialists))
 	for i, s := range specialists {
 		out[i] = s
@@ -419,12 +442,11 @@ func SpecialistsForVibeCoach(d *Draft, specialists []SpecialistResult) []Special
 		var kept []Finding
 		for _, f := range s.Findings {
 			if strings.TrimSpace(f.Path) != "" && f.Line > 0 {
-				side := f.Side
-				if side == "" {
-					side = "RIGHT"
-				}
-				k := suppressionKey(s.Specialist, f.Path, f.Line, side)
+				k := FindingSuppressionKey(s.Specialist, f)
 				if _, drop := sup[k]; drop {
+					continue
+				}
+				if _, drop := skips[k]; drop {
 					continue
 				}
 			}

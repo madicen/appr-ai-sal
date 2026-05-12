@@ -9,7 +9,7 @@ import (
 )
 
 func TestReviewOverlaySummaryPhaseShowsFullMarkdownBody(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	base := &review.Draft{PR: &gh.PR{HeadSHA: "abc"}, Diff: ""}
 	ro.adoptDraft(base)
 	// Long merge summary so RenderBody() exceeds the old 24-line preview cap.
@@ -27,7 +27,14 @@ func TestReviewOverlaySummaryPhaseShowsFullMarkdownBody(t *testing.T) {
 	if strings.Contains(out, "more lines") {
 		t.Fatal("summary preview should not truncate with a line budget cap")
 	}
-	if !strings.Contains(out, "Review context line.") {
-		t.Fatal("expected full body text to appear in preview")
+	// Glamour word-wraps the markdown so a single phrase can break across
+	// lines; assert on a short substring that won't get split, and on a high
+	// occurrence count so we know the full body — not just the first chunk —
+	// reached the preview.
+	if !strings.Contains(out, "Review") {
+		t.Fatal("expected body text to appear in preview")
+	}
+	if got := strings.Count(out, "Review"); got < 50 {
+		t.Fatalf("expected ~60 occurrences of body text in preview, got %d", got)
 	}
 }
