@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,7 +25,9 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review"
+	langagentsstore "github.com/madicen/appr-ai-sal/internal/review/langagents"
 	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
+	langagentstui "github.com/madicen/appr-ai-sal/internal/tui/langagents"
 	repoagentstui "github.com/madicen/appr-ai-sal/internal/tui/repoagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/settings"
 )
@@ -36,6 +40,7 @@ const (
 	modeURLInput
 	modeSettings
 	modeRepoAgents
+	modeLangAgents
 )
 
 // treePaneWidth is the fixed width allocated to the file-tree pane content
@@ -48,12 +53,107 @@ type prItem struct{ pr gh.PR }
 func (i prItem) FilterValue() string { return i.pr.Title + " " + i.pr.Repository }
 func (i prItem) Title() string       { return fmt.Sprintf("#%d  %s", i.pr.Number, i.pr.Title) }
 func (i prItem) Description() string {
-	draftMark := ""
-	if i.pr.IsDraft {
-		draftMark = " (draft)"
+	parts := []string{
+		i.pr.Repository,
+		"@" + i.pr.Author,
+		humanSince(i.pr.UpdatedAt),
 	}
-	return fmt.Sprintf("%s · @%s · updated %s%s",
-		i.pr.Repository, i.pr.Author, humanSince(i.pr.UpdatedAt), draftMark)
+	if i.pr.IsDraft {
+		parts = append(parts, dimStyle.Render("draft"))
+	}
+	if badge := reviewStateBadge(i.pr.ReviewState); badge != "" {
+		parts = append(parts, badge)
+	}
+	if hint := viewerActionBadge(i.pr.ReviewState); hint != "" {
+		parts = append(parts, hint)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// reviewStateBadge returns the PR-wide approval-state chip ("approved",
+// "changes requested", "no review") or empty when we have no review data
+// yet. Color is applied with lipgloss so the default list delegate can
+// pass it through unmodified.
+func reviewStateBadge(rs gh.ReviewState) string {
+	switch {
+	case strings.EqualFold(rs.Decision, gh.ReviewDecisionApproved):
+		return okStyle.Render("approved")
+	case rs.ChangesRequested > 0 || strings.EqualFold(rs.Decision, gh.ReviewDecisionChangesRequested):
+		return errStyle.Render("changes requested")
+	case rs.Approvals > 0:
+		// Has at least one approval but GitHub still wants more (typical
+		// branch-protection "2 approvals required" case).
+		return warnStyle.Render(fmt.Sprintf("approved x%d · more needed", rs.Approvals))
+	case strings.EqualFold(rs.Decision, gh.ReviewDecisionReviewRequired):
+		return dimStyle.Render("no review")
+	default:
+		return ""
+	}
+}
+
+// sortPRsByActionability returns prs reordered so the PRs most in need of
+// the viewer's attention rise to the top. The tiers are:
+//
+//  0. needs you, direct request — your approval would unblock merge.
+//  1. needs you, only via a team request — same urgency but ambiguous owner.
+//  2. you've reviewed (commented but not approved) — already weighed in.
+//  3. changes requested by someone, you haven't reviewed — author's turn.
+//  4. you've already approved — done on your side.
+//  5. PR is fully approved — least actionable.
+//
+// Within each tier we keep the most-recently-updated PR first so an active
+// PR doesn't get buried under stale ones. The returned slice is a fresh
+// allocation; the input is not mutated, which makes the call cheap to
+// embed in the prListMsg handler without surprising callers.
+func sortPRsByActionability(prs []gh.PR) []gh.PR {
+	out := append([]gh.PR(nil), prs...)
+	sort.SliceStable(out, func(i, j int) bool {
+		ti := actionabilityTier(out[i].ReviewState)
+		tj := actionabilityTier(out[j].ReviewState)
+		if ti != tj {
+			return ti < tj
+		}
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	return out
+}
+
+func actionabilityTier(rs gh.ReviewState) int {
+	switch {
+	case strings.EqualFold(rs.Decision, gh.ReviewDecisionApproved):
+		return 5
+	case rs.ViewerHasApproved:
+		return 4
+	case rs.ChangesRequested > 0 && !rs.ViewerHasReviewed:
+		return 3
+	case rs.ViewerHasReviewed:
+		return 2
+	case rs.NeedsViewerReview() && rs.ViewerStillRequested:
+		return 0
+	case rs.NeedsViewerReview():
+		return 1
+	default:
+		return 2
+	}
+}
+
+// viewerActionBadge surfaces what the viewer specifically should do with the
+// PR. "needs you" is the strongest signal (direct request still pending,
+// viewer hasn't reviewed). The team-fallback variant covers PRs that landed
+// in our queue via team membership only.
+func viewerActionBadge(rs gh.ReviewState) string {
+	switch {
+	case rs.ViewerHasApproved:
+		return dimStyle.Render("you approved")
+	case rs.ViewerHasReviewed:
+		return dimStyle.Render("you reviewed")
+	case rs.NeedsViewerReview() && rs.ViewerStillRequested:
+		return boldStyle.Foreground(lipgloss.Color("#7AA2F7")).Render("needs you")
+	case rs.NeedsViewerReview():
+		return dimStyle.Render("needs you (team)")
+	default:
+		return ""
+	}
 }
 
 // Model is the root TUI model.
@@ -66,6 +166,9 @@ type Model struct {
 
 	repoAgents         *repoagentstui.Model
 	repoAgentsPrevMode mode
+
+	langAgents         *langagentstui.Model
+	langAgentsPrevMode mode
 
 	width  int
 	height int
@@ -126,6 +229,25 @@ type Model struct {
 	// on DoneMsg from the repo-agents tab and on each openRepoAgents call so
 	// regen results show up immediately when the user returns to the PR.
 	repoAgentsFreshnessCache map[string]repoAgentsFreshnessEntry
+
+	// prLanguages caches the canonical touched-language set for each PR
+	// we've parsed a diff for during this session. Populated whenever
+	// the detail-mode loader hands us a parsedDiff. Keyed by
+	// "owner/repo#NUMBER" so the list-mode hint can colour rows the
+	// user has previously visited without re-fetching anything.
+	//
+	// Entries are sticky — diffs don't churn within a session and a
+	// stale entry just means we'd render a slightly out-of-date chip;
+	// the user runs a review and the freshness recomputes from the
+	// updated diff. invalidateLangAgentsFreshness drops the wholesale
+	// cache when the user finishes a lang-agents tab session so newly
+	// generated briefs flip the chip colour on return.
+	prLanguages map[string][]langagentsstore.Language
+
+	// langAgentsFreshnessCache memoises the PR-aggregated freshness
+	// reading (computed from prLanguages + the on-disk cache). Same
+	// TTL story as repoAgentsFreshnessCache; same invalidation hook.
+	langAgentsFreshnessCache map[string]langAgentsFreshnessEntry
 }
 
 // repoAgentsFreshnessCacheTTL bounds how long a cached freshness reading
@@ -133,6 +255,15 @@ type Model struct {
 // out-of-band edits to repo-agents.json without restarting the TUI; long
 // enough to keep the render loop cheap.
 const repoAgentsFreshnessCacheTTL = 5 * time.Second
+
+// langAgentsFreshnessCacheTTL bounds the lang-agents freshness cache,
+// same rationale as the repo-agents version.
+const langAgentsFreshnessCacheTTL = 5 * time.Second
+
+type langAgentsFreshnessEntry struct {
+	state    langagentsstore.Freshness
+	computed time.Time
+}
 
 type repoAgentsFreshnessEntry struct {
 	state    repoagentsstore.Freshness
@@ -223,6 +354,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.mode == modeRepoAgents && m.repoAgents != nil {
 			m.repoAgents.Resize(m.width, m.chromeBodyHeight())
 		}
+		if m.mode == modeLangAgents && m.langAgents != nil {
+			m.langAgents.SetSize(m.width, m.chromeBodyHeight())
+		}
 		if m.mode == modeDetail {
 			m.refreshDetailViews()
 		}
@@ -297,6 +431,24 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case langagentstui.DoneMsg:
+		m.mode = m.langAgentsPrevMode
+		m.langAgents = nil
+		m.invalidateLangAgentsFreshness()
+		m.relayout()
+		if msg.Err != nil {
+			em := newErrorOverlay(msg.Err.Error(), max(40, m.width-6), max(8, m.height-8))
+			cfg := overlay.DefaultOverlayConfig()
+			return m, tea.Batch(
+				m.overlayStack.Push(em, cfg),
+				func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
+			)
+		}
+		if m.mode == modeDetail {
+			m.refreshDetailViews()
+		}
+		return m, nil
+
 	case postedOverlayDismissMsg:
 		_, c := m.overlayStack.Pop()
 		m.mode = modeList
@@ -326,8 +478,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case prListMsg:
 		m.prsLoaded = true
-		items := make([]list.Item, 0, len(msg.prs))
-		for _, p := range msg.prs {
+		ordered := sortPRsByActionability(msg.prs)
+		items := make([]list.Item, 0, len(ordered))
+		for _, p := range ordered {
 			items = append(items, prItem{pr: p})
 		}
 		m.list.SetItems(items)
@@ -341,6 +494,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diff = msg.diff
 		m.draft = nil
 		m.parsedDiff = review.ParseDiff(m.diff)
+		m.recordPRLanguages(msg.pr, m.parsedDiff)
 		m.treeRows = buildTreeRows(m.parsedDiff, m.draft)
 		m.treeIdx = 0
 		m.diffOnly = false
@@ -381,6 +535,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.currentPR = msg.pr
 				m.diff = msg.diff
 				m.parsedDiff = review.ParseDiff(m.diff)
+				m.recordPRLanguages(msg.pr, m.parsedDiff)
 				m.treeRows = buildTreeRows(m.parsedDiff, m.draft)
 				m.refreshDetailViews()
 			}
@@ -492,6 +647,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.repoAgents = rm.(*repoagentstui.Model)
 			return m, cmd
 		}
+		if m.mode == modeLangAgents && m.langAgents != nil {
+			if km, ok := msg.(tea.KeyMsg); ok && km.String() == "ctrl+c" {
+				FlushMouse()
+				return m, tea.Quit
+			}
+			if !m.overlayFocus.InteractiveToBase(msg) {
+				return m, m.overlayStack.Update(msg)
+			}
+			lm, cmd := m.langAgents.Update(msg)
+			m.langAgents = lm.(*langagentstui.Model)
+			return m, cmd
+		}
 		if !m.overlayFocus.InteractiveToBase(msg) {
 			return m, m.overlayStack.Update(msg)
 		}
@@ -525,11 +692,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.repoAgents = rm.(*repoagentstui.Model)
 		return m, cmd
 	}
+	if m.mode == modeLangAgents && m.langAgents != nil {
+		lm, cmd := m.langAgents.Update(msg)
+		m.langAgents = lm.(*langagentstui.Model)
+		return m, cmd
+	}
 
 	switch m.mode {
 	case modeSettings:
 		return m, nil
 	case modeRepoAgents:
+		return m, nil
+	case modeLangAgents:
 		return m, nil
 	case modeList:
 		var cmd tea.Cmd
@@ -625,6 +799,9 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 	}
 	if z := zone.Get(ZoneBuildRepoAgents); z != nil && z.InBounds(msg) {
 		return m, m.openRepoAgentsForCurrentPR(true)
+	}
+	if z := zone.Get(ZoneBuildLangAgents); z != nil && z.InBounds(msg) {
+		return m, m.openLangAgents()
 	}
 	if z := zone.Get(ZoneOpenInBrowser); z != nil && z.InBounds(msg) {
 		if m.currentPR != nil {
@@ -724,6 +901,8 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// From the list view we can't pre-focus a single repo (the highlight
 		// might not even point at a PR), so open the tab as-is.
 		return m, m.openRepoAgents("", false)
+	case "ctrl+l":
+		return m, m.openLangAgents()
 	case "ctrl+b":
 		// Build/refresh repo agents for the highlighted PR's repo, if any.
 		if it, ok := m.list.SelectedItem().(prItem); ok {
@@ -817,6 +996,8 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Pre-focus on the current PR's repo so the tab opens on the row
 		// that matters for this PR rather than the alphabetical first repo.
 		return m, m.openRepoAgentsForCurrentPR(false)
+	case "ctrl+l":
+		return m, m.openLangAgents()
 	case "ctrl+b":
 		// "Build/refresh repo agents for this PR's repo" — focus on the
 		// PR's repo and immediately fire Regenerate all. This is the
@@ -1062,16 +1243,16 @@ func (m *Model) refreshDetailViews() {
 
 }
 
-// renderDescriptionBlock renders the PR description as an inline section above the diff.
+// renderDescriptionBlock renders the PR description as an inline section
+// above the diff. The body is treated as markdown — GitHub PR descriptions
+// always are — and run through glamour so headings, lists, code fences,
+// and links render with proper styling instead of as raw `# foo` text.
 func renderDescriptionBlock(body string, width int) string {
 	width = max(8, width)
 	var b strings.Builder
 	b.WriteString(boldStyle.Render("Description") + "  " +
 		zone.Mark(ZoneDescriptionToggle, dimStyle.Render(" hide (g) ")) + "\n")
-	body = strings.TrimSpace(body)
-	for _, ln := range strings.Split(wrapForViewport(body, width), "\n") {
-		b.WriteString(ln + "\n")
-	}
+	b.WriteString(renderMarkdownIndented(strings.TrimSpace(body), width, 0) + "\n")
 	return b.String()
 }
 
@@ -1177,6 +1358,8 @@ func (m *Model) renderHeader() string {
 		return headerBar.Width(m.width).Render("appr-ai-sal · settings")
 	case modeRepoAgents:
 		return headerBar.Width(m.width).Render("appr-ai-sal · repo agents")
+	case modeLangAgents:
+		return headerBar.Width(m.width).Render("appr-ai-sal · language experts")
 	}
 	return ""
 }
@@ -1199,12 +1382,19 @@ func (m *Model) renderDetailMiniHeader() string {
 			okStyle.Render(fmt.Sprintf("+%d", totalA)),
 			errStyle.Render(fmt.Sprintf("-%d", totalD))),
 	}
+	if badge := reviewStateBadge(m.currentPR.ReviewState); badge != "" {
+		parts = append(parts, badge)
+	}
+	if hint := viewerActionBadge(m.currentPR.ReviewState); hint != "" {
+		parts = append(parts, hint)
+	}
 	desc := zone.Mark(ZoneDescriptionToggle, dimStyle.Render(" description (g) "))
 	if m.descriptionOpen {
 		desc = zone.Mark(ZoneDescriptionToggle, boldStyle.Render(" description (g) "))
 	}
 	parts = append(parts, desc)
 	parts = append(parts, zone.Mark(ZoneBuildRepoAgents, m.buildRepoAgentsChip()))
+	parts = append(parts, zone.Mark(ZoneBuildLangAgents, m.buildLangAgentsChip()))
 	if strings.TrimSpace(m.currentPR.URL) != "" {
 		parts = append(parts, zone.Mark(ZoneOpenInBrowser, dimStyle.Render(" open in browser (O) ")))
 	}
@@ -1236,6 +1426,11 @@ func (m *Model) renderBody() string {
 			return appPadding.Render("repo agents unavailable")
 		}
 		return m.repoAgents.View()
+	case modeLangAgents:
+		if m.langAgents == nil {
+			return appPadding.Render("language experts unavailable")
+		}
+		return m.langAgents.View()
 	case modeURLInput:
 		return appPadding.Render("\n  Enter PR URL or owner/repo#N:\n\n  " + m.urlInput.View() + "\n\n  " + dimStyle.Render("(esc to cancel)"))
 	}
@@ -1329,21 +1524,26 @@ func (m *Model) renderStatus() string {
 	switch m.mode {
 	case modeList:
 		owner, repo := m.repoAgentsFreshnessForListSelection()
+		lOwner, lRepo, lNum := m.listSelectionForLangFreshness()
 		hint = "↑/↓ · click · double-click open · enter · u URL · O browser · o/, settings · ctrl+g repo ctx · ctrl+r repo agents · " +
-			m.renderBuildAgentsHint(owner, repo) +
+			m.renderBuildLangAgentsHint(lOwner, lRepo, lNum) +
+			" · " + m.renderBuildAgentsHint(owner, repo) +
 			" · / filter · f · R · q quit" + dry
 	case modeDetail:
-		owner, repo := "", ""
+		owner, repo, number := "", "", 0
 		if m.currentPR != nil {
-			owner, repo = m.currentPR.Owner, m.currentPR.Repo
+			owner, repo, number = m.currentPR.Owner, m.currentPR.Repo, m.currentPR.Number
 		}
-		hint = "tab pane · j/k nav · r review · ctrl+v peruse · a reopen approval · O browser · g description · d diff-only · P bulk · ctrl+r repo agents · " +
-			m.renderBuildAgentsHint(owner, repo) +
+		hint = "tab pane · j/k nav · r review · a reopen approval · O browser · g description · d diff-only · P bulk · ctrl+r repo agents · " +
+			m.renderBuildLangAgentsHint(owner, repo, number) +
+			" · " + m.renderBuildAgentsHint(owner, repo) +
 			" · ctrl+d/u · esc back" + dry
 	case modeSettings:
 		hint = "[ ] tabs · ctrl+s save · esc · tab fields · ↑/↓ strictness · wheel · o AI · , review · ctrl+g repo tab · ctrl+c quit" + dry
 	case modeRepoAgents:
 		hint = "←/→ repo · a add repo · A regen all · click chips · esc close · ctrl+s save edit · ctrl+c quit" + dry
+	case modeLangAgents:
+		hint = "↑/↓ select · g/r generate or regenerate · d delete cached · esc close · ctrl+c quit" + dry
 	case modeURLInput:
 		hint = "enter submit · esc cancel" + dry
 	}
@@ -1466,6 +1666,67 @@ func (m *Model) openRepoAgents(focusRepo string, autoRegen bool) tea.Cmd {
 	return m.repoAgents.Init()
 }
 
+// openLangAgents opens the language-experts tab. From detail mode (a
+// PR is loaded with a parsed diff) the tab is scoped to ONLY the
+// languages that PR touches, so generation flows are anchored to "I
+// need a brief because this PR uses it." From list mode the tab opens
+// unscoped, showing cached briefs only; the user is expected to drill
+// into a PR to discover and generate new languages.
+//
+// Language briefs themselves are user-global — generating Swift from
+// PR #1234 makes Swift available to every subsequent review across
+// every repo.
+func (m *Model) openLangAgents() tea.Cmd {
+	m.langAgentsPrevMode = m.mode
+	m.mode = modeLangAgents
+	opts := langagentstui.Opts{
+		AICfg:      m.opts.AIConfig,
+		Width:      m.width,
+		BodyHeight: m.chromeBodyHeight(),
+		Complete:   langagentsstore.CompleteFunc(review.Complete),
+	}
+	if m.langAgentsPrevMode == modeDetail && len(m.parsedDiff) > 0 {
+		// Use a non-nil slice (even when empty) to opt into scoped
+		// rendering — the tab's header tells the user we noticed the
+		// PR even when no rows match.
+		opts.PRLanguages = languagesForFileDiffs(m.parsedDiff)
+		if m.currentPR != nil {
+			opts.PRLabel = fmt.Sprintf("%s#%d", m.currentPR.Repository, m.currentPR.Number)
+		}
+	}
+	m.langAgents = langagentstui.New(opts).(*langagentstui.Model)
+	return m.langAgents.Init()
+}
+
+// languagesForFileDiffs returns the canonical language names touched
+// by a parsed diff, sorted by descending touch count (sum of added +
+// deleted lines per language). Used to scope the language-experts
+// tab to the dominant-first language set the PR exercises.
+func languagesForFileDiffs(files []review.FileDiff) []langagentsstore.Language {
+	if len(files) == 0 {
+		return []langagentsstore.Language{}
+	}
+	touches := map[langagentsstore.Language]int{}
+	for _, f := range files {
+		c := langagentsstore.LanguageForPath(f.Path)
+		if c == "" {
+			continue
+		}
+		touches[c] += f.Additions + f.Deletions
+	}
+	out := make([]langagentsstore.Language, 0, len(touches))
+	for l := range touches {
+		out = append(out, l)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if touches[out[i]] != touches[out[j]] {
+			return touches[out[i]] > touches[out[j]]
+		}
+		return out[i] < out[j]
+	})
+	return out
+}
+
 // openRepoAgentsForCurrentPR is the convenience wrapper bound to the
 // "Build/refresh repo agents" action available on the PR detail view. It
 // pre-focuses the tab on the PR's owner/repo and (when autoRegen is true)
@@ -1510,6 +1771,75 @@ func (m *Model) repoAgentsFreshness(owner, repo string) repoagentsstore.Freshnes
 // tab (so the post-edit reading is fresh on return).
 func (m *Model) invalidateRepoAgentsFreshness() {
 	m.repoAgentsFreshnessCache = nil
+}
+
+// prKey is the cache key for prLanguages / langAgentsFreshnessCache.
+// We use owner+repo+number rather than just number so two PRs with the
+// same number in different repos can't collide.
+func prKey(owner, repo string, number int) string {
+	return strings.ToLower(strings.TrimSpace(owner)) + "/" + strings.ToLower(strings.TrimSpace(repo)) + "#" + strconv.Itoa(number)
+}
+
+// recordPRLanguages stores the canonical touched-language set for a
+// PR. Called from the detail-mode loaders right after ParseDiff so
+// list-mode rendering of the same PR knows what's touched without
+// re-fetching anything. Called with a nil/empty parsedDiff is a no-op.
+func (m *Model) recordPRLanguages(pr *gh.PR, parsed []review.FileDiff) {
+	if pr == nil {
+		return
+	}
+	if m.prLanguages == nil {
+		m.prLanguages = map[string][]langagentsstore.Language{}
+	}
+	// Use an empty slice (not nil) to mark "we parsed; nothing
+	// recognised" so the freshness computer returns FreshnessFresh
+	// rather than FreshnessUnknown.
+	m.prLanguages[prKey(pr.Owner, pr.Repo, pr.Number)] = languagesForFileDiffs(parsed)
+	// Any change to a PR's touched set invalidates the cached
+	// freshness reading for that PR (and is cheap to recompute on
+	// next render).
+	delete(m.langAgentsFreshnessCache, prKey(pr.Owner, pr.Repo, pr.Number))
+}
+
+// langAgentsFreshness returns the PR-aggregated freshness reading
+// for a (owner, repo, number) triple. Returns FreshnessUnknown when
+// we have no record of the PR's touched languages — typically a list
+// row the user hasn't drilled into this session. Callers should
+// render neutrally on Unknown rather than warn (no signal == no nag).
+//
+// TTL'd via langAgentsFreshnessCache so the renderer doesn't re-read
+// disk on every frame; invalidated wholesale by
+// invalidateLangAgentsFreshness when the lang-agents tab returns.
+func (m *Model) langAgentsFreshness(owner, repo string, number int) langagentsstore.Freshness {
+	if number == 0 || strings.TrimSpace(owner) == "" || strings.TrimSpace(repo) == "" {
+		return langagentsstore.FreshnessUnknown
+	}
+	key := prKey(owner, repo, number)
+	touched, known := m.prLanguages[key]
+	if !known {
+		return langagentsstore.FreshnessUnknown
+	}
+	now := time.Now()
+	if e, ok := m.langAgentsFreshnessCache[key]; ok {
+		if now.Sub(e.computed) < langAgentsFreshnessCacheTTL {
+			return e.state
+		}
+	}
+	cache, _ := langagentsstore.LoadCache()
+	state := langagentsstore.ComputePR(touched, cache, now, langagentsstore.DefaultStaleAfter)
+	if m.langAgentsFreshnessCache == nil {
+		m.langAgentsFreshnessCache = map[string]langAgentsFreshnessEntry{}
+	}
+	m.langAgentsFreshnessCache[key] = langAgentsFreshnessEntry{state: state, computed: now}
+	return state
+}
+
+// invalidateLangAgentsFreshness drops the cached PR-freshness
+// readings so the next render recomputes from disk. Called when the
+// user closes the lang-agents tab so any brief they generated or
+// deleted flips the chip colour on the surrounding views immediately.
+func (m *Model) invalidateLangAgentsFreshness() {
+	m.langAgentsFreshnessCache = nil
 }
 
 // buildRepoAgentsChip is the right-side chip in the PR detail mini-header.
@@ -1564,6 +1894,58 @@ func (m *Model) repoAgentsFreshnessForListSelection() (owner, repo string) {
 		return "", ""
 	}
 	return it.pr.Owner, it.pr.Repo
+}
+
+// listSelectionForLangFreshness is the lang-agents twin of
+// repoAgentsFreshnessForListSelection. Returns owner/repo/number for
+// the highlighted PR so renderBuildLangAgentsHint can colour itself.
+// Empty triple means "no selection" (or fresh load) and the caller
+// renders neutrally.
+func (m *Model) listSelectionForLangFreshness() (owner, repo string, number int) {
+	it, ok := m.list.SelectedItem().(prItem)
+	if !ok {
+		return "", "", 0
+	}
+	return it.pr.Owner, it.pr.Repo, it.pr.Number
+}
+
+// renderBuildLangAgentsHint is the lang-agents twin of
+// renderBuildAgentsHint. Same colouring rules — red for missing, yellow
+// for stale, plain otherwise — but driven by a per-PR aggregator instead
+// of a per-repo one. The hint also stays neutral when we have no record
+// of the PR's languages, which is the common case for un-visited list
+// rows: showing a warning we can't ground would be more noisy than
+// helpful.
+func (m *Model) renderBuildLangAgentsHint(owner, repo string, number int) string {
+	const label = "ctrl+l lang experts"
+	state := m.langAgentsFreshness(owner, repo, number)
+	switch state {
+	case langagentsstore.FreshnessMissing:
+		return errStyle.Render(label + " (missing!)")
+	case langagentsstore.FreshnessStale:
+		return warnStyle.Render(label + " (stale)")
+	default:
+		return label
+	}
+}
+
+// buildLangAgentsChip is the lang-agents twin of buildRepoAgentsChip.
+// Pinned to the right side of the PR detail mini-header so the reviewer
+// sees a "this PR has a language with no expert" warning the moment
+// they open the PR, not just when they glance at the bottom status bar.
+func (m *Model) buildLangAgentsChip() string {
+	if m.currentPR == nil {
+		return dimStyle.Render(" build lang experts (ctrl+l) ")
+	}
+	state := m.langAgentsFreshness(m.currentPR.Owner, m.currentPR.Repo, m.currentPR.Number)
+	switch state {
+	case langagentsstore.FreshnessMissing:
+		return errStyle.Render(" build lang experts (ctrl+l) — missing ")
+	case langagentsstore.FreshnessStale:
+		return warnStyle.Render(" build lang experts (ctrl+l) — stale ")
+	default:
+		return dimStyle.Render(" build lang experts (ctrl+l) ")
+	}
 }
 
 func (m *Model) repoSeedsFromList(_ *repoconfig.Config) []string {

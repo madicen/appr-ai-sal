@@ -10,6 +10,13 @@ to this repo so it can flag what matters here without crying wolf.
 You are NOT reviewing a diff. Describe how this repo actually handles
 security-sensitive concerns today, grounded only in the inputs.
 
+A **language brief** is injected BEFORE your brief and already covers
+language-level anti-patterns (e.g. "Rust `unwrap()` in libraries",
+"TypeScript `JSON.parse` without a schema validator", "Go `init()` doing
+non-trivial work"). Do not restate those. Your job is to capture **what
+THIS REPO treats as the security surface** — which auth library, which
+input validators, which named middlewares, what AGENTS.md explicitly bans.
+
 ## What to cover
 
 - **What this repo handles that's security-sensitive.** Auth, sessions,

@@ -14,6 +14,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
+	"github.com/madicen/appr-ai-sal/internal/review/langagents"
 	"github.com/madicen/appr-ai-sal/internal/review/repoagents"
 )
 
@@ -141,9 +142,17 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			out <- Progress{Stage: "repo-evidence", Detail: fmt.Sprintf("%d bytes", len(prEvidence))}
 		}
 
+		// Language briefs: pick the dominant language(s) the PR touches
+		// and inject the matching brief(s). Bundled briefs are
+		// guaranteed available for our top-5 languages; the runner
+		// emits a warning when the PR exercises a language with no
+		// bundle and no user-generated cache entry. See
+		// internal/review/langagents for the selection rule.
+		langSection := composeLangBriefSection(diff, out)
+
 		// Specialists: sequential by default (repo-context.json parallel_specialists),
 		// or parallel when configured / env override — see runSpecialistsPhase.
-		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, diff, perAgent, prEvidence, out)
+		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, diff, perAgent, prEvidence, langSection, out)
 
 		cv := <-cvCh
 		cvSummary := strings.TrimSpace(cv.text)
@@ -222,7 +231,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 // prEvidence is per-PR static + history evidence (currently injected only
 // for testing and docs). Empty when rc.IncludeRepoEvidence is false or the
 // harvester returned nothing.
-func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, out chan<- Progress) []SpecialistResult {
+func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, langSection string, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "specialist", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
@@ -240,7 +249,7 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 		_ = stageWithRetry(ctx, runCfg, "specialist "+name, notify, func(sctx context.Context) error {
 			stCtx, cancel := context.WithTimeout(sctx, perStageBudget(runCfg))
 			defer cancel()
-			r = runReviewSpecialist(stCtx, runCfg, name, worktree, pr, diff, repoCtx, ev)
+			r = runReviewSpecialist(stCtx, runCfg, name, worktree, pr, diff, repoCtx, ev, langSection)
 			if r.Err != nil {
 				return r.Err
 			}
@@ -371,6 +380,55 @@ func cacheDir() string {
 // (sibling of the worktrees folder when using the default XDG layout).
 func RepoProfilesDir() string {
 	return filepath.Clean(filepath.Join(cacheDir(), "..", "repo-profiles"))
+}
+
+// composeLangBriefSection picks the dominant-language briefs for the PR
+// and renders them as a single user-prompt section. Emits a Progress
+// event reporting which briefs were loaded (from bundle vs cache) and
+// which languages had no brief available.
+//
+// The returned string is empty when the PR touches no recognised
+// languages OR no recognised language has a brief — both are safe
+// no-ops for buildReviewUserPrompt's caller.
+func composeLangBriefSection(diff string, out chan<- Progress) string {
+	touches := map[string]int{}
+	for _, f := range ParseDiff(diff) {
+		if f.Path == "" {
+			continue
+		}
+		touches[f.Path] += f.Additions + f.Deletions
+	}
+	summary := langagents.SummariseForDiff(touches)
+	switch {
+	case len(summary.Briefs) == 0 && len(summary.Missing) == 0:
+		// No recognised languages in the diff (e.g. all README / YAML
+		// touches without a brief in scope) — keep quiet.
+		return ""
+	case len(summary.Briefs) == 0:
+		out <- Progress{Stage: "lang-agents", Detail: fmt.Sprintf("none injected; missing: %s", joinLangs(summary.Missing))}
+		return ""
+	}
+	names := make([]string, 0, len(summary.Briefs))
+	for _, b := range summary.Briefs {
+		names = append(names, langagents.LabelFor(b.Language))
+	}
+	detail := "injected " + strings.Join(names, "+")
+	if len(summary.Missing) > 0 {
+		detail += "; missing: " + joinLangs(summary.Missing)
+	}
+	out <- Progress{Stage: "lang-agents", Detail: detail}
+	return langagents.FormatBriefsSection(summary.Briefs)
+}
+
+func joinLangs(langs []langagents.Language) string {
+	if len(langs) == 0 {
+		return "none"
+	}
+	labels := make([]string, len(langs))
+	for i, l := range langs {
+		labels[i] = langagents.LabelFor(l)
+	}
+	return strings.Join(labels, ", ")
 }
 
 // ErrNoPR is returned if the user tries to operate on a Draft that hasn't

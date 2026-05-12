@@ -53,7 +53,10 @@ func augmentPromptsForProvider(p aiconfig.Provider, systemPrompt, userPrompt str
 // evidence is an optional per-PR static + history evidence block (currently
 // only built for testing and docs); when non-empty it is appended after the
 // brief so the model has concrete neighbours/aggregates to calibrate against.
-func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string) SpecialistResult {
+// langSection is the rendered language-conventions section (one or two
+// langagents briefs joined by FormatBriefsSection), shared across every
+// specialist — repo-independent and computed once per review.
+func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, langSection string) SpecialistResult {
 	res := SpecialistResult{Specialist: name, Findings: []Finding{}}
 
 	systemPrompt, err := SpecialistPrompt(name)
@@ -62,8 +65,8 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		return res
 	}
 
-	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence)
-	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != ""
+	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, langSection)
+	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != ""
 	systemPrompt, userPrompt = augmentPromptsForProvider(cfg.Provider, systemPrompt, userPrompt, hasContext)
 
 	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
@@ -87,15 +90,32 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// hard.
 		floor := MinSeverityForStrictness(cfg.ReviewStrictness)
 		res.Findings = FilterFindingsBySeverity(parsed.Findings, floor)
+		// Parse the diff once and share the result across every gate
+		// below — diffs can be megabytes for large PRs and re-parsing
+		// per validator adds up.
+		parsedFiles := ParseDiff(diff)
 		// Defensive: clear suggestions whose post-image substitution would
 		// obviously break the file (anchor mismatch that would duplicate a
 		// nearby line, etc.). We keep the comment so the human still sees
 		// the issue; only the one-click fix is dropped.
-		res.Findings = validateAndPruneSuggestions(res.Findings, ParseDiff(diff))
+		res.Findings = validateAndPruneSuggestions(res.Findings, parsedFiles)
+		// Strip suggestions whose anchor line is the wrong kind for the
+		// kind of change the comment proposes (e.g. comment claims a
+		// declaration needs renaming, but the anchor is a comment-only
+		// line). See anchor_kind.go.
+		res.Findings = validateAnchorKind(res.Findings, parsedFiles)
+		// Strip suggestions where the model's quoted anchor_excerpt does
+		// not match the actual line at path:line — strong evidence the
+		// model anchored at the wrong line. See anchor_excerpt.go.
+		res.Findings = validateAnchorExcerpt(res.Findings, parsedFiles)
 		// Demote bare "X lacks a comment / lacks tests" findings to info
 		// when no proposed wording or suggestion is present. Docs/testing
 		// only — see actionability.go for the rationale.
 		res.Findings = validateActionability(name, res.Findings)
+		// Demote findings that prescribe a naming convention which is
+		// wrong for the file's language (e.g. "should be snake_case" on
+		// a .go file). See convention_gate.go.
+		res.Findings = validateNamingConvention(res.Findings)
 		// Re-apply the floor: a finding demoted to info above must obey
 		// the same strictness gate the model originally got.
 		res.Findings = FilterFindingsBySeverity(res.Findings, floor)
@@ -175,9 +195,9 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	return res
 }
 
-func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string) string {
+func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, langSection string) string {
 	var b strings.Builder
-	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != ""
+	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != ""
 	if hasContext {
 		b.WriteString(claudeReviewIntro)
 	} else {
@@ -194,6 +214,14 @@ func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictn
 		b.WriteString("\n\n")
 	}
 	b.WriteString(strictnessBlockForSpecialists(strict))
+	// Language conventions go BEFORE the repo brief: language defaults
+	// are universal facts the repo-agent brief is allowed to override
+	// for repo-specific deltas, so the repo brief reads naturally after
+	// the universal one.
+	if s := strings.TrimSpace(langSection); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
 	b.WriteString(FormatRepoContextSection(repoContext))
 	b.WriteString(FormatPRReviewEvidenceSection(evidence))
 	b.WriteString("Unified diff (line numbers in `+` hunks are the lines you cite in findings, with side=\"RIGHT\"):\n\n")
@@ -248,10 +276,15 @@ const reviewOutputContract = `Return your review as a single JSON object and not
       "side": "RIGHT",
       "severity": "info" | "warning" | "error" | "critical",
       "comment": "<the full human-readable review text: finding, rationale, and what to do. Use plain text or simple markdown. Put ALL narrative, questions, and explanations here.>",
-      "suggestion": "<EXACT literal replacement text GitHub will apply at path/line — see the suggestion contract below. Required for any local fix; empty string for findings whose fix is non-local or non-mechanical.>"
+      "suggestion": "<EXACT literal replacement text GitHub will apply at path/line — see the suggestion contract below. Required for any local fix; empty string for findings whose fix is non-local or non-mechanical.>",
+      "anchor_excerpt": "<VERBATIM copy of the post-image line at path:line, including leading whitespace exactly as it appears in the diff. REQUIRED whenever you fill in 'suggestion' on an inline finding — the review tool deterministically compares this against the actual line and STRIPS your suggestion on mismatch, so getting this wrong is worse than leaving suggestion empty. Use empty string for general findings (path '', line 0) and for inline findings whose 'suggestion' is empty.>"
     }
   ]
 }
+
+ANCHOR PROOF (anchor_excerpt — DETERMINISTICALLY ENFORCED):
+
+Whenever "suggestion" is non-empty, "anchor_excerpt" MUST be the exact post-image text of the diff line at "line" (the line that will be DELETED when the author clicks Apply). Copy it character-for-character from the unified diff including its leading whitespace; do not strip leading "+", "-", or " " from the diff prefix (the diff shows them; the line itself does not have them). The tool normalises whitespace before comparing, but mismatch on substantive content is treated as evidence you mis-anchored and the suggestion is dropped with no human override. If you are not certain which line you are anchoring at, leave BOTH "anchor_excerpt" and "suggestion" empty and let the prose in "comment" carry the load.
 
 ACTIONABILITY BAR (HARD REQUIREMENT — applies to EVERY finding, inline or general):
 

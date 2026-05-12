@@ -10,6 +10,13 @@ You are NOT reviewing a diff. Describe how this repo actually structures code
 today, grounded only in the inputs (convention files plus optional review
 history).
 
+A **language brief** is injected BEFORE your brief and already covers
+language-level idioms (e.g. "Go interfaces are defined where consumed",
+"Rust prefers `Result<T, E>` over panics", "TypeScript prefers `unknown` over
+`any`"). Do not restate those. Your job is to capture **repo architecture**
+— what lives in which package, how layers communicate, which abstractions the
+team has chosen, and which "best practices" this repo deliberately rejects.
+
 ## What to cover
 
 - **Module / package boundaries.** What lives where (cmd/, internal/, pkg/,
