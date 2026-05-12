@@ -223,6 +223,125 @@ func TestIsAuthorPromptAliveEmptyRefs(t *testing.T) {
 	}
 }
 
+// TestSpecialistsForVibeCoachDropsArbiterSuppressed regresses the
+// long-standing behaviour that arbiter-suppressed inline findings never
+// make it into the vibe-coach prompt input.
+func TestSpecialistsForVibeCoachDropsArbiterSuppressed(t *testing.T) {
+	dropped := Finding{Path: "a.go", Line: 1, Side: "RIGHT", Severity: SeverityWarning, Comment: "drop"}
+	kept := Finding{Path: "b.go", Line: 2, Side: "RIGHT", Severity: SeverityWarning, Comment: "keep"}
+	specialists := []SpecialistResult{
+		{Specialist: SpecDocs, Findings: []Finding{dropped, kept}},
+	}
+	d := &Draft{
+		Specialists: specialists,
+		RepoArbiter: &RepoArbiterResult{
+			suppressKeySet: map[string]struct{}{
+				suppressionKey(SpecDocs, "a.go", 1, "RIGHT"): {},
+			},
+		},
+	}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if len(out) != 1 || len(out[0].Findings) != 1 {
+		t.Fatalf("expected 1 specialist with 1 kept finding, got %+v", out)
+	}
+	if out[0].Findings[0].Comment != "keep" {
+		t.Errorf("kept finding lost: %+v", out[0].Findings)
+	}
+}
+
+// TestSpecialistsForVibeCoachDropsUserSkipped is the new behaviour:
+// user-skipped findings (TUI approval flow) must also be excluded from
+// the vibe-coach input so the LLM-generated Summary, Prompts, and
+// Verdict reflect only the findings the reviewer is actually going to
+// ship. Mirrors the post-skip filtering in
+// FlatPostableFindingsForPost / RenderBody's filterAuthorPrompts.
+func TestSpecialistsForVibeCoachDropsUserSkipped(t *testing.T) {
+	skipped := Finding{Path: "a.go", Line: 1, Side: "RIGHT", Severity: SeverityWarning, Comment: "skip-me"}
+	kept := Finding{Path: "b.go", Line: 2, Side: "RIGHT", Severity: SeverityWarning, Comment: "keep-me"}
+	specialists := []SpecialistResult{
+		{Specialist: SpecSecurity, Findings: []Finding{skipped, kept}},
+	}
+	d := &Draft{
+		Specialists: specialists,
+		UserSkipPostKeys: map[string]struct{}{
+			FindingSuppressionKey(SpecSecurity, skipped): {},
+		},
+	}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if len(out) != 1 || len(out[0].Findings) != 1 {
+		t.Fatalf("expected 1 specialist with 1 kept finding (user skip should drop the other), got %+v", out)
+	}
+	if out[0].Findings[0].Comment != "keep-me" {
+		t.Errorf("kept finding lost: %+v", out[0].Findings)
+	}
+}
+
+// TestSpecialistsForVibeCoachDropsBoth covers the both-filters case:
+// arbiter suppression and user skip apply independently, dropping
+// every inline finding that hits either filter.
+func TestSpecialistsForVibeCoachDropsBoth(t *testing.T) {
+	suppressedByArbiter := Finding{Path: "a.go", Line: 1, Side: "RIGHT", Severity: SeverityWarning, Comment: "arb"}
+	skippedByUser := Finding{Path: "b.go", Line: 2, Side: "RIGHT", Severity: SeverityWarning, Comment: "user"}
+	kept := Finding{Path: "c.go", Line: 3, Side: "RIGHT", Severity: SeverityWarning, Comment: "live"}
+	specialists := []SpecialistResult{
+		{Specialist: SpecDesign, Findings: []Finding{suppressedByArbiter, skippedByUser, kept}},
+	}
+	d := &Draft{
+		Specialists: specialists,
+		RepoArbiter: &RepoArbiterResult{
+			suppressKeySet: map[string]struct{}{
+				suppressionKey(SpecDesign, "a.go", 1, "RIGHT"): {},
+			},
+		},
+		UserSkipPostKeys: map[string]struct{}{
+			FindingSuppressionKey(SpecDesign, skippedByUser): {},
+		},
+	}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if len(out) != 1 || len(out[0].Findings) != 1 || out[0].Findings[0].Comment != "live" {
+		t.Errorf("expected only 'live' to survive, got %+v", out)
+	}
+}
+
+// TestSpecialistsForVibeCoachPreservesPRWideFindings ensures that
+// findings with empty Path / Line 0 (PR-wide notes) are never filtered:
+// they have no suppression key and the skip flow only targets inline
+// cards.
+func TestSpecialistsForVibeCoachPreservesPRWideFindings(t *testing.T) {
+	prWide := Finding{Path: "", Line: 0, Severity: SeverityWarning, Comment: "global"}
+	inlineSkipped := Finding{Path: "a.go", Line: 1, Side: "RIGHT", Severity: SeverityWarning, Comment: "drop"}
+	specialists := []SpecialistResult{
+		{Specialist: SpecDocs, Findings: []Finding{prWide, inlineSkipped}},
+	}
+	d := &Draft{
+		Specialists: specialists,
+		UserSkipPostKeys: map[string]struct{}{
+			FindingSuppressionKey(SpecDocs, inlineSkipped): {},
+		},
+	}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if len(out) != 1 || len(out[0].Findings) != 1 || out[0].Findings[0].Comment != "global" {
+		t.Errorf("PR-wide finding should always survive; got %+v", out)
+	}
+}
+
+// TestSpecialistsForVibeCoachShortCircuitsWhenNoFilters confirms the
+// fast path: when neither arbiter suppressions nor user skips exist,
+// the original slice is returned untouched (cheap pointer-identity
+// check).
+func TestSpecialistsForVibeCoachShortCircuitsWhenNoFilters(t *testing.T) {
+	specialists := []SpecialistResult{
+		{Specialist: SpecDocs, Findings: []Finding{
+			{Path: "a.go", Line: 1, Side: "RIGHT", Severity: SeverityWarning, Comment: "x"},
+		}},
+	}
+	d := &Draft{Specialists: specialists}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if &out[0] != &specialists[0] {
+		t.Errorf("expected the fast path to return the same slice header, got a copy")
+	}
+}
+
 // TestFilterAuthorPromptsTitlesEmpty covers the disclosure formatting when
 // the LLM returned a prompt with no Title.
 func TestFilterAuthorPromptsTitlesEmpty(t *testing.T) {

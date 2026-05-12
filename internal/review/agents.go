@@ -123,6 +123,40 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 	return res
 }
 
+// RunVibeCoachForDraft runs vibe-coach against the draft's *current*
+// post-arbiter, post-user-skip specialist set. This is the deferred
+// entrypoint the TUI calls at the approve->summary transition (and on
+// re-entry if the user changed skips), so the LLM only ever sees the
+// findings that are actually going to ship.
+//
+// Wraps the call with stageWithRetry + perStageBudget so retry/timeout
+// behavior matches the inline call the streaming runner used to make.
+// Safe to call multiple times on the same draft — each call overwrites
+// d.VibeCoach.
+//
+// Returns a non-nil result even on error (Err is set); callers can
+// surface the error in the UI without nil-checking.
+func RunVibeCoachForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft) *VibeCoachResult {
+	if d == nil || cfg == nil {
+		return &VibeCoachResult{Err: fmt.Errorf("vibe-coach: nil draft or config"), Prompts: []AuthorPrompt{}}
+	}
+	vibeInput := SpecialistsForVibeCoach(d, d.Specialists)
+	var res *VibeCoachResult
+	_ = stageWithRetry(ctx, cfg, "vibe-coach", func(int, error) {}, func(sctx context.Context) error {
+		stCtx, cancel := context.WithTimeout(sctx, perStageBudget(cfg))
+		defer cancel()
+		res = runVibeCoach(stCtx, cfg, d.Worktree, d.PR, vibeInput, "")
+		if res != nil && res.Err != nil {
+			return res.Err
+		}
+		return nil
+	})
+	if res == nil {
+		res = &VibeCoachResult{Err: fmt.Errorf("vibe-coach: no result"), Prompts: []AuthorPrompt{}}
+	}
+	return res
+}
+
 // runVibeCoach runs the vibe-coach specialist over the collected findings of
 // the other specialists, producing a small set of high-leverage prompts the
 // PR author can paste back into their AI assistant.

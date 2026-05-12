@@ -176,7 +176,6 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			ContextVersusChangeSummary: cvSummary,
 		}
 
-		var vibe *VibeCoachResult
 		if skipDownstream {
 			out <- Progress{Stage: "vibe-coach", Detail: "skipped"}
 			if rc != nil && rc.RepoExpertPanel {
@@ -206,24 +205,14 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				out <- Progress{Stage: "repo-arbiter", Detail: "done", Arbiter: arb}
 			}
 
-			vibeInput := SpecialistsForVibeCoach(final, specialists)
-			out <- Progress{Stage: "vibe-coach", Detail: "start"}
-			_ = stageWithRetry(ctx, runCfg, "vibe-coach", func(attempt int, err error) {
-				out <- Progress{Stage: "vibe-coach", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
-			}, func(sctx context.Context) error {
-				stCtx, cancel := context.WithTimeout(sctx, perStageBudget(runCfg))
-				defer cancel()
-				// vibe-coach receives no per-agent brief: it is a synthesis pass.
-				vibe = runVibeCoach(stCtx, runCfg, worktree, pr, vibeInput, "")
-				if vibe != nil && vibe.Err != nil {
-					return vibe.Err
-				}
-				return nil
-			})
-			out <- Progress{Stage: "vibe-coach", Detail: "done", Vibe: vibe}
+			// Vibe-coach is deferred to the approve->summary transition in
+			// the TUI so its Summary / Prompts / Verdict reflect the truly
+			// final finding set (post-arbiter AND post-user-skip). The
+			// runner only emits a "deferred" progress marker so the overlay
+			// can render an appropriate row while it waits for the user to
+			// finish triaging cards. See RunVibeCoachForDraft.
+			out <- Progress{Stage: "vibe-coach", Detail: "deferred"}
 		}
-
-		final.VibeCoach = vibe
 
 		out <- Progress{Stage: "done", Final: final}
 	}()

@@ -42,7 +42,7 @@ diff --git a/c.go b/c.go
 // overlay rejects the post locally instead of letting GitHub return the
 // opaque "pull_request_review_thread.line could not be resolved" 422.
 func TestActPostCurrent_LocalPreflight_NoHunkSetsCardError(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: refreshTestOldDiff,
@@ -73,7 +73,7 @@ func TestActPostCurrent_LocalPreflight_NoHunkSetsCardError(t *testing.T) {
 // re-parse the new diff, re-anchor still-valid findings, and flag any
 // findings that no longer have a hunk on the new diff.
 func TestApplyPRRefresh_ReanchorsAndReportsStaleFindings(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "old1234", Owner: "o", Repo: "r"},
 		Diff: refreshTestNewDiff,

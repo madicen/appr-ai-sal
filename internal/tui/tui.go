@@ -954,23 +954,12 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.refreshDetailViews()
 		return m, nil
 	case "r":
-		if m.currentPR == nil {
-			return m, nil
-		}
-		ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
-		m.draft = nil
-		m.recomputeTreeRows()
-		parallelSpec, parallelRE := repoParallelExecutionFlags()
-		ro := newReviewOverlay(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE)
-		m.currentReviewOverlay = ro
-		cfg := overlay.DefaultOverlayConfig()
-		cfg.CloseOnEscape = false
-		cfg.CloseOnClickOutside = false
-		return m, tea.Batch(
-			m.overlayStack.Push(ro, cfg),
-			func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
-			startReviewCmd(ref, m.opts.AIConfig),
-		)
+		return m.startReviewOverlay(false)
+	case "ctrl+v":
+		// Peruse: same review run, read-only walkthrough. The overlay
+		// disables post/skip actions and lets the user see the final
+		// rendered summary without committing anything to GitHub.
+		return m.startReviewOverlay(true)
 	case "a":
 		return m.reopenApprovalIfPossible()
 	case "P":
@@ -1072,13 +1061,39 @@ func clampInt(v, lo, hi int) int {
 	return v
 }
 
+// startReviewOverlay constructs the review overlay, pushes it onto the
+// stack, and kicks off the runner. When peruse is true, the overlay's
+// peruse flag is set so post / skip actions become no-ops with a flash
+// hint — the user can browse findings and the rendered summary without
+// committing anything to GitHub.
+func (m *Model) startReviewOverlay(peruse bool) (tea.Model, tea.Cmd) {
+	if m.currentPR == nil {
+		return m, nil
+	}
+	ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
+	m.draft = nil
+	m.recomputeTreeRows()
+	parallelSpec, parallelRE := repoParallelExecutionFlags()
+	ro := newReviewOverlay(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig)
+	ro.peruse = peruse
+	m.currentReviewOverlay = ro
+	cfg := overlay.DefaultOverlayConfig()
+	cfg.CloseOnEscape = false
+	cfg.CloseOnClickOutside = false
+	return m, tea.Batch(
+		m.overlayStack.Push(ro, cfg),
+		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
+		startReviewCmd(ref, m.opts.AIConfig),
+	)
+}
+
 func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
 	if m.draft == nil {
 		return m, nil
 	}
 	parallelSpec, parallelRE := repoParallelExecutionFlags()
-	ro := newReviewOverlay(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE)
-	ro.adoptDraft(m.draft)
+	ro := newReviewOverlay(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig)
+	adoptCmd := ro.adoptDraft(m.draft)
 	m.currentReviewOverlay = ro
 	cfg := overlay.DefaultOverlayConfig()
 	cfg.CloseOnEscape = false
@@ -1086,6 +1101,9 @@ func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
 	cmds := []tea.Cmd{
 		m.overlayStack.Push(ro, cfg),
 		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
+	}
+	if adoptCmd != nil {
+		cmds = append(cmds, adoptCmd)
 	}
 	if fetch := ro.cmdAfterAdoptIfNeeded(); fetch != nil {
 		cmds = append(cmds, fetch)
