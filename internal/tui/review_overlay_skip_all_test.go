@@ -23,7 +23,7 @@ diff --git a/b.go b/b.go
 `
 
 func TestReviewOverlaySkipAllFindingsOpensConfirmApprove(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -60,7 +60,7 @@ func TestReviewOverlaySkipAllFindingsOpensConfirmApprove(t *testing.T) {
 }
 
 func TestReviewOverlaySkipAllWithCommentVerdictOpensConfirmApprove(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -83,7 +83,7 @@ func TestReviewOverlaySkipAllWithCommentVerdictOpensConfirmApprove(t *testing.T)
 }
 
 func TestSummaryPhaseOfferApproveWithoutSummaryNoInlineCards(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -104,7 +104,7 @@ func TestSummaryPhaseOfferApproveWithoutSummaryNoInlineCards(t *testing.T) {
 }
 
 func TestSummaryPhaseOfferApproveWithoutSummaryFalseAfterPostingInline(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -132,7 +132,7 @@ func TestSummaryPhaseOfferApproveWithoutSummaryFalseAfterPostingInline(t *testin
 }
 
 func TestSummaryPhaseOfferApproveWhenAllSkippedOrOnPR(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -152,7 +152,7 @@ func TestSummaryPhaseOfferApproveWhenAllSkippedOrOnPR(t *testing.T) {
 }
 
 func TestReviewOverlayNoFindingsRoutesToConfirmApprove(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -178,7 +178,7 @@ func TestReviewOverlayNoFindingsRoutesToConfirmApprove(t *testing.T) {
 }
 
 func TestReviewOverlayNoFindingsConfirmApproveSwallowsN(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -195,7 +195,7 @@ func TestReviewOverlayNoFindingsConfirmApproveSwallowsN(t *testing.T) {
 }
 
 func TestReviewOverlayNoFindingsHelpHidesCommentOnlyHint(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -214,7 +214,7 @@ func TestReviewOverlaySummaryBannerReflectsReconciledVerdict(t *testing.T) {
 	// vibe-coach said request_changes based on a single warning-severity inline
 	// finding. After the user skips it, no error/critical content remains so
 	// PostEvent reconciles to COMMENT — and the summary banner should match.
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -246,7 +246,7 @@ func TestReviewOverlaySummaryBannerReflectsReconciledVerdict(t *testing.T) {
 }
 
 func TestReviewOverlayPostOneSkipRestGoesToSummary(t *testing.T) {
-	ro := newReviewOverlay(120, 44, false, false, false)
+	ro := newReviewOverlay(120, 44, false, false, false, nil)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,

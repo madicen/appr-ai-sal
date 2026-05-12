@@ -1,7 +1,11 @@
 package tui
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +16,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
 
+	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
 )
@@ -93,6 +98,12 @@ type overlayPhase int
 const (
 	phaseRunning overlayPhase = iota
 	phaseApprove
+	// phaseGeneratingSummary is a short interstitial that runs the
+	// deferred vibe-coach call against the user's final skip set before
+	// the rendered summary is shown. The runner emits
+	// Progress{Stage: "vibe-coach", Detail: "deferred"} so this phase
+	// only exists in the TUI — it sits between approve and summary.
+	phaseGeneratingSummary
 	phaseSummary
 	phaseConfirmApprove
 	phasePosted
@@ -181,13 +192,47 @@ type reviewOverlay struct {
 	// e.g. "PR head moved abc1234 → def5678; 2 finding(s) no longer anchor
 	// to a hunk on the new diff." Cleared when the user moves on.
 	refreshNote string
+
+	// aiConfig is the LLM config used to run vibe-coach lazily when the
+	// user transitions from approve → summary. Nil in test constructors;
+	// when nil, enterSummary still flips into phaseSummary directly (so
+	// existing overlay tests don't need to stub an LLM).
+	aiConfig *aiconfig.Config
+	// lastCoachHash is the hash of d.UserSkipPostKeys at the time
+	// d.VibeCoach was last generated. enterSummary uses it to decide
+	// whether to re-run vibe-coach when the user navigates back to
+	// approve, changes skips, and re-enters summary.
+	lastCoachHash string
+	// coachInFlight guards against double-issuing the vibe-coach LLM
+	// call when the user bounces between phases. enterSummary returns
+	// nil cmd when this is true.
+	coachInFlight bool
+	// coachErr is the most recent error from the deferred vibe-coach
+	// run, surfaced in the summary header so the user knows the summary
+	// they're seeing may be stale or missing fix-prompts.
+	coachErr error
+
+	// peruse is the read-only walkthrough mode (entered via ctrl+v from
+	// the PR detail view). When true, actPost* and actSkip* become no-ops
+	// and the help line says so — the user can browse findings and the
+	// rendered summary without committing anything to GitHub.
+	peruse bool
+	// peruseHint is set briefly when the user presses a disabled action
+	// key in peruse mode. Rendered in the help line for one frame as a
+	// flash response, then cleared on the next non-flash key.
+	peruseHint string
 }
 
 func zoneOverlayAgent(i int) string {
 	return fmt.Sprintf("zone:overlay:agent:%d", i)
 }
 
-func newReviewOverlay(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsParallel bool) *reviewOverlay {
+// newReviewOverlay builds a fresh review overlay. cfg is used to run
+// vibe-coach lazily on the approve→summary transition; pass nil in
+// tests that don't exercise that path (the overlay then skips the
+// deferred LLM call and lands directly in phaseSummary with whatever
+// the draft already has).
+func newReviewOverlay(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsParallel bool, cfg *aiconfig.Config) *reviewOverlay {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	ow := clamp(screenW-4, 60, 140)
@@ -219,6 +264,7 @@ func newReviewOverlay(screenW, screenH int, dryRun bool, specialistsParallel, re
 		repoExpertsParallel: repoExpertsParallel,
 		dryRun:              dryRun,
 		runStartedAt:        time.Now(),
+		aiConfig:            cfg,
 	}
 }
 
@@ -265,12 +311,19 @@ func (m *reviewOverlay) resizeFromScreen(sw, sh int) {
 // first so pendingSuppressAck can show the suppress notice; the user
 // acknowledges and walks the (possibly empty) card list before reaching
 // confirmApprove via advanceCard.
-func (m *reviewOverlay) adoptDraft(d *review.Draft) {
+// adoptDraft installs the runner's final draft, builds approval cards,
+// and routes to the appropriate first phase. Returns a tea.Cmd that
+// callers MUST include in their tea.Batch — when the post-arbiter set
+// has no cards and the verdict isn't APPROVE, the overlay needs to
+// dispatch the deferred vibe-coach call before showing the summary.
+// (Tests that ignore the return value still work because they don't
+// exercise the deferred-LLM path.)
+func (m *reviewOverlay) adoptDraft(d *review.Draft) tea.Cmd {
 	m.draft = d
 	m.approveAfterSkipDisagree = false
 	m.noFindingsApprove = false
 	if d == nil {
-		return
+		return nil
 	}
 	m.files = review.ParseDiff(d.Diff)
 	flat := d.FlatPostableFindingsForPost()
@@ -289,25 +342,40 @@ func (m *reviewOverlay) adoptDraft(d *review.Draft) {
 	}
 	m.idx = 0
 	m.existingCommentsLoading = false
+	// If the draft came back with a non-nil VibeCoach (e.g. a stub for
+	// tests, or a legacy runner that didn't defer), record its skip
+	// hash now so a same-skip-set re-entry doesn't pointlessly re-run.
+	if d.VibeCoach != nil {
+		m.lastCoachHash = skipSetHash(d.UserSkipPostKeys)
+	} else {
+		m.lastCoachHash = ""
+	}
 	switch {
 	case m.pendingSuppressAck:
-		// Show the suppress notice first; advanceCard / acknowledgement
-		// will route to confirmApprove or summary as appropriate when
-		// the (possibly empty) card walk finishes.
 		m.phase = phaseApprove
+		m.vp.GotoTop()
+		return nil
 	case d.HasNoFindings():
 		// Nothing actionable came back from any agent — go straight to a
 		// tailored APPROVE confirmation instead of the post-summary screen.
+		// No vibe-coach needed (APPROVE bodies are empty).
 		m.noFindingsApprove = true
 		m.phase = phaseConfirmApprove
+		m.vp.GotoTop()
+		return nil
 	case len(m.cards) == 0 && d.PostEvent() == "APPROVE":
 		m.phase = phaseConfirmApprove
+		m.vp.GotoTop()
+		return nil
 	case len(m.cards) == 0:
-		m.phase = phaseSummary
+		// No cards to walk → user can't change skips → vibe-coach
+		// runs against the post-arbiter set immediately on enter.
+		return m.enterSummary()
 	default:
 		m.phase = phaseApprove
+		m.vp.GotoTop()
+		return nil
 	}
-	m.vp.GotoTop()
 }
 
 func (m *reviewOverlay) cmdAfterAdoptIfNeeded() tea.Cmd {
@@ -318,7 +386,7 @@ func (m *reviewOverlay) cmdAfterAdoptIfNeeded() tea.Cmd {
 	return fetchExistingPRCommentsCmd(m.draft.Ref)
 }
 
-func (m *reviewOverlay) markCardsAlreadyOnGitHub(viewer string, existing []gh.PullReviewComment) {
+func (m *reviewOverlay) markCardsAlreadyOnGitHub(viewer string, existing []gh.PullReviewComment) tea.Cmd {
 	for i := range m.cards {
 		ff := &m.cards[i].finding
 		side := ff.Finding.Side
@@ -332,9 +400,10 @@ func (m *reviewOverlay) markCardsAlreadyOnGitHub(viewer string, existing []gh.Pu
 	}
 	m.idx = m.firstPendingCardIndex()
 	if m.idx >= len(m.cards) {
-		m.phase = phaseSummary
+		return m.enterSummary()
 	}
 	m.vp.GotoTop()
+	return nil
 }
 
 func (m *reviewOverlay) firstPendingCardIndex() int {
@@ -377,18 +446,19 @@ func (m *reviewOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildBody()
 			return m, nil
 		}
-		m.markCardsAlreadyOnGitHub(msg.Viewer, msg.Comments)
+		cmd := m.markCardsAlreadyOnGitHub(msg.Viewer, msg.Comments)
 		m.rebuildBody()
-		return m, nil
+		return m, cmd
 
 	case stagedFindingPostedMsg:
 		// Single finding succeeded — mark current as posted and advance.
+		var advCmd tea.Cmd
 		if m.phase == phaseApprove && m.idx < len(m.cards) {
 			m.cards[m.idx].state = cardPosted
-			m.advanceCard()
+			advCmd = m.advanceCard()
 		}
 		m.rebuildBody()
-		return m, nil
+		return m, advCmd
 
 	case prRefreshedMsg:
 		// User pressed R after a 422 / drift; we have a fresh PR + diff. Adopt
@@ -397,12 +467,47 @@ func (m *reviewOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyPRRefresh(msg.pr, msg.diff)
 		return m, nil
 
+	case vibeCoachDoneMsg:
+		m.coachInFlight = false
+		// If the user changed skips again between issue and completion,
+		// the current skip-hash will differ from the one this message
+		// captured. Re-issue against the new set rather than installing
+		// a stale result.
+		if m.draft == nil {
+			return m, nil
+		}
+		curHash := skipSetHash(m.draft.UserSkipPostKeys)
+		if curHash != msg.atSkipHash {
+			// Stale completion. Re-issue (enterSummary will set
+			// coachInFlight=true again).
+			return m, m.enterSummary()
+		}
+		if msg.result != nil {
+			m.draft.VibeCoach = msg.result
+			m.coachErr = msg.result.Err
+		}
+		m.lastCoachHash = curHash
+		// Verdict may have changed (e.g. user skipped the last blocker
+		// → APPROVE). Route accordingly.
+		if !m.peruse && m.draft.PostEvent() == "APPROVE" && len(m.cards) > 0 {
+			// Only auto-route to confirmApprove when there were
+			// cards (i.e. we came through phaseApprove). If we
+			// reached enterSummary from adoptDraft directly with
+			// no cards, the original adopt logic already routed
+			// us — don't override the user.
+		}
+		m.phase = phaseSummary
+		m.vp.GotoTop()
+		m.rebuildBody()
+		return m, nil
+
 	case dryRunPayloadMsg:
 		// In dry-run, both the approve flow and summary post route here.
+		var advCmd tea.Cmd
 		switch {
 		case m.phase == phaseApprove && m.idx < len(m.cards):
 			m.cards[m.idx].state = cardPosted // treat preview as accepted under dry-run
-			m.advanceCard()
+			advCmd = m.advanceCard()
 		case m.phase == phaseSummary, m.phase == phaseConfirmApprove:
 			// Mirror the real-post path: record the receipt and move to
 			// phasePosted so the user gets a "Close (enter)" hint instead of
@@ -412,13 +517,13 @@ func (m *reviewOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.phase = phasePosted
 		}
 		m.rebuildBody()
-		return m, nil
+		return m, advCmd
 
 	case spinner.TickMsg:
 		var c0, c1 tea.Cmd
 		m.sp, c0 = m.sp.Update(msg)
 		m.vp, c1 = m.vp.Update(msg)
-		if m.phase == phaseRunning {
+		if m.phase == phaseRunning || m.phase == phaseGeneratingSummary {
 			// Elapsed timers use time.Since(startedAt); refresh body each tick so they live-update.
 			m.rebuildBody()
 		}
@@ -477,10 +582,12 @@ func (m *reviewOverlay) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				if len(m.cards) == 0 || m.idx >= len(m.cards) {
 					if m.draft != nil && m.draft.PostEvent() == "APPROVE" {
 						m.phase = phaseConfirmApprove
-					} else {
-						m.phase = phaseSummary
+						m.vp.GotoTop()
+						m.rebuildBody()
+						return m, nil
 					}
-					m.vp.GotoTop()
+					cmd := m.enterSummary()
+					return m, cmd
 				}
 				m.rebuildBody()
 				return m, nil
@@ -509,12 +616,22 @@ func (m *reviewOverlay) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.actRefreshPR()
 		case "f":
 			// Finish approving early; jump to summary even with cards left.
-			m.phase = phaseSummary
-			m.rebuildBody()
-			return m, nil
+			// enterSummary handles syncing skips + dispatching the
+			// deferred vibe-coach call against the final set.
+			cmd := m.enterSummary()
+			return m, cmd
 		case "q", "esc":
 			return m, func() tea.Msg { return reviewOverlayCloseMsg{} }
 		}
+	case phaseGeneratingSummary:
+		// Refining-summary interstitial. The only escape is to abort
+		// the overlay entirely; everything else waits for the
+		// vibeCoachDoneMsg to flip into phaseSummary.
+		switch msg.String() {
+		case "q", "esc":
+			return m, func() tea.Msg { return reviewOverlayCloseMsg{} }
+		}
+		return m, nil
 	case phaseSummary:
 		switch msg.String() {
 		case "y", "Y", "enter":
@@ -525,6 +642,12 @@ func (m *reviewOverlay) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "n", "N":
+			// In peruse mode there's nothing to "skip posting" of, so
+			// just close the overlay rather than rendering a misleading
+			// "you skipped post" message.
+			if m.peruse {
+				return m, func() tea.Msg { return reviewOverlayCloseMsg{} }
+			}
 			m.summarySkip = true
 			m.phase = phasePosted
 			m.rebuildBody()
@@ -546,9 +669,8 @@ func (m *reviewOverlay) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.approveAfterSkipDisagree = false
-			m.phase = phaseSummary
-			m.rebuildBody()
-			return m, nil
+			cmd := m.enterSummary()
+			return m, cmd
 		case "r", "R":
 			return m.actRefreshPR()
 		case "esc", "q":
@@ -603,9 +725,8 @@ func (m *reviewOverlay) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m.actRefreshPR()
 			}
 			if z := zone.Get(ZoneStagedFinish); z != nil && z.InBounds(msg) {
-				m.phase = phaseSummary
-				m.rebuildBody()
-				return m, nil
+				cmd := m.enterSummary()
+				return m, cmd
 			}
 			if z := zone.Get(ZoneStagedQuit); z != nil && z.InBounds(msg) {
 				return m, func() tea.Msg { return reviewOverlayCloseMsg{} }
@@ -615,6 +736,9 @@ func (m *reviewOverlay) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m.actPostSummary()
 			}
 			if z := zone.Get(ZoneStagedSummaryNo); z != nil && z.InBounds(msg) {
+				if m.peruse {
+					return m, func() tea.Msg { return reviewOverlayCloseMsg{} }
+				}
 				m.summarySkip = true
 				m.phase = phasePosted
 				m.rebuildBody()
@@ -641,9 +765,8 @@ func (m *reviewOverlay) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if !m.noFindingsApprove {
 				if z := zone.Get(ZoneStagedSummaryNo); z != nil && z.InBounds(msg) {
 					m.approveAfterSkipDisagree = false
-					m.phase = phaseSummary
-					m.rebuildBody()
-					return m, nil
+					cmd := m.enterSummary()
+					return m, cmd
 				}
 			}
 			if z := zone.Get(ZoneStagedRefresh); z != nil && z.InBounds(msg) {
@@ -661,6 +784,92 @@ func (m *reviewOverlay) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.vp, cmd = m.vp.Update(msg)
 	return m, cmd
+}
+
+// vibeCoachDoneMsg is delivered when the deferred vibe-coach LLM call
+// (kicked off by enterSummary) completes. The atSkipHash captures the
+// state of d.UserSkipPostKeys when the call was issued so a stale
+// completion (user has since changed skips) doesn't overwrite a newer
+// in-flight result.
+type vibeCoachDoneMsg struct {
+	result      *review.VibeCoachResult
+	atSkipHash  string
+	requestedAt time.Time
+}
+
+// skipSetHash returns a stable hash of the user-skip set so enterSummary
+// can decide whether to re-run vibe-coach. Empty set hashes to "".
+func skipSetHash(keys map[string]struct{}) string {
+	if len(keys) == 0 {
+		return ""
+	}
+	out := make([]string, 0, len(keys))
+	for k := range keys {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	sum := sha256.Sum256([]byte(strings.Join(out, "\n")))
+	return hex.EncodeToString(sum[:])
+}
+
+// enterSummary is the canonical transition into phaseSummary. It syncs
+// the user's skips onto the draft, then either:
+//
+//   - lands directly in phaseSummary when no LLM refresh is needed
+//     (no aiConfig, identical skip set as last run, or peruse mode
+//     with an already-fresh draft), or
+//   - sets phaseGeneratingSummary and returns a tea.Cmd that runs
+//     vibe-coach against the final finding set off the UI thread.
+//
+// Callers should include the returned cmd in their tea.Batch. Safe to
+// call repeatedly — coachInFlight guards against double-issue.
+func (m *reviewOverlay) enterSummary() tea.Cmd {
+	m.syncUserSkipsToDraft()
+	hash := ""
+	if m.draft != nil {
+		hash = skipSetHash(m.draft.UserSkipPostKeys)
+	}
+	// If vibe-coach is already current for this skip set, just flip
+	// the phase and let the user see the cached summary. This is the
+	// common case on re-entry (user backs out, doesn't change skips,
+	// re-enters).
+	if m.draft != nil && m.draft.VibeCoach != nil && hash == m.lastCoachHash && m.coachErr == nil {
+		m.phase = phaseSummary
+		m.vp.GotoTop()
+		m.rebuildBody()
+		return nil
+	}
+	// No AI config (tests / dev) → just show the summary with whatever
+	// is on the draft. Production always passes a config.
+	if m.aiConfig == nil || m.draft == nil {
+		m.phase = phaseSummary
+		m.vp.GotoTop()
+		m.rebuildBody()
+		return nil
+	}
+	// Already running a vibe-coach call → don't issue a second one.
+	if m.coachInFlight {
+		m.phase = phaseGeneratingSummary
+		m.rebuildBody()
+		return nil
+	}
+	m.coachInFlight = true
+	m.coachErr = nil
+	m.phase = phaseGeneratingSummary
+	m.vp.GotoTop()
+	m.rebuildBody()
+	return runVibeCoachCmd(m.draft, m.aiConfig, hash)
+}
+
+// runVibeCoachCmd kicks off vibe-coach against the draft's post-skip
+// finding set on a background goroutine. The atSkipHash is echoed back
+// in the done-msg so the receiver can drop stale results.
+func runVibeCoachCmd(d *review.Draft, cfg *aiconfig.Config, atSkipHash string) tea.Cmd {
+	requestedAt := time.Now()
+	return func() tea.Msg {
+		res := review.RunVibeCoachForDraft(context.Background(), cfg, d)
+		return vibeCoachDoneMsg{result: res, atSkipHash: atSkipHash, requestedAt: requestedAt}
+	}
 }
 
 // syncUserSkipsToDraft copies skipped approval-card findings onto the draft so
@@ -682,41 +891,66 @@ func (m *reviewOverlay) syncUserSkipsToDraft() {
 	}
 }
 
-func (m *reviewOverlay) advanceCard() {
+// advanceCard moves to the next pending card. When the cards are
+// exhausted it transitions into the next phase (confirmApprove or, via
+// enterSummary, the deferred vibe-coach + summary path). Returns the
+// tea.Cmd that callers must include in their batch so the deferred
+// vibe-coach LLM call gets dispatched.
+//
+// Note: PostEvent() may currently return a stale verdict (vibe-coach
+// hasn't re-run yet against the final skip set). That's fine — the
+// confirmApprove vs summary decision is conservative: if the pre-skip
+// verdict was APPROVE, the user wanted approval and the post-skip set
+// can only have shrunk, so APPROVE is still safe. If it was anything
+// else, we route through summary, where the vibeCoachDoneMsg handler
+// can re-evaluate.
+func (m *reviewOverlay) advanceCard() tea.Cmd {
 	if m.idx < len(m.cards) {
 		m.idx++
 	}
 	if m.idx >= len(m.cards) {
-		// All inline findings handled.
 		_, posted, skipped := m.tallyCardKinds()
 		// User skipped every suggestion (posted no inline comments) but the AI
 		// did not recommend approve — treat as disagreeing with the objections
 		// and offer GitHub APPROVE before the long summary path.
 		skipDisagree := m.draft != nil && m.draft.PostEvent() != "APPROVE" && posted == 0 && skipped > 0
+		// Peruse mode never offers approval shortcuts — we only show
+		// the rendered summary so the user can read it.
+		if m.peruse {
+			skipDisagree = false
+		}
 		m.approveAfterSkipDisagree = skipDisagree
 		switch {
 		case skipDisagree:
 			m.phase = phaseConfirmApprove
-		case m.draft != nil && m.draft.PostEvent() == "APPROVE":
+			m.vp.GotoTop()
+			return nil
+		case !m.peruse && m.draft != nil && m.draft.PostEvent() == "APPROVE":
 			m.approveAfterSkipDisagree = false
 			m.phase = phaseConfirmApprove
+			m.vp.GotoTop()
+			return nil
 		default:
 			m.approveAfterSkipDisagree = false
-			m.phase = phaseSummary
+			return m.enterSummary()
 		}
 	}
 	m.vp.GotoTop()
+	return nil
 }
 
 func (m *reviewOverlay) actPostCurrent() (tea.Model, tea.Cmd) {
+	if m.peruse {
+		return m.flashPeruse("peruse mode — no posting; use ←/→ to navigate, f to jump to summary, q to exit")
+	}
 	if m.existingCommentsLoading || m.idx >= len(m.cards) || m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
 	cur := &m.cards[m.idx]
 	if cur.state == cardAlreadyOnPR {
-		m.advanceCard()
+		advCmd := m.advanceCard()
 		m.rebuildBody()
-		return m, nil
+		return m, advCmd
 	}
 	// Local pre-flight: if we couldn't anchor this finding to any hunk in the
 	// parsed diff, GitHub's reviews/comments endpoints will reject it with
@@ -821,18 +1055,21 @@ func shortSHA(s string) string {
 }
 
 func (m *reviewOverlay) actSkipCurrent() (tea.Model, tea.Cmd) {
+	if m.peruse {
+		return m.flashPeruse("peruse mode — no skipping; use ←/→ to navigate, f to jump to summary, q to exit")
+	}
 	if m.idx >= len(m.cards) {
 		return m, nil
 	}
 	if m.cards[m.idx].state == cardAlreadyOnPR {
-		m.advanceCard()
+		advCmd := m.advanceCard()
 		m.rebuildBody()
-		return m, nil
+		return m, advCmd
 	}
 	m.cards[m.idx].state = cardSkipped
-	m.advanceCard()
+	advCmd := m.advanceCard()
 	m.rebuildBody()
-	return m, nil
+	return m, advCmd
 }
 
 func (m *reviewOverlay) actNext() (tea.Model, tea.Cmd) {
@@ -854,6 +1091,9 @@ func (m *reviewOverlay) actPrev() (tea.Model, tea.Cmd) {
 }
 
 func (m *reviewOverlay) actPostSummary() (tea.Model, tea.Cmd) {
+	if m.peruse {
+		return m.flashPeruse("peruse mode — no posting; q to exit without sending anything")
+	}
 	if m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
@@ -867,10 +1107,23 @@ func (m *reviewOverlay) actPostSummary() (tea.Model, tea.Cmd) {
 // actPostApprove posts a GitHub review with event=APPROVE and an empty body.
 // Reachable only from phaseConfirmApprove (verdict=approve, user clicks Approve).
 func (m *reviewOverlay) actPostApprove() (tea.Model, tea.Cmd) {
+	if m.peruse {
+		return m.flashPeruse("peruse mode — no approving; q to exit without sending anything")
+	}
 	if m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
 	return m, postReviewWithVerdictCmd(m.draft.Ref, m.draft, m.dryRun, "APPROVE")
+}
+
+// flashPeruse records a one-frame help-line hint to surface why an
+// action key was ignored in peruse mode, then triggers a rebuild so
+// the hint is visible. Returns the no-op (m, nil) tuple every caller
+// uses, so it's an inline-friendly bail-out.
+func (m *reviewOverlay) flashPeruse(hint string) (tea.Model, tea.Cmd) {
+	m.peruseHint = hint
+	m.rebuildBody()
+	return m, nil
 }
 
 // summaryPhaseOfferApproveWithoutSummary reports whether we should offer GitHub
@@ -879,6 +1132,11 @@ func (m *reviewOverlay) actPostApprove() (tea.Model, tea.Cmd) {
 // e.g. the user skipped every suggestion, had no postable inlines, or only
 // findings already on the PR.
 func (m *reviewOverlay) summaryPhaseOfferApproveWithoutSummary() bool {
+	if m.peruse {
+		// Peruse never offers approval shortcuts — the whole point is
+		// "look without committing".
+		return false
+	}
 	if m.draft == nil || m.draft.PR == nil {
 		return false
 	}
@@ -939,8 +1197,9 @@ func (m *reviewOverlay) mergeProgress(p review.Progress) tea.Cmd {
 		// Root model receives the same progress message and sets m.draft. The
 		// overlay also adopts it directly so we can compute approval cards.
 		if p.Final != nil {
-			m.adoptDraft(p.Final)
-			return m.cmdAfterAdoptIfNeeded()
+			adoptCmd := m.adoptDraft(p.Final)
+			fetchCmd := m.cmdAfterAdoptIfNeeded()
+			return tea.Batch(adoptCmd, fetchCmd)
 		}
 	}
 	return nil
@@ -973,6 +1232,18 @@ func (m *reviewOverlay) applyAgentDetail(name, detail string, p review.Progress)
 		row.startedAt = now
 		row.finishedAt = now
 		row.err = nil
+	case detail == "deferred":
+		// Vibe-coach is run lazily at the approve→summary transition
+		// (see enterSummary). The runner emits this marker so the row
+		// shows a "deferred" pill instead of staying on pending — making
+		// it clear to the user that nothing failed; we're just waiting
+		// to see their final skip decisions before synthesizing prompts.
+		now := time.Now()
+		row.phase = oaSkipped
+		row.startedAt = now
+		row.finishedAt = now
+		row.err = nil
+		row.summary = "deferred until approve → summary (runs against your final skip set)"
 	case detail == "done":
 		row.finishedAt = time.Now()
 		row.expanded = false
@@ -1023,6 +1294,8 @@ func (m *reviewOverlay) rebuildBody() {
 		m.vp.SetContent(enforceMaxLineWidth(m.renderRunningBody(), m.vp.Width))
 	case phaseApprove:
 		m.vp.SetContent(enforceMaxLineWidth(m.renderApprovalBody(), m.vp.Width))
+	case phaseGeneratingSummary:
+		m.vp.SetContent(enforceMaxLineWidth(m.renderGeneratingSummaryBody(), m.vp.Width))
 	case phaseSummary:
 		m.vp.SetContent(enforceMaxLineWidth(m.renderSummaryBody(), m.vp.Width))
 	case phaseConfirmApprove:
@@ -1030,6 +1303,30 @@ func (m *reviewOverlay) rebuildBody() {
 	case phasePosted:
 		m.vp.SetContent(enforceMaxLineWidth(m.renderPostedBody(), m.vp.Width))
 	}
+}
+
+// renderGeneratingSummaryBody is the brief interstitial shown while the
+// deferred vibe-coach call is in flight. Keeps the user oriented (they
+// just pressed "finish" or the last card just resolved) and explains
+// why the summary isn't instant.
+func (m *reviewOverlay) renderGeneratingSummaryBody() string {
+	var b strings.Builder
+	b.WriteString(boldStyle.Render("Refining summary with your final selections…"))
+	b.WriteString("\n\n")
+	b.WriteString(dimStyle.Render("Vibe-coach is re-reading the findings you kept and writing fix-prompts that only cover those. This usually takes a few seconds."))
+	b.WriteString("\n\n")
+	if m.coachErr != nil {
+		b.WriteString(errStyle.Render("Previous run failed: " + m.coachErr.Error()))
+		b.WriteString("\n\n")
+	}
+	_, posted, skipped := m.tallyCardKinds()
+	total := len(m.cards)
+	if total > 0 {
+		kept := total - skipped
+		b.WriteString(dimStyle.Render(fmt.Sprintf("Findings: %d kept · %d skipped · %d posted of %d card(s)", kept, skipped, posted, total)))
+		b.WriteString("\n")
+	}
+	return b.String()
 }
 
 func (m *reviewOverlay) renderRunningBody() string {
@@ -1827,40 +2124,74 @@ func (m *reviewOverlay) View() string {
 }
 
 func (m *reviewOverlay) titleForPhase() string {
+	prefix := ""
+	if m.peruse {
+		prefix = "PERUSE · "
+	}
 	switch m.phase {
 	case phaseRunning:
-		return "Review in progress"
+		return prefix + "Review in progress"
 	case phaseApprove:
-		return "Review · approve findings"
+		if m.peruse {
+			return prefix + "Browse findings"
+		}
+		return prefix + "Review · approve findings"
+	case phaseGeneratingSummary:
+		return prefix + "Review · refining summary"
 	case phaseSummary:
-		return "Review · post summary"
+		if m.peruse {
+			return prefix + "Final summary preview"
+		}
+		return prefix + "Review · post summary"
 	case phaseConfirmApprove:
-		return "Review · approve PR"
+		return prefix + "Review · approve PR"
 	case phasePosted:
-		return "Review complete"
+		return prefix + "Review complete"
 	}
-	return "Review"
+	return prefix + "Review"
 }
 
 func (m *reviewOverlay) spinnerForPhase() string {
-	if m.phase == phaseRunning {
+	if m.phase == phaseRunning || m.phase == phaseGeneratingSummary {
 		return m.sp.View()
 	}
 	return ""
 }
 
 func (m *reviewOverlay) helpForPhase() string {
+	// Peruse-mode flash takes priority for one frame so the user sees
+	// immediate feedback when they hit a disabled action key.
+	if m.peruseHint != "" {
+		hint := m.peruseHint
+		m.peruseHint = ""
+		return hint
+	}
+	peruseSuffix := ""
+	if m.peruse {
+		peruseSuffix = " · (peruse mode · no posting)"
+	}
 	switch m.phase {
 	case phaseRunning:
-		return "j/k focus row · space expand · q abort · ↑/↓ pgdn scroll · wheel"
+		return "j/k focus row · space expand · q abort · ↑/↓ pgdn scroll · wheel" + peruseSuffix
 	case phaseApprove:
+		if m.peruse {
+			return "←/→ prev/next · f jump to summary · R refresh PR · q exit · ↑/↓ scroll · wheel" + peruseSuffix
+		}
 		return "y post · n/s skip · ←/→ prev/next · R refresh PR · f skip-rest · q abort · wheel"
+	case phaseGeneratingSummary:
+		return "refining summary with your final selections… · q abort"
 	case phaseSummary:
+		if m.peruse {
+			return "↑/↓ scroll preview · R refresh PR · q exit" + peruseSuffix
+		}
 		if m.summaryPhaseOfferApproveWithoutSummary() {
 			return "y post summary · a approve without summary · R refresh PR · n skip · q abort · ↑/↓ scroll · wheel"
 		}
 		return "y post summary · R refresh PR · n skip · q abort · ↑/↓ scroll preview · wheel"
 	case phaseConfirmApprove:
+		if m.peruse {
+			return "↑/↓ scroll · q exit" + peruseSuffix
+		}
 		if m.noFindingsApprove {
 			return "y APPROVE · R refresh PR · q abort"
 		}
