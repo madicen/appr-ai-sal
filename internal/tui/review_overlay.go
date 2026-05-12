@@ -1169,6 +1169,11 @@ func formatPriorActivityBanner(p gh.PriorAprrAISalActivity) string {
 // short multi-line block we put under the row when the user expands it.
 // Returns "" when the arbiter ran but had nothing to say — the row then
 // renders without an expand chevron (see hasExpandableContent).
+//
+// The output is shaped as Markdown (paragraphs separated by blank lines,
+// `**bold**` labels, `- ` bullet list for the rationale) so the agent-row
+// renderer can run it through glamour and the reviewer sees rendered
+// prose instead of structured-looking literal text.
 func formatArbiterRowSummary(arb *review.RepoArbiterResult) string {
 	if arb == nil {
 		return ""
@@ -1176,35 +1181,35 @@ func formatArbiterRowSummary(arb *review.RepoArbiterResult) string {
 	var b strings.Builder
 	if s := strings.TrimSpace(arb.UserSummary); s != "" {
 		b.WriteString(s)
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 	}
 	if n := len(arb.Suppressed); n > 0 {
-		fmt.Fprintf(&b, "Suppressed %d finding(s) as out-of-norm for this repo.\n", n)
+		fmt.Fprintf(&b, "Suppressed %d finding(s) as out-of-norm for this repo.\n\n", n)
 	}
 	if n := len(arb.Demoted); n > 0 {
-		fmt.Fprintf(&b, "Demoted %d finding(s) one severity rank.\n", n)
+		fmt.Fprintf(&b, "Demoted %d finding(s) one severity rank.\n\n", n)
 	}
 	if v := strings.TrimSpace(arb.EffectiveVerdict); v != "" {
 		if vo := strings.TrimSpace(arb.VerdictOverride); vo != "" {
-			fmt.Fprintf(&b, "Verdict override: %s.\n", vo)
+			fmt.Fprintf(&b, "**Verdict override:** %s.\n\n", vo)
 		} else {
-			fmt.Fprintf(&b, "Verdict (carried from vibe-coach): %s.\n", v)
+			fmt.Fprintf(&b, "**Verdict** (carried from vibe-coach): %s.\n\n", v)
 		}
 	}
 	if n := len(arb.DroppedSuppressions); n > 0 {
-		fmt.Fprintf(&b, "Dropped %d invalid suppression(s).\n", n)
+		fmt.Fprintf(&b, "Dropped %d invalid suppression(s).\n\n", n)
 	}
 	if n := len(arb.DroppedDemotions); n > 0 {
-		fmt.Fprintf(&b, "Dropped %d invalid demotion(s).\n", n)
+		fmt.Fprintf(&b, "Dropped %d invalid demotion(s).\n\n", n)
 	}
 	if len(arb.RationaleBullets) > 0 {
-		b.WriteString("Rationale:\n")
+		b.WriteString("**Rationale:**\n\n")
 		for _, r := range arb.RationaleBullets {
 			r = strings.TrimSpace(r)
 			if r == "" {
 				continue
 			}
-			fmt.Fprintf(&b, "• %s\n", r)
+			fmt.Fprintf(&b, "- %s\n", r)
 		}
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -1285,10 +1290,14 @@ func (m *reviewOverlay) renderAgentRow(i int, a *overlayAgentRow, rowW, bodyInde
 				label = "Vibe coach summary"
 			}
 			b.WriteString(dimStyle.Render("    "+label) + "\n")
-			wrapped := wrapForViewport(strings.TrimSpace(a.summary), bodyIndentW)
-			for _, ln := range strings.Split(wrapped, "\n") {
-				b.WriteString("    " + ln + "\n")
-			}
+			// Agent summaries are model-produced markdown (or, for the
+			// arbiter row, a markdown-shaped recap built from the result
+			// struct). Render through glamour so headings, lists, and
+			// fenced code blocks show as rendered text instead of raw
+			// `**bold**` / `# heading` markup. extraIndent=2 pairs with
+			// glamour's built-in 2-cell margin to land the body at the
+			// same column as the "    Label" line above it.
+			b.WriteString(renderMarkdownIndented(strings.TrimSpace(a.summary), bodyIndentW+4, 2) + "\n")
 		}
 	}
 	return b.String()
@@ -1487,7 +1496,9 @@ func (m *reviewOverlay) renderApprovalBody() string {
 			b.WriteString(dimStyle.Render(fmt.Sprintf("Convention witness classified %d testing/docs finding(s) against the repo's evidence.", len(m.draft.ConventionWitness))) + "\n\n")
 		}
 		if ar := m.draft.RepoArbiter; ar != nil && strings.TrimSpace(ar.UserSummary) != "" {
-			b.WriteString(wrapForViewport(strings.TrimSpace(ar.UserSummary), rowW) + "\n\n")
+			// Arbiter UserSummary is LLM-produced markdown; render it
+			// so headings / lists / emphasis look like prose, not source.
+			b.WriteString(renderMarkdownIndented(strings.TrimSpace(ar.UserSummary), rowW, 0) + "\n\n")
 		}
 		b.WriteString(boldStyle.Render("Press Enter or Space to acknowledge and continue") + " · q abort\n")
 		return b.String()
@@ -1540,10 +1551,14 @@ func (m *reviewOverlay) renderApprovalBody() string {
 
 	// Comment + suggestion preview
 	b.WriteString(dimStyle.Render("Comment GitHub will post") + "\n")
+	// The preview body is exactly what GitHub will receive — markdown
+	// with an `aiCommentLead` paragraph and (optionally) a fenced
+	// ```suggestion block. Run through glamour so the reviewer sees the
+	// rendered shape (headings, lists, code-block padding) rather than
+	// the literal Markdown source. 2-cell extra indent keeps the body
+	// visually nested under the section header.
 	preview := review.ReviewCommentBody(cur.finding.Specialist, cur.finding.Finding)
-	for _, line := range strings.Split(wrapForViewport(preview, rowW-2), "\n") {
-		b.WriteString("  " + line + "\n")
-	}
+	b.WriteString(renderMarkdownIndented(preview, rowW, 2) + "\n")
 	if reason := strings.TrimSpace(cur.finding.Finding.SuggestionStrippedReason); reason != "" {
 		b.WriteString("  " + dimStyle.Render("(suggestion stripped: "+reason+")") + "\n")
 	}
@@ -1678,12 +1693,12 @@ func (m *reviewOverlay) renderSummaryBody() string {
 	body := m.draft.RenderBody()
 	b.WriteString(dimStyle.Render("Markdown body GitHub will publish (scroll with wheel or ↑/↓):") + "\n")
 	b.WriteString("\n")
-	lines := strings.Split(body, "\n")
-	for _, line := range lines {
-		for _, wl := range strings.Split(wrapForViewport(line, rowW-2), "\n") {
-			b.WriteString("  " + wl + "\n")
-		}
-	}
+	// The body is markdown that's about to be POSTed to GitHub as-is; render
+	// it through glamour so the reviewer previews approximately what the PR
+	// author will see (headings, lists, fenced code blocks) rather than the
+	// raw source. The 2-column extra indent keeps it visually grouped under
+	// the header line above.
+	b.WriteString(renderMarkdownIndented(body, rowW, 2) + "\n")
 
 	if m.summaryDryMsg != "" {
 		b.WriteString("\n" + okStyle.Render("✓ "+m.summaryDryMsg) + "\n")

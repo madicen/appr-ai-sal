@@ -1,0 +1,294 @@
+package gh
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+	"strings"
+	"time"
+)
+
+// Review states GitHub assigns to a submitted review. We only branch on a
+// small subset of these; the rest pass through as-is in the raw payload.
+const (
+	ReviewStateApproved         = "APPROVED"
+	ReviewStateChangesRequested = "CHANGES_REQUESTED"
+	ReviewStateCommented        = "COMMENTED"
+	ReviewStateDismissed        = "DISMISSED"
+	ReviewStatePending          = "PENDING"
+)
+
+// ReviewDecision values GitHub returns for a PR's overall review decision.
+// Empty string means "not configured" (no branch protection requiring reviews).
+const (
+	ReviewDecisionApproved         = "APPROVED"
+	ReviewDecisionChangesRequested = "CHANGES_REQUESTED"
+	ReviewDecisionReviewRequired   = "REVIEW_REQUIRED"
+)
+
+// LatestReview is a per-author summary of the most recent submitted review
+// on a PR. We only need who reviewed and what state they left it in for the
+// derived flags; richer fields stay on PullReviewRow which is fetched
+// separately for the full review-history digest.
+type LatestReview struct {
+	AuthorLogin string
+	State       string
+}
+
+// ReviewRequest is a still-pending review request on a PR. The requested
+// reviewer is either a user (Login set) or a team (TeamSlug set).
+type ReviewRequest struct {
+	Login    string // set when requested reviewer is a user
+	TeamSlug string // set when requested reviewer is a team (owner/slug or just slug)
+}
+
+// IsUser reports whether the request targets an individual user (not a team).
+func (r ReviewRequest) IsUser() bool { return r.Login != "" }
+
+// DeriveReviewState computes the per-viewer flags we surface in the UI from
+// the raw review payload. viewer is the gh login of the authenticated user;
+// when empty the viewer-scoped flags are conservatively false (we can still
+// report PR-wide signals like Approvals / ChangesRequested).
+func DeriveReviewState(viewer string, decision string, latest []LatestReview, requests []ReviewRequest) ReviewState {
+	out := ReviewState{
+		Decision: strings.TrimSpace(decision),
+	}
+	viewer = strings.TrimSpace(viewer)
+	for _, lr := range latest {
+		switch lr.State {
+		case ReviewStateApproved:
+			out.Approvals++
+		case ReviewStateChangesRequested:
+			out.ChangesRequested++
+		}
+		if viewer != "" && strings.EqualFold(strings.TrimSpace(lr.AuthorLogin), viewer) {
+			out.ViewerHasReviewed = true
+			if lr.State == ReviewStateApproved {
+				out.ViewerHasApproved = true
+			}
+		}
+	}
+	if viewer != "" {
+		for _, rr := range requests {
+			if rr.IsUser() && strings.EqualFold(strings.TrimSpace(rr.Login), viewer) {
+				out.ViewerStillRequested = true
+				break
+			}
+		}
+	}
+	return out
+}
+
+// ReviewState bundles the PR-level review summary and viewer-relative flags
+// that the UI renders as badges. The fields are designed to degrade gracefully
+// when we couldn't fetch one piece of data — zero values render as "nothing
+// to report" rather than as a misleading state.
+type ReviewState struct {
+	// Decision is GitHub's overall reviewDecision: APPROVED, CHANGES_REQUESTED,
+	// REVIEW_REQUIRED, or empty (no branch protection / not applicable).
+	Decision string
+	// Approvals counts users whose most recent submitted review is APPROVED.
+	Approvals int
+	// ChangesRequested counts users whose most recent submitted review is
+	// CHANGES_REQUESTED. (A subsequent APPROVED review from the same user
+	// supersedes their changes-requested, so we trust GitHub's "latest" view.)
+	ChangesRequested int
+	// ViewerHasReviewed reports whether the viewer has submitted any review
+	// (regardless of state). Used to mute the "needs you" hint after the
+	// user has already commented / approved.
+	ViewerHasReviewed bool
+	// ViewerHasApproved reports whether the viewer's latest review is APPROVED.
+	ViewerHasApproved bool
+	// ViewerStillRequested reports whether the viewer's login appears in the
+	// PR's reviewRequests (i.e. an individual request still pending for them,
+	// not just a team request).
+	ViewerStillRequested bool
+}
+
+// NeedsViewerReview is the single high-signal flag the UI uses to put a PR
+// at the top of the list and bold the "needs you" badge: the PR isn't yet
+// approved overall, and the viewer hasn't reviewed it.
+//
+// The PR is in our queue because gh search matched review-requested:@me
+// (directly or via a team), so we treat "not yet approved and you haven't
+// weighed in" as "your review can unblock merge". When ViewerStillRequested
+// is true we add visual weight in the renderer, but it isn't required here
+// — team-only requests still count.
+func (s ReviewState) NeedsViewerReview() bool {
+	if s.ViewerHasReviewed {
+		return false
+	}
+	if strings.EqualFold(s.Decision, ReviewDecisionApproved) {
+		return false
+	}
+	return true
+}
+
+// graphqlReviewQuery is the single round-trip we use to list review-requested
+// PRs along with the review state we need to render badges and sort by
+// actionability. Compared to the previous REST search + per-PR
+// requested_reviewers fan-out, this drops N+1 calls and adds the review
+// decision / per-author state in one go.
+const graphqlReviewQuery = `query($q: String!) {
+  viewer { login }
+  search(query: $q, type: ISSUE, first: 50) {
+    nodes {
+      ... on PullRequest {
+        number
+        title
+        url
+        body
+        isDraft
+        createdAt
+        updatedAt
+        author { login }
+        repository { nameWithOwner }
+        reviewDecision
+        latestReviews(first: 50) {
+          nodes {
+            author { login }
+            state
+          }
+        }
+        reviewRequests(first: 30) {
+          nodes {
+            requestedReviewer {
+              __typename
+              ... on User { login }
+              ... on Team { slug }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+// graphqlReviewResponse mirrors the JSON shape of graphqlReviewQuery's output.
+// Exported only inside the package; callers consume parseReviewSearchResponse.
+type graphqlReviewResponse struct {
+	Data struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+		Search struct {
+			Nodes []graphqlPRNode `json:"nodes"`
+		} `json:"search"`
+	} `json:"data"`
+	Errors []struct {
+		Message string `json:"message"`
+	} `json:"errors"`
+}
+
+type graphqlPRNode struct {
+	Number     int    `json:"number"`
+	Title      string `json:"title"`
+	URL        string `json:"url"`
+	Body       string `json:"body"`
+	IsDraft    bool   `json:"isDraft"`
+	CreatedAt  string `json:"createdAt"`
+	UpdatedAt  string `json:"updatedAt"`
+	Author     struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	Repository struct {
+		NameWithOwner string `json:"nameWithOwner"`
+	} `json:"repository"`
+	ReviewDecision string `json:"reviewDecision"`
+	LatestReviews  struct {
+		Nodes []struct {
+			Author struct {
+				Login string `json:"login"`
+			} `json:"author"`
+			State string `json:"state"`
+		} `json:"nodes"`
+	} `json:"latestReviews"`
+	ReviewRequests struct {
+		Nodes []struct {
+			RequestedReviewer struct {
+				Typename string `json:"__typename"`
+				Login    string `json:"login"`
+				Slug     string `json:"slug"`
+			} `json:"requestedReviewer"`
+		} `json:"nodes"`
+	} `json:"reviewRequests"`
+}
+
+// parseReviewSearchResponse turns the GraphQL payload into the PR list plus
+// the viewer login. It is the seam used by tests so we can exercise edge
+// cases (empty arrays, missing author, team-only requests) without hitting
+// the gh CLI.
+func parseReviewSearchResponse(raw []byte) ([]PR, string, error) {
+	var resp graphqlReviewResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, "", fmt.Errorf("parse graphql search: %w", err)
+	}
+	if len(resp.Errors) > 0 {
+		msgs := make([]string, 0, len(resp.Errors))
+		for _, e := range resp.Errors {
+			msgs = append(msgs, e.Message)
+		}
+		return nil, "", fmt.Errorf("graphql search: %s", strings.Join(msgs, "; "))
+	}
+	viewer := strings.TrimSpace(resp.Data.Viewer.Login)
+	prs := make([]PR, 0, len(resp.Data.Search.Nodes))
+	for _, n := range resp.Data.Search.Nodes {
+		owner, repoName := splitRepo(n.Repository.NameWithOwner)
+		createdAt, _ := time.Parse(time.RFC3339, n.CreatedAt)
+		updatedAt, _ := time.Parse(time.RFC3339, n.UpdatedAt)
+		latest := make([]LatestReview, 0, len(n.LatestReviews.Nodes))
+		for _, lr := range n.LatestReviews.Nodes {
+			latest = append(latest, LatestReview{
+				AuthorLogin: lr.Author.Login,
+				State:       lr.State,
+			})
+		}
+		reqs := make([]ReviewRequest, 0, len(n.ReviewRequests.Nodes))
+		for _, rr := range n.ReviewRequests.Nodes {
+			switch rr.RequestedReviewer.Typename {
+			case "User":
+				reqs = append(reqs, ReviewRequest{Login: rr.RequestedReviewer.Login})
+			case "Team":
+				reqs = append(reqs, ReviewRequest{TeamSlug: rr.RequestedReviewer.Slug})
+			}
+		}
+		pr := PR{
+			Number:      n.Number,
+			Title:       n.Title,
+			URL:         n.URL,
+			Body:        n.Body,
+			Repository:  n.Repository.NameWithOwner,
+			Owner:       owner,
+			Repo:        repoName,
+			Author:      n.Author.Login,
+			IsDraft:     n.IsDraft,
+			CreatedAt:   createdAt,
+			UpdatedAt:   updatedAt,
+			ReviewState: DeriveReviewState(viewer, n.ReviewDecision, latest, reqs),
+		}
+		prs = append(prs, pr)
+	}
+	return prs, viewer, nil
+}
+
+// runGraphQL invokes `gh api graphql` with the supplied query and variable
+// pairs (each of form name=value, gh's -F syntax). It's a thin wrapper over
+// exec.Command so tests can swap the executor with a fake.
+//
+// Kept as a var so tests can override.
+var runGraphQL = func(ctx context.Context, query string, vars map[string]string) ([]byte, error) {
+	args := []string{"api", "graphql", "-f", "query=" + query}
+	for k, v := range vars {
+		args = append(args, "-F", k+"="+v)
+	}
+	cmd := exec.CommandContext(ctx, "gh", args...)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return nil, fmt.Errorf("gh api graphql: %s", strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}

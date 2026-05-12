@@ -57,6 +57,14 @@ type Finding struct {
 	// Suggestion is optional: only GitHub-ready replacement text for ```suggestion
 	// (see SuggestionPostsToGitHub). Narrative belongs in Comment alone.
 	Suggestion string `json:"suggestion,omitempty"`
+	// AnchorExcerpt is the model's verbatim copy of the post-image line at
+	// Path:Line. The reviewOutputContract asks specialists to include it on
+	// every inline finding so we can deterministically check that the model
+	// anchored where it thinks it did. Empty when the model omitted the
+	// field (older runs / backends that strip unknown keys); the
+	// validateAnchorExcerpt gate is silent in that case. Never posted to
+	// GitHub — diagnostic field only.
+	AnchorExcerpt string `json:"anchor_excerpt,omitempty"`
 	// SuggestionStrippedReason is set when validateAndPruneSuggestions cleared
 	// a non-empty Suggestion because applying it would clearly break the file
 	// (no-op replace, duplicates a nearby line, anchor-vs-comment mismatch).

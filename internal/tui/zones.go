@@ -42,6 +42,11 @@ const (
 	// that opens the repo-agents tab focused on the current PR's repo and
 	// immediately kicks off "Regenerate all" for that repo.
 	ZoneBuildRepoAgents = "zone:detail:build-repo-agents"
+	// ZoneBuildLangAgents is the clickable chip in the PR detail mini-header
+	// that opens the lang-agents tab scoped to the PR's touched languages,
+	// the twin of ZoneBuildRepoAgents. Sits beside it so the reviewer can
+	// see both "repo context" and "language conventions" health at a glance.
+	ZoneBuildLangAgents = "zone:detail:build-lang-agents"
 	// ZoneOpenInBrowser is the clickable chip in the PR detail mini-header
 	// that opens the current PR's GitHub URL in the user's default browser.
 	ZoneOpenInBrowser = "zone:detail:open-in-browser"

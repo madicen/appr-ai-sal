@@ -9,6 +9,14 @@ You are NOT reviewing a diff. Describe how this repo actually tests code
 today, grounded only in the inputs (convention files plus optional review
 history).
 
+A **language brief** is injected BEFORE your brief and already covers the
+language's universal testing-layout conventions (e.g. "Go tests live in
+`_test.go` files in the same package", "Python tests use pytest and live in
+`tests/`", "TypeScript tests are `*.test.ts`"). Do not restate that. Your
+job is to capture **policy** — which kinds of changes get tests in this
+repo, what the team has historically merged without tests, and any
+repo-specific testing infrastructure (golden files, fixtures, harnesses).
+
 ## What to cover
 
 - **Test framework / runner.** What the repo uses (go `testing`, jest, vitest,
