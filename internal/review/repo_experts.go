@@ -121,10 +121,18 @@ func parseRepoArbiterJSON(s string) (*repoArbiterJSON, error) {
 //
 // Hard rules (mirror the prompt):
 //   - Never suppress a security finding or any error/critical severity.
-//   - Never demote a security finding or any critical severity (error→warning
-//     is allowed; warning→info is allowed; demote of info is a no-op).
-//   - Demotion always drops exactly one rank; multi-rank or upward "demotions"
-//     are rejected into DroppedDemotions.
+//   - Never demote a security finding or any critical severity.
+//   - Demotion is STRICTLY DOWNWARD — the target severity must be lower than
+//     the current one. Upward "demotions" and same-severity no-ops are
+//     rejected into DroppedDemotions. The drop CAN span multiple ranks
+//     (e.g. error→info) when the arbiter is confident the finding is fully
+//     tolerated; the one-rank-at-a-time rule that used to live here was
+//     forcing arbiter-acknowledged errors into a halfway "warning" state
+//     that vibe-coach still treated as blocking, defeating the whole point
+//     of the demote.
+//   - When dem.To is empty the legacy one-rank-drop default kicks in
+//     (error→warning, warning→info), preserving compatibility with
+//     models that haven't been re-prompted yet.
 func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 	if ar == nil || d == nil {
 		return
@@ -187,16 +195,39 @@ func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 			ar.DroppedDemotions = append(ar.DroppedDemotions, "cannot demote critical-severity finding: "+k)
 			continue
 		}
-		next, ok := demotedSeverity(ff.Finding.Severity)
-		if !ok {
-			ar.DroppedDemotions = append(ar.DroppedDemotions, "no lower severity to demote into: "+k)
-			continue
-		}
-		// Reject demote entries whose declared "to" disagrees with the
-		// computed one-rank drop — the model tried to skip a rank.
-		if dem.To != "" && dem.To != next {
-			ar.DroppedDemotions = append(ar.DroppedDemotions, "demote must drop exactly one rank: "+k)
-			continue
+		// Resolve the target severity. An empty dem.To means "one-rank
+		// drop" for backward compatibility with models trained on the
+		// old prompt. A non-empty dem.To is honoured iff it's a known
+		// severity AND strictly lower than the current one — that's the
+		// only invariant we still enforce (no upward "demotes", no
+		// "demote to the same severity", no garbage values).
+		var next Severity
+		if dem.To == "" {
+			n, ok := demotedSeverity(ff.Finding.Severity)
+			if !ok {
+				ar.DroppedDemotions = append(ar.DroppedDemotions, "no lower severity to demote into: "+k)
+				continue
+			}
+			next = n
+		} else {
+			next = dem.To
+			if severityRank(next) == 0 {
+				ar.DroppedDemotions = append(ar.DroppedDemotions, "unknown target severity: "+k)
+				continue
+			}
+			if severityRank(next) >= severityRank(ff.Finding.Severity) {
+				ar.DroppedDemotions = append(ar.DroppedDemotions, "demote must move strictly downward: "+k)
+				continue
+			}
+			if next == SeverityCritical {
+				// Belt-and-suspenders: severityRank(critical)=4 is the top
+				// rank, so this branch is unreachable given the
+				// strictly-downward check above. Kept here so the rule
+				// "never demote *into* critical" is explicit and survives
+				// any future shuffling of severity ranks.
+				ar.DroppedDemotions = append(ar.DroppedDemotions, "cannot demote into critical: "+k)
+				continue
+			}
 		}
 		// Avoid demoting something the arbiter is also suppressing — the
 		// suppression already wins.

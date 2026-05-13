@@ -271,7 +271,7 @@ func buildVibeCoachUserPrompt(pr *gh.PR, specialists []SpecialistResult, strict 
 const reviewOutputContract = `Return your review as a single JSON object and nothing else — no prose before, no prose after, no markdown fencing. The object must conform to:
 
 {
-  "summary": "<1–3 sentences. Do NOT repeat or list findings that appear in \"findings\"; if you filed inline findings, the summary should be a single aggregate sentence or \"See inline comments on the diff.\" Avoid duplicating bullet points from findings.>",
+  "summary": "<1–3 sentences. STAY STRICTLY IN YOUR LANE — your summary must speak ONLY to your specialty as defined in the system prompt above (e.g. a security specialist's summary covers security and only security; a docs specialist's covers documentation and only documentation). DO NOT describe the PR's overall scope, recap unrelated concerns, or comment on areas owned by other specialists (test coverage, design, documentation, formatting, etc. unless that IS your specialty). If you have no findings in your specialty, say exactly that ('No <specialty> concerns in this diff' or similar) and nothing else. Do NOT repeat or list findings that appear in \"findings\"; if you filed inline findings, the summary should be a single aggregate sentence or \"See inline comments on the diff.\" Avoid duplicating bullet points from findings.>",
   "findings": [
     {
       "path": "<file path relative to the repo root, or empty string for PR-wide / general feedback>",
@@ -304,6 +304,10 @@ Every finding's "comment" MUST be concrete enough that a reviewer reading it can
    - For PR-wide entries (path "", line 0), the same bar applies: spell out the rule being violated and what should change.
 
 If you cannot meet that bar, do not file the finding.
+
+WRITING LANGUAGE (the natural language your prose is written in — NOT to be confused with the programming-language guidance further below):
+
+All natural-language prose you emit — "summary", every finding's "comment", and any English wording inside "suggestion" — MUST be written in English. The only non-English text permitted anywhere in your output is verbatim source code, identifiers, or string literals that already appear in another script in the diff (preserve those exactly when you reproduce them inside "suggestion"). NEVER mix scripts within a single sentence; an English sentence with a Chinese, Japanese, Korean, Cyrillic, Arabic, or any other non-Latin word substituted for an English word ("Consider using 加密方法 to secure the token") is a bug, not a stylistic choice. When you reach for a foreign-language term mid-sentence, replace it with its English equivalent ("an encryption method", "the algorithm", etc.).
 
 SUGGESTION CONTRACT (default to filling this — it's the most valuable part of the review):
 
@@ -437,6 +441,10 @@ Hard rules:
 - "rationale" is for the human reading the review; agent_prompt is for the AI; do not mix them.
 - Every non-empty agent_prompt must specify the change concretely (paths, identifiers, acceptance criteria) so the author's AI can act on it without further context.
 - Do not include literal fenced code blocks inside agent_prompt unless they are a patch the AI should apply verbatim.
+
+Writing language:
+
+All natural-language prose you emit — "summary", "title", "rationale", and "agent_prompt" — MUST be written in English. The only non-English text permitted is verbatim source code, identifiers, or string literals that already appear in another script in the specialist input you are summarising (preserve those exactly when you reproduce them). NEVER mix scripts within a single sentence; an English sentence with a Chinese, Japanese, Korean, Cyrillic, Arabic, or any other non-Latin word substituted for an English word is a bug, not a stylistic choice. When you reach for a foreign-language term mid-sentence, replace it with its English equivalent.
 
 If a clean PR doesn't warrant any follow-up prompts and verdict is approve, return an empty "prompts" array. Don't manufacture work.
 

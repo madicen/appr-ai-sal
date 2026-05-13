@@ -191,23 +191,6 @@ func findAnchorExcerptMatches(h *Hunk, normExcerpt string, exclude int) []int {
 	return out
 }
 
-// anchorExcerptMismatch returns a non-empty reason string when the model's
-// AnchorExcerpt does not match the post-image text at Path:Line AND we
-// cannot relocate (no match or ambiguous match). Returns "" on a clean
-// match OR on a unique-elsewhere match (where the caller would re-anchor
-// rather than strip).
-//
-// Retained as a thin wrapper around anchorExcerptVerdict for tests that
-// only care about the "is this a strip?" question.
-//
-// Exposed for tests; not exported.
-func anchorExcerptMismatch(f Finding, files []FileDiff) string {
-	if v := anchorExcerptVerdict(f, files); v.outcome == anchorOutcomeStrip {
-		return v.reason
-	}
-	return ""
-}
-
 // normaliseExcerpt strips leading and trailing whitespace and collapses
 // runs of internal whitespace to a single space. This lets legitimate
 // excerpts pass even when the model re-formatted whitespace (e.g. spaces

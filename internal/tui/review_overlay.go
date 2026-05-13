@@ -128,6 +128,22 @@ type approvalCard struct {
 	err     error
 	hunk    *review.Hunk
 	file    *review.FileDiff
+	// anchorRelocatedFrom is the finding's ORIGINAL Line before the
+	// overlay re-anchored this card via review.FindUniqueExcerptInFile
+	// (triggered when the original line fell outside any hunk in the
+	// current diff but the model's AnchorExcerpt uniquely matched a
+	// different line). Zero when no relocation happened. The card's
+	// finding.Finding.Line is mutated to the new line so the post
+	// payload uses the corrected anchor; this field exists purely to
+	// surface a "auto-corrected from N → M" banner so the reviewer can
+	// sanity-check the new position before posting.
+	anchorRelocatedFrom int
+	// fileLevelPost flips to true when the reviewer pressed F on a
+	// cardError state to escape with a file-level GitHub comment for
+	// this finding (no line/side anchor). The post command branches on
+	// this; the resulting comment shows up on the PR's "Files changed"
+	// tab attached to the file header rather than inline at a line.
+	fileLevelPost bool
 }
 
 // reviewOverlay is the persistent overlay that hosts the entire review flow:
@@ -332,12 +348,7 @@ func (m *reviewOverlay) adoptDraft(d *review.Draft) tea.Cmd {
 	m.cards = make([]approvalCard, 0, len(flat))
 	for _, f := range flat {
 		card := approvalCard{finding: f}
-		if file := review.FindFile(m.files, f.Finding.Path); file != nil {
-			card.file = file
-			if h, _ := review.HunkAroundLine(file, f.Finding.Line); h != nil {
-				card.hunk = h
-			}
-		}
+		anchorCardToDiff(&card, m.files)
 		m.cards = append(m.cards, card)
 	}
 	m.idx = 0
@@ -376,6 +387,51 @@ func (m *reviewOverlay) adoptDraft(d *review.Draft) tea.Cmd {
 		m.vp.GotoTop()
 		return nil
 	}
+}
+
+// anchorCardToDiff fills in card.file and card.hunk against files, mutating
+// the card in place. The preferred outcome is a direct hit: the finding's
+// Line falls inside one of the file's hunks. When that fails (the line is
+// outside every hunk on the current diff — typically because a force-push
+// moved the surrounding code), the helper falls back to relocating via the
+// model's AnchorExcerpt: if the excerpt uniquely matches a single line
+// somewhere in the file's hunks, the card's finding.Finding.Line is
+// rewritten to that line and card.anchorRelocatedFrom records the original
+// for the TUI banner. When neither path lands the card on a hunk, card.hunk
+// stays nil and the existing "isn't on a hunk" error path takes over (now
+// joined by the F-key file-level fallback the reviewer can use to post
+// anyway).
+//
+// Cards that were never inside the diff (Path absent from files) get
+// card.file == nil and no relocation attempt — there is no hunk to search.
+func anchorCardToDiff(card *approvalCard, files []review.FileDiff) {
+	if card == nil {
+		return
+	}
+	card.file = review.FindFile(files, card.finding.Finding.Path)
+	card.hunk = nil
+	if card.file == nil {
+		return
+	}
+	if h, _ := review.HunkAroundLine(card.file, card.finding.Finding.Line); h != nil {
+		card.hunk = h
+		return
+	}
+	excerpt := strings.TrimSpace(card.finding.Finding.AnchorExcerpt)
+	if excerpt == "" {
+		return
+	}
+	newLine, ok := review.FindUniqueExcerptInFile(card.file, excerpt)
+	if !ok || newLine == card.finding.Finding.Line {
+		return
+	}
+	h, _ := review.HunkAroundLine(card.file, newLine)
+	if h == nil {
+		return
+	}
+	card.anchorRelocatedFrom = card.finding.Finding.Line
+	card.finding.Finding.Line = newLine
+	card.hunk = h
 }
 
 func (m *reviewOverlay) cmdAfterAdoptIfNeeded() tea.Cmd {
@@ -614,6 +670,12 @@ func (m *reviewOverlay) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.actPrev()
 		case "r", "R":
 			return m.actRefreshPR()
+		case "F":
+			// File-level fallback: post the current finding as a
+			// subject_type=file comment when its line can't anchor on
+			// the current diff. The handler is a no-op when the card
+			// isn't in a state where this makes sense.
+			return m.actPostCurrentFileLevel()
 		case "f":
 			// Finish approving early; jump to summary even with cards left.
 			// enterSummary handles syncing skips + dispatching the
@@ -958,12 +1020,55 @@ func (m *reviewOverlay) actPostCurrent() (tea.Model, tea.Cmd) {
 	// so the user gets an actionable, local explanation instead of a 422.
 	if !m.dryRun && cur.hunk == nil {
 		cur.state = cardError
-		cur.err = fmt.Errorf("can't post: %s:%d isn't on a hunk in the current PR diff (line may have moved or been removed). Press R to refresh the PR or s to skip this finding.",
+		cur.err = fmt.Errorf("can't post inline: %s:%d isn't on a hunk in the current PR diff (line may have moved or been removed). Press F to post as a file-level comment, R to refresh the PR, or s to skip this finding.",
 			cur.finding.Finding.Path, cur.finding.Finding.Line)
 		m.rebuildBody()
 		return m, nil
 	}
 	cmd := postSingleFindingCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun)
+	return m, cmd
+}
+
+// actPostCurrentFileLevel is the file-level fallback: post the current
+// finding as a subject_type=file comment instead of an inline one. It
+// applies in two situations:
+//
+//   - The card is in cardError state because actPostCurrent's local
+//     pre-flight (cur.hunk == nil) or GitHub's line-resolution returned
+//     "line could not be resolved". This is the canonical case the F
+//     hotkey was added for.
+//
+//   - The card is in cardPending state but we never anchored a hunk in
+//     the first place (rare — typically PR-wide style findings that the
+//     model emitted with a path + line that no longer exists). The user
+//     can press F preemptively without forcing the "(no hunk located)"
+//     warning into an explicit error first.
+//
+// In every other state — already on the PR, already posted, already
+// skipped, or pending with a valid hunk — F is a no-op (the inline
+// post is still the right choice and the reviewer should press y).
+func (m *reviewOverlay) actPostCurrentFileLevel() (tea.Model, tea.Cmd) {
+	if m.peruse {
+		return m.flashPeruse("peruse mode — no posting; use ←/→ to navigate, f to jump to summary, q to exit")
+	}
+	if m.existingCommentsLoading || m.idx >= len(m.cards) || m.draft == nil || m.draft.PR == nil {
+		return m, nil
+	}
+	cur := &m.cards[m.idx]
+	switch cur.state {
+	case cardError:
+		// Allowed — fall through.
+	case cardPending:
+		if cur.hunk != nil {
+			// The inline post is still viable; ignore F to avoid
+			// silently downgrading a perfectly-anchored finding.
+			return m, nil
+		}
+	default:
+		return m, nil
+	}
+	cur.fileLevelPost = true
+	cmd := postSingleFindingFileLevelCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun)
 	return m, cmd
 }
 
@@ -1001,8 +1106,15 @@ func (m *reviewOverlay) applyPRRefresh(pr *gh.PR, diff string) {
 	unanchored := 0
 	for i := range m.cards {
 		c := &m.cards[i]
-		// Re-anchor every card. Skip cards already posted / already on PR /
-		// explicitly skipped — those don't need a new hunk.
+		// For cards the reviewer already acted on (posted / skipped /
+		// already-on-PR), the anchor still gets recomputed so the
+		// inline hunk snippet stays accurate, but we do NOT try to
+		// re-anchor via the model's AnchorExcerpt — moving an already-
+		// posted comment's local "anchor" silently would be misleading
+		// (the comment on GitHub stays where it was). For pending /
+		// error cards we DO try the excerpt relocation because the
+		// reviewer is about to post and we want the best available
+		// line, mirroring adoptDraft's behaviour.
 		switch c.state {
 		case cardPosted, cardSkipped, cardAlreadyOnPR:
 			c.file = review.FindFile(m.files, c.finding.Finding.Path)
@@ -1013,13 +1125,7 @@ func (m *reviewOverlay) applyPRRefresh(pr *gh.PR, diff string) {
 			}
 			continue
 		}
-		c.file = review.FindFile(m.files, c.finding.Finding.Path)
-		if c.file != nil {
-			c.hunk, _ = review.HunkAroundLine(c.file, c.finding.Finding.Line)
-		} else {
-			c.hunk = nil
-		}
-		// Reset transient error state — the user is retrying after a refresh.
+		anchorCardToDiff(c, m.files)
 		if c.state == cardError {
 			c.state = cardPending
 			c.err = nil
@@ -1370,7 +1476,7 @@ func (m *reviewOverlay) renderRunningBody() string {
 		gDone, gRunning, gFailed := stageCounts(rows)
 
 		// Group header — chevron reflects state, label bold when running.
-		chev, state := stageChevronAndState(rows, gRunning, gDone, gFailed, len(rows))
+		chev, state := stageChevronAndState(gRunning, gDone, gFailed, len(rows))
 		labelStyle := dimStyle
 		if gRunning > 0 {
 			labelStyle = boldStyle
@@ -1581,9 +1687,10 @@ func (m *reviewOverlay) renderAgentRow(i int, a *overlayAgentRow, rowW, bodyInde
 		}
 		if strings.TrimSpace(a.summary) != "" {
 			label := "Thoughts"
-			if a.name == overlayAgentRepoArbiter {
+			switch a.name {
+			case overlayAgentRepoArbiter:
 				label = "Arbiter notes"
-			} else if a.name == review.SpecVibeCoach {
+			case review.SpecVibeCoach:
 				label = "Vibe coach summary"
 			}
 			b.WriteString(dimStyle.Render("    "+label) + "\n")
@@ -1760,7 +1867,7 @@ func stageCounts(rows []*overlayAgentRow) (done, running, failed int) {
 
 // stageChevronAndState picks the visual marker and right-side state label
 // for a stage header.
-func stageChevronAndState(rows []*overlayAgentRow, running, done, failed, total int) (string, string) {
+func stageChevronAndState(running, done, failed, total int) (string, string) {
 	switch {
 	case running > 0:
 		return boldStyle.Render("▶"), boldStyle.Render(fmt.Sprintf("running · %d/%d", done, total))
@@ -1836,12 +1943,22 @@ func (m *reviewOverlay) renderApprovalBody() string {
 		}
 	}
 	b.WriteString("\n")
-	// Anchor auto-correction note: validateAnchorExcerpts moved the
-	// finding when the model's quoted excerpt matched a different line in
-	// the same hunk. The reviewer should sanity-check the new position
-	// before accepting, so we surface it inline next to the location.
+	// Anchor auto-correction notes. Two independent code paths can move
+	// a finding off its model-reported line, and we surface each so the
+	// reviewer can sanity-check the new position before posting:
+	//
+	//  * Finding.AnchorRelocatedFrom is set by validateAnchorExcerpt
+	//    (review pipeline) when the model's quoted excerpt uniquely
+	//    matches a different line in the SAME hunk.
+	//  * approvalCard.anchorRelocatedFrom is set by anchorCardToDiff
+	//    (this file) when the original line fell outside every hunk in
+	//    the current diff but the excerpt matched uniquely elsewhere in
+	//    the file's hunks — a cross-hunk relocation done at TUI time.
 	if from := cur.finding.Finding.AnchorRelocatedFrom; from > 0 && from != cur.finding.Finding.Line {
 		b.WriteString(warnStyle.Render(fmt.Sprintf("⚠ Anchor auto-corrected from line %d → %d based on the model's quoted excerpt; verify the new position.", from, cur.finding.Finding.Line)) + "\n")
+	}
+	if from := cur.anchorRelocatedFrom; from > 0 && from != cur.finding.Finding.Line {
+		b.WriteString(warnStyle.Render(fmt.Sprintf("⚠ Anchor auto-corrected from line %d → %d based on the model's quoted excerpt; verify the new position before posting.", from, cur.finding.Finding.Line)) + "\n")
 	}
 	b.WriteString("\n")
 
@@ -1851,7 +1968,7 @@ func (m *reviewOverlay) renderApprovalBody() string {
 		b.WriteString(renderHunkSnippet(cur.hunk, cur.finding.Finding.Line, 4, rowW))
 		b.WriteString("\n")
 	} else {
-		b.WriteString(dimStyle.Render("(no diff hunk located for this line — finding will still post if accepted)") + "\n\n")
+		b.WriteString(dimStyle.Render("(no diff hunk located for this line — F posts as a file-level comment, R refreshes the PR, s skips)") + "\n\n")
 	}
 
 	// Comment + suggestion preview
@@ -1877,7 +1994,11 @@ func (m *reviewOverlay) renderApprovalBody() string {
 	case cardAlreadyOnPR:
 		b.WriteString(okStyle.Render("✓ already on pull request") + "\n\n")
 	case cardPosted:
-		b.WriteString(okStyle.Render("✓ posted") + "\n\n")
+		if cur.fileLevelPost {
+			b.WriteString(okStyle.Render("✓ posted as file-level comment") + "\n\n")
+		} else {
+			b.WriteString(okStyle.Render("✓ posted") + "\n\n")
+		}
 	case cardSkipped:
 		b.WriteString(dimStyle.Render("— skipped") + "\n\n")
 	case cardError:
@@ -1930,7 +2051,7 @@ func renderPostErrorBlock(err error, width int) string {
 	if _, ok := gh.IsHeadDrift(err); ok {
 		b.WriteString(dimStyle.Render("→ press R or click below to refresh the PR & retry") + "\n")
 	} else if gh.IsLineUnresolvable(err) {
-		b.WriteString(dimStyle.Render("→ GitHub couldn't anchor the comment to the diff. Press R to refresh and retry, or s to skip this finding.") + "\n")
+		b.WriteString(dimStyle.Render("→ GitHub couldn't anchor the comment to the diff. Press F to post as a file-level comment, R to refresh and retry, or s to skip this finding.") + "\n")
 	}
 	refresh := zone.Mark(ZoneStagedRefresh, boldStyle.Render(" Refresh PR & retry (R) "))
 	b.WriteString("\n" + refresh + "\n\n")

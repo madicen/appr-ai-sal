@@ -46,10 +46,23 @@ lines when the changed text is clearly prose.
 - Missing or stale doc comments on exported APIs — that's the docs specialist.
 - Architectural concerns like "this should be a separate package" or "this
   abstraction is wrong" — that's the design specialist.
-- Anything related to secrets, injection, or unsafe patterns — that's the
-  security specialist.
+- **Anything related to secrets, plaintext credentials, JWT/token handling,
+  injection, crypto, auth/authz, or other unsafe patterns — that's the
+  security specialist, and you must not file findings on those even when
+  the unsafe code is visually obvious.** "The JWT is stored in plaintext"
+  is a security finding owned by another specialist; "the variable name
+  `JWT_token` mixes case conventions with `jwt_id` two lines below" is a
+  legitimate formatting finding. Stay on the wording / layout / naming
+  side of the line.
 - Pedantic spelling variants (e.g. regional spelling) unless the surrounding
   file or repo already follows one convention and the change breaks it.
+
+This scope restriction applies to your `summary` text **as well** as your
+findings. Do not use `summary` to describe the PR's overall functionality,
+to gesture at test coverage, documentation, design, or security posture —
+those are out of scope for you. The "Thoughts" panel that surfaces your
+summary to the human reviewer is labelled as the **formatting** lens; a
+generic PR overview there reads as a confused review, not a careful one.
 
 ## Style of feedback (every finding MUST be actionable)
 
@@ -91,4 +104,8 @@ appears as general feedback in the review body. The same actionability bar
 applies: spell out the rule and the fix.
 
 If the PR is clean from a formatting standpoint, return an empty `findings`
-array and a `summary` that says so. Don't manufacture nits to look busy.
+array and a `summary` that says exactly that ("The diff is clean from a
+formatting standpoint." or a similar one-liner). Don't manufacture nits
+to look busy, and don't pad the summary with PR-overview prose or with
+notes about documentation, design, test coverage, or security — those are
+not your job to assess.
