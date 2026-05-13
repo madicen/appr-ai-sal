@@ -175,6 +175,55 @@ func HunkAroundLine(file *FileDiff, line int) (*Hunk, int) {
 	return nil, -1
 }
 
+// FindUniqueExcerptInFile searches every hunk in file for a post-image line
+// whose text equals excerpt after whitespace normalisation (see
+// normaliseExcerpt). It returns (line, true) iff exactly one such line
+// exists across all hunks; otherwise (0, false).
+//
+// The TUI uses this to relocate a finding when its original Line falls
+// outside any hunk in the current diff (e.g. a force-push shifted the
+// hunks but the anchored content is still present at a new line number).
+// The model's "anchor_excerpt" JSON field is the input to this search —
+// when the excerpt uniquely identifies a line, we treat that as the
+// re-anchor target; when it matches zero or multiple lines, we leave the
+// card unresolved and offer the file-level fallback instead.
+//
+// Short excerpts (< 20 chars after normalisation) are intentionally
+// rejected — lines like "}" or "return nil" recur all over real files,
+// and a confident-looking re-anchor against an ambiguous excerpt is
+// worse than a clear "cannot resolve" error. The 20-char threshold
+// mirrors anchor_excerpt.go's posture for the same reason.
+func FindUniqueExcerptInFile(file *FileDiff, excerpt string) (int, bool) {
+	if file == nil {
+		return 0, false
+	}
+	norm := normaliseExcerpt(excerpt)
+	if len(norm) < 20 {
+		return 0, false
+	}
+	matchLine := 0
+	matches := 0
+	for hi := range file.Hunks {
+		h := &file.Hunks[hi]
+		for _, l := range h.Lines {
+			if l.Kind == DiffRemoved || l.NewNo == 0 {
+				continue
+			}
+			if normaliseExcerpt(l.Text) == norm {
+				matches++
+				if matches > 1 {
+					return 0, false
+				}
+				matchLine = l.NewNo
+			}
+		}
+	}
+	if matches != 1 {
+		return 0, false
+	}
+	return matchLine, true
+}
+
 func hunkNewBounds(h *Hunk) (minNew, maxNew int) {
 	for _, l := range h.Lines {
 		if l.Kind == DiffRemoved || l.NewNo == 0 {

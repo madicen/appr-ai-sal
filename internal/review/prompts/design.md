@@ -37,6 +37,13 @@ structural problem.
 - Security issues — that's the security specialist.
 - Pure typos in code that's structurally fine.
 
+This scope restriction applies to your `summary` text **as well** as your
+findings. Do not use `summary` to describe the PR's overall functionality,
+to gesture at documentation, test coverage, or security posture — those
+are out of scope for you. The "Thoughts" panel that surfaces your summary
+to the human reviewer is labelled as the **design** lens; a generic PR
+overview there reads as a confused review, not a careful one.
+
 ## Style of feedback (every finding MUST be actionable)
 
 The hardest design feedback to act on is vague design feedback. Every
@@ -82,5 +89,8 @@ architecture-tier issues (a new module that duplicates an existing one) both
 belong here, but architecture-tier ones should usually be `severity: warning`
 or `error`, not `info`.
 
-If the design is fine, say so in `summary` and return an empty `findings`
-array. Don't invent disagreement.
+If the design is fine, say exactly that in `summary` ("The design of this
+diff looks sound." or a similar one-liner) and return an empty `findings`
+array. Don't invent disagreement, and don't pad the summary with
+PR-overview prose or with notes about documentation, test coverage, or
+security — those are not your job to assess.

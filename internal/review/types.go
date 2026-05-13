@@ -110,17 +110,6 @@ func generalFindings(findings []Finding) []Finding {
 	return out
 }
 
-// inlineFindings returns findings that map to a diff line.
-func inlineFindings(findings []Finding) []Finding {
-	var out []Finding
-	for _, f := range findings {
-		if findingIsInlinePostable(f) {
-			out = append(out, f)
-		}
-	}
-	return out
-}
-
 // SuggestionPostsToGitHub reports whether the finding's suggestion field is
 // emitted as a GitHub ```suggestion block (as opposed to comment-only).
 func SuggestionPostsToGitHub(f Finding) bool {
@@ -349,6 +338,28 @@ func ReviewCommentBody(specialist string, f Finding) string {
 	return body
 }
 
+// ReviewCommentBodyForFileLevel formats the GitHub comment body for a
+// finding being posted at the file level (subject_type=file) instead of
+// inline at a specific line. The reader sees the same AI-disclosure
+// header and comment narrative as an inline post, plus a short italicised
+// preamble that records the line number the model originally intended
+// (e.g. "_Intended for line 42 — anchored to the file because that line
+// isn't on a hunk in the current diff._"). Suggestion blocks are dropped:
+// GitHub's one-click "Apply suggestion" UI only works on line-anchored
+// comments, so including a ```suggestion block on a file-level comment
+// renders as inert code and risks the reader copy-pasting it manually
+// against the wrong line.
+func ReviewCommentBodyForFileLevel(specialist string, f Finding) string {
+	body := fmt.Sprintf(aiCommentLead, specialist)
+	if f.Line > 0 {
+		body += fmt.Sprintf("_Intended for line %d — anchored to the file because that line isn't on a hunk in the current diff._\n\n", f.Line)
+	} else {
+		body += "_Anchored to the file (no specific diff line)._\n\n"
+	}
+	body += f.Comment
+	return body
+}
+
 // FlatPostableFindings returns inline findings that can be posted (path + line set).
 func (d *Draft) FlatPostableFindings() []FlatFinding {
 	if d == nil {
@@ -431,6 +442,16 @@ func (d *Draft) FlatPostableFindingsForPost() []FlatFinding {
 // Note that PR-wide findings (empty path / line 0) are intentionally
 // kept regardless of the skip set — they cannot be inline-suppressed and
 // the skip flow only targets inline cards.
+//
+// When any inline finding is filtered out for a given specialist, we
+// ALSO clear that specialist's Summary in the returned slice. The
+// specialist-output contract asks for an aggregate Summary that
+// describes the findings ("Found 3 issues with label naming…"); leaving
+// the original Summary intact after filtering would let the vibe-coach
+// LLM re-surface the suppressed findings via the summary text — which
+// is exactly the leak that prompted this filter to exist. The PR-wide
+// findings (path "", line 0) carry their own narrative, so dropping the
+// Summary doesn't strand anything the vibe-coach legitimately needs.
 func SpecialistsForVibeCoach(d *Draft, specialists []SpecialistResult) []SpecialistResult {
 	if d == nil {
 		return specialists
@@ -450,19 +471,25 @@ func SpecialistsForVibeCoach(d *Draft, specialists []SpecialistResult) []Special
 			continue
 		}
 		var kept []Finding
+		dropped := false
 		for _, f := range s.Findings {
 			if strings.TrimSpace(f.Path) != "" && f.Line > 0 {
 				k := FindingSuppressionKey(s.Specialist, f)
 				if _, drop := sup[k]; drop {
+					dropped = true
 					continue
 				}
 				if _, drop := skips[k]; drop {
+					dropped = true
 					continue
 				}
 			}
 			kept = append(kept, f)
 		}
 		out[i].Findings = kept
+		if dropped {
+			out[i].Summary = ""
+		}
 	}
 	return out
 }
@@ -1239,13 +1266,6 @@ func prWideFindingKeys(d *Draft) map[string]struct{} {
 		}
 	}
 	return out
-}
-
-func plural(n int, noun string) string {
-	if n == 1 {
-		return "1 " + noun
-	}
-	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func joinQuoted(s []string) string {

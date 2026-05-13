@@ -264,10 +264,3 @@ func clamp(v, lo, hi int) int {
 	return v
 }
 
-func truncate(s string, max int) string {
-	s = strings.ReplaceAll(s, "\t", "  ")
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-3] + "..."
-}

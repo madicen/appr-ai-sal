@@ -26,27 +26,11 @@ var (
 			BorderForeground(panelBorder).
 			Padding(0, 1)
 
-	rightPanel = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(panelBorder).
-			Padding(0, 1)
-
 	// One-line strip above each scroll viewport in detail / staged modes.
 	detailPaneTitleStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#BBBBBB"}).
 				Background(lipgloss.AdaptiveColor{Light: "#E8E8E8", Dark: "#2C2C2C"}).
 				Padding(0, 0)
-
-	sectionTitleStyle = lipgloss.NewStyle().
-				Bold(true).
-				Foreground(lipgloss.AdaptiveColor{Light: "#333333", Dark: "#CCCCCC"}).
-				MarginTop(1).
-				MarginBottom(0)
-
-	diffFrameStyle = lipgloss.NewStyle().
-			Border(lipgloss.NormalBorder()).
-			BorderForeground(panelBorder).
-			Padding(0, 1)
 
 	// Specialist tags shown next to comments
 	tagFormatting = tagStyle("#7AA2F7") // blue

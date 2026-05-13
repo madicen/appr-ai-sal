@@ -29,6 +29,13 @@ claim to prove.
 - Tests that don't exist for code that already existed before this PR — only
   new or modified code's coverage is in scope.
 
+This scope restriction applies to your `summary` text **as well** as your
+findings. Do not use `summary` to describe the PR's overall functionality,
+to remark on documentation, design choices, or security posture — those
+are out of scope for you. The "Thoughts" panel that surfaces your summary
+to the human reviewer is labelled as the **testing** lens; a generic PR
+overview there reads as a confused review, not a careful one.
+
 ## Calibrating with the repo evidence section
 
 If the user message contains a `## Repo evidence for this PR` section,
@@ -119,5 +126,8 @@ test"``) but anchor at a line whose hunk doesn't contain that identifier
 are detected post-hoc and have their suggestion stripped — keep the
 comment honest about the line you picked, or use a PR-wide anchor.
 
-If coverage looks good and tests are doing real work, say so in `summary`
-and return an empty `findings` array.
+If coverage looks good and tests are doing real work, say exactly that in
+`summary` ("Test coverage looks adequate for this diff." or a similar
+one-liner) and return an empty `findings` array. Do not pad the summary
+with PR-overview prose or with notes about documentation, design, or
+security — those are not your job to assess.

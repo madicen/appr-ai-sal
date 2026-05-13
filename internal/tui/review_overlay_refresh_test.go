@@ -63,8 +63,11 @@ func TestActPostCurrent_LocalPreflight_NoHunkSetsCardError(t *testing.T) {
 	if _, _ = ro.actPostCurrent(); ro.cards[0].state != cardError {
 		t.Errorf("want cardError after local pre-flight, got %v", ro.cards[0].state)
 	}
-	if ro.cards[0].err == nil || !strings.Contains(ro.cards[0].err.Error(), "Press R") {
+	if ro.cards[0].err == nil || !strings.Contains(ro.cards[0].err.Error(), "R to refresh") {
 		t.Errorf("error message should hint at refresh, got %v", ro.cards[0].err)
+	}
+	if !strings.Contains(ro.cards[0].err.Error(), "F to post as a file-level comment") {
+		t.Errorf("error message should offer the file-level fallback, got %v", ro.cards[0].err)
 	}
 }
 
