@@ -12,9 +12,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
+	bubblepicker "github.com/madicen/bubble-color-picker"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
+	"github.com/madicen/appr-ai-sal/internal/theme"
 )
 
 // StartSection selects which group is focused when the pane opens.
@@ -25,6 +27,8 @@ const (
 	StartAI
 	// StartRepoContext opens settings on the Repo context tab.
 	StartRepoContext
+	// StartTheme opens settings on the Theme tab.
+	StartTheme
 )
 
 const (
@@ -96,10 +100,13 @@ type Model struct {
 	repoParallelExperts bool
 	repoFocus           int
 
-	// panelTab 0 = Review strictness + AI fields; 1 = repo context form.
+	// panelTab 0 = Review strictness + AI fields; 1 = repo context form;
+	// 2 = theme palette.
 	panelTab int
 
 	vp viewport.Model
+
+	theme *themePanel
 }
 
 var saveKeys = key.NewBinding(key.WithKeys("ctrl+s"))
@@ -182,6 +189,8 @@ func New(o Opts) *Model {
 	m.vp = viewport.New(m.contentW, bodyH)
 	m.vp.MouseWheelEnabled = true
 
+	m.theme = newThemePanel()
+
 	switch o.StartSection {
 	case StartAI:
 		m.focus = fieldProvider
@@ -189,6 +198,9 @@ func New(o Opts) *Model {
 	case StartRepoContext:
 		m.panelTab = 1
 		m.focusRepoField(repoFieldRoots)
+	case StartTheme:
+		m.panelTab = 2
+		m.blurInputs()
 	default:
 		m.focus = fieldStrictness
 		m.blurInputs()
@@ -282,8 +294,49 @@ func (m *Model) Init() tea.Cmd {
 
 // Update implements tea.Model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Color-picker results are emitted as commands by the picker library
+	// and surface here on a later tick. They must be handled before normal
+	// key/mouse routing so the active swatch can close cleanly.
+	switch typed := msg.(type) {
+	case bubblepicker.ColorChangedMsg:
+		if m.theme != nil {
+			m.theme.applyChosenColor(typed.Color)
+			if idx := m.theme.openSwatchIndex(); idx >= 0 {
+				updated, cmd := m.theme.swatches[idx].swatch.Update(typed)
+				m.theme.swatches[idx].swatch = updated
+				return m, cmd
+			}
+		}
+		return m, nil
+	case bubblepicker.ColorCanceledMsg:
+		if m.theme != nil {
+			if idx := m.theme.openSwatchIndex(); idx >= 0 {
+				updated, cmd := m.theme.swatches[idx].swatch.Update(typed)
+				m.theme.swatches[idx].swatch = updated
+				return m, cmd
+			}
+		}
+		return m, nil
+	}
+
+	// When a swatch modal is open, route every key/mouse event to it so the
+	// picker can drive its own focus, hue/grid hit-testing, and key bindings.
+	if m.panelTab == 2 && m.theme != nil {
+		if idx := m.theme.openSwatchIndex(); idx >= 0 {
+			switch msg.(type) {
+			case tea.KeyMsg, tea.MouseMsg:
+				updated, cmd := m.theme.swatches[idx].swatch.Update(msg)
+				m.theme.swatches[idx].swatch = updated
+				return m, cmd
+			}
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if m.panelTab == 2 {
+			return m.updateThemeKey(msg)
+		}
 		if m.panelTab == 1 {
 			switch {
 			case key.Matches(msg, saveKeys):
@@ -412,11 +465,12 @@ func (m *Model) advanceFocus(delta int) {
 }
 
 func (m *Model) setPanelTab(tab int) {
+	const tabCount = 3
 	if tab < 0 {
 		tab = 0
 	}
-	if tab > 1 {
-		tab = 1
+	if tab >= tabCount {
+		tab = tabCount - 1
 	}
 	if m.panelTab == tab {
 		return
@@ -424,14 +478,58 @@ func (m *Model) setPanelTab(tab int) {
 	m.panelTab = tab
 	m.blurInputs()
 	m.blurRepoInputs()
-	if m.panelTab == 1 {
+	switch m.panelTab {
+	case 1:
 		if m.repoFocus < 0 || m.repoFocus >= repoFieldCount {
 			m.repoFocus = 0
 		}
 		m.focusRepoField(m.repoFocus)
-	} else {
+	case 2:
+		// Theme tab: focus is owned by the themePanel; nothing to do here
+		// beyond blurring the form inputs above.
+	default:
 		m.focus = fieldStrictness
 	}
+}
+
+// updateThemeKey handles key events while the Theme tab is focused (and no
+// swatch modal is open — that case is short-circuited in Update above).
+func (m *Model) updateThemeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case key.Matches(msg, saveKeys):
+		return m, m.submitThemeSave()
+	}
+	switch msg.String() {
+	case "esc":
+		return m, func() tea.Msg { return DoneMsg{Cancelled: true} }
+	case "[":
+		m.setPanelTab(m.panelTab - 1)
+		return m, textinput.Blink
+	case "]":
+		m.setPanelTab(m.panelTab + 1)
+		return m, textinput.Blink
+	case "tab", "ctrl+i", "down", "j":
+		if m.theme != nil {
+			m.theme.advanceFocus(1)
+		}
+		return m, nil
+	case "shift+tab", "up", "k":
+		if m.theme != nil {
+			m.theme.advanceFocus(-1)
+		}
+		return m, nil
+	case "enter", " ":
+		if m.theme != nil {
+			return m, m.theme.openFocused()
+		}
+		return m, nil
+	case "r":
+		if m.theme != nil {
+			m.theme.resetAll()
+		}
+		return m, nil
+	}
+	return m, nil
 }
 
 func (m *Model) blurInputs() {
@@ -638,15 +736,16 @@ func (m *Model) submitRepoSave() tea.Cmd {
 func (m *Model) renderTabStrip() string {
 	t0 := " Review & AI "
 	t1 := " Repo context "
-	var left, right string
-	if m.panelTab == 0 {
-		left = okStyle.Render(t0)
-		right = dimStyle.Render(t1)
-	} else {
-		left = dimStyle.Render(t0)
-		right = okStyle.Render(t1)
+	t2 := " Theme "
+	style := func(label string, active bool) string {
+		if active {
+			return okStyle.Render(label)
+		}
+		return dimStyle.Render(label)
 	}
-	row := zone.Mark(ZoneSettingsTabReview, left) + "  " + zone.Mark(ZoneSettingsTabRepoCtx, right)
+	row := zone.Mark(ZoneSettingsTabReview, style(t0, m.panelTab == 0)) + "  " +
+		zone.Mark(ZoneSettingsTabRepoCtx, style(t1, m.panelTab == 1)) + "  " +
+		zone.Mark(ZoneSettingsTabTheme, style(t2, m.panelTab == 2))
 	return row + "\n" + dimStyle.Render("click tabs or [ ] to switch") + "\n"
 }
 
@@ -712,9 +811,55 @@ func (m *Model) buildForm() string {
 
 // View renders the scrollable settings body (no header/status — root adds those).
 func (m *Model) View() string {
+	// The Theme tab bypasses the viewport so each swatch's row index lines
+	// up with the cell where its colour cell is drawn — bubble-color-picker
+	// uses those coordinates to centre the modal overlay.
+	if m.panelTab == 2 && m.theme != nil {
+		panel := m.buildThemeView()
+		panel = m.theme.applyOverlays(panel, m.width, m.bodyH)
+		return lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(m.bodyH).Render(panel)
+	}
 	// Rebuild each frame so textinput cursor blink and zones stay aligned with layout.
 	m.vp.SetContent(m.buildForm())
 	return lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(m.bodyH).Render(m.vp.View())
+}
+
+// buildThemeView assembles the Theme tab body (header + tab strip + panel).
+// The line offset of the tab strip is reflected in each swatch's recorded
+// row by themePanel.renderPanel, so SetBounds matches the rendered cell.
+func (m *Model) buildThemeView() string {
+	var b strings.Builder
+	b.WriteString(boldStyle.Render("Settings") + "\n\n")
+	b.WriteString(m.renderTabStrip())
+	b.WriteString("\n")
+	// Hand the rest of the layout to the theme panel; the row indices it
+	// records are panel-local, but the parent settings view above is fixed
+	// height so we add that offset before SetBounds is consulted.
+	headerLines := lipgloss.Height(b.String())
+	body := m.theme.renderPanel(m.width)
+	// Adjust each swatch row by the prelude height so SetBounds reflects
+	// the swatch's actual line within m.View().
+	for _, sw := range m.theme.swatches {
+		sw.row += headerLines
+		sw.swatch.SetBounds(sw.row, sw.col, 0, 0)
+	}
+	b.WriteString(body)
+	return b.String()
+}
+
+// submitThemeSave persists the draft theme and applies it live so any open
+// review or list view re-renders with the new colours.
+func (m *Model) submitThemeSave() tea.Cmd {
+	return func() tea.Msg {
+		if m.theme == nil {
+			return DoneMsg{ThemeSaved: true}
+		}
+		if err := theme.Save(m.theme.draft, ""); err != nil {
+			return DoneMsg{Err: err}
+		}
+		theme.Apply(m.theme.draft)
+		return DoneMsg{ThemeSaved: true}
+	}
 }
 
 func max(a, b int) int {

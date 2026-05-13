@@ -23,14 +23,41 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		m.setPanelTab(1)
 		return nil
 	}
+	if z := zone.Get(ZoneSettingsTabTheme); z != nil && z.InBounds(msg) {
+		m.setPanelTab(2)
+		return nil
+	}
 	if z := zone.Get(ZoneSettingsSave); z != nil && z.InBounds(msg) {
-		if m.panelTab == 1 {
+		switch m.panelTab {
+		case 1:
 			return m.submitRepoSave()
+		case 2:
+			return m.submitThemeSave()
+		default:
+			return m.submitSave()
 		}
-		return m.submitSave()
 	}
 	if z := zone.Get(ZoneSettingsCancel); z != nil && z.InBounds(msg) {
 		return func() tea.Msg { return DoneMsg{Cancelled: true} }
+	}
+	if m.panelTab == 2 && m.theme != nil {
+		if z := zone.Get(ZoneThemeReset); z != nil && z.InBounds(msg) {
+			m.theme.resetAll()
+			return nil
+		}
+		// Forward the press to the swatch whose row is in bounds; the
+		// SwatchPicker library opens the modal on press (zones fire on
+		// release), so we deliver the original press directly.
+		for i, sw := range m.theme.swatches {
+			if z := zone.Get(sw.zoneID); z != nil && z.InBounds(msg) {
+				m.theme.swatches[i].swatch.SetFocused(false)
+				m.theme.focus = i
+				m.theme.swatches[i].swatch.SetFocused(true)
+				updated, cmd := m.theme.swatches[i].swatch.Update(msg)
+				m.theme.swatches[i].swatch = updated
+				return cmd
+			}
+		}
 	}
 	if z := zone.Get(ZoneStrictCriticalOnly); z != nil && z.InBounds(msg) {
 		m.strictIdx = 0

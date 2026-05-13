@@ -63,7 +63,7 @@ func formatPerAgentBriefs(perAgent map[string]string) string {
 	return b.String()
 }
 
-func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map[string]string, witnesses []conventionwitness.Witness) string {
+func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) string {
 	var b strings.Builder
 	b.WriteString("PR: " + pr.Repository + "#")
 	fmt.Fprintf(&b, "%d %s\n\n", pr.Number, pr.Title)
@@ -71,6 +71,11 @@ func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map
 	if strings.TrimSpace(briefs) != "" {
 		b.WriteString("## Per-specialist repo-agent briefs\n\n")
 		b.WriteString(briefs)
+	}
+	if ts := strings.TrimSpace(techSection); ts != "" {
+		b.WriteString("## Technology experts (cross-specialist briefs)\n\n")
+		b.WriteString(ts)
+		b.WriteString("\n\n")
 	}
 	if md := strings.TrimSpace(conventionwitness.FormatMarkdown(witnesses)); md != "" {
 		b.WriteString("## Convention witness (per-finding evidence verdicts)\n\n")
@@ -290,14 +295,14 @@ func demotedSeverity(s Severity) (Severity, bool) {
 	}
 }
 
-func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialistDigest string, perAgent map[string]string, witnesses []conventionwitness.Witness) *RepoArbiterResult {
+func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) *RepoArbiterResult {
 	ar := &RepoArbiterResult{}
 	sys, err := SpecialistPrompt(specRepoArbiter)
 	if err != nil {
 		ar.Err = err
 		return ar
 	}
-	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, witnesses)
+	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses)
 	sys, user = augmentPromptsForProvider(cfg.Provider, sys, user, true)
 	out, err := Complete(ctx, cfg, sys, user, worktree)
 	if err != nil {
@@ -331,9 +336,10 @@ func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, 
 // RunRepoArbiter is the post-specialists arbiter that may suppress noisy
 // inline findings, demote findings that diverge mildly from repo norms, or
 // override the merge verdict. It consumes the per-agent repo briefs
-// (already injected into specialist prompts) plus optional convention
-// witnesses produced between the specialists and this pass.
-func RunRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, perAgent map[string]string, witnesses []conventionwitness.Witness) *RepoArbiterResult {
+// (already injected into specialist prompts), the cross-specialist
+// technology experts section, and optional convention witnesses produced
+// between the specialists and this pass.
+func RunRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) *RepoArbiterResult {
 	specDigest := buildSpecialistDigestForRepoExperts(specialists)
-	return runRepoArbiter(ctx, cfg, worktree, pr, specDigest, perAgent, witnesses)
+	return runRepoArbiter(ctx, cfg, worktree, pr, specDigest, perAgent, techSection, witnesses)
 }

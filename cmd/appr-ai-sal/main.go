@@ -19,6 +19,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
+	"github.com/madicen/appr-ai-sal/internal/theme"
 	"github.com/madicen/appr-ai-sal/internal/tui"
 )
 
@@ -57,6 +58,12 @@ func run() error {
 	}
 	if err := aiCfg.MergeFlags(strings.TrimSpace(*aiProvider), strings.TrimSpace(*aiBaseURL), strings.TrimSpace(*aiModel), strings.TrimSpace(*aiAPIKey), strings.TrimSpace(*reviewStrictness), *aiTimeout); err != nil {
 		return err
+	}
+
+	// Apply any user-saved theme overrides before the TUI renders its first
+	// frame so colour-keyed rows match the user's palette from the start.
+	if t, err := theme.Load(); err == nil && t != nil {
+		theme.Apply(t)
 	}
 
 	// Quick auth sanity check before launching the UI so failures surface

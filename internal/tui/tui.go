@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -704,12 +703,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if m.mode == modeSettings && m.settings != nil {
-		switch msg.(type) {
-		case cursor.BlinkMsg:
-			sm, cmd := m.settings.Update(msg)
-			m.settings = sm.(*settings.Model)
-			return m, cmd
-		}
+		// Forward any remaining message to the settings model so async
+		// child-component messages (cursor blink, bubble-color-picker
+		// ColorChangedMsg / ColorCanceledMsg, etc.) reach their owners.
+		sm, cmd := m.settings.Update(msg)
+		m.settings = sm.(*settings.Model)
+		return m, cmd
 	}
 	if m.mode == modeRepoAgents && m.repoAgents != nil {
 		// Forward all non-key/mouse messages (loaded results, regen-done, blink

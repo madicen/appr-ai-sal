@@ -24,6 +24,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 		if z := zone.Get(ZoneEditCancel); z != nil && z.InBounds(msg) {
 			m.editing = false
+			m.editKind = editKindNone
 			m.editArea.Blur()
 			return nil
 		}
@@ -59,6 +60,20 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 			return m.removeCurrentRepoCmd()
 		}
 	}
+	if m.addingTech {
+		if z := zone.Get(ZoneAddTechSave); z != nil && z.InBounds(msg) {
+			return m.commitAddTech()
+		}
+		if z := zone.Get(ZoneAddTechCancel); z != nil && z.InBounds(msg) {
+			m.cancelAddTech()
+			return nil
+		}
+	} else {
+		if z := zone.Get(ZoneAddTechOpen); z != nil && z.InBounds(msg) {
+			m.openAddTech()
+			return nil
+		}
+	}
 	if z := zone.Get(ZoneRegenAll); z != nil && z.InBounds(msg) {
 		return m.regenerateAllForCurrentRepo()
 	}
@@ -73,6 +88,23 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		}
 		if z := zone.Get(zoneAgentDelete(name)); z != nil && z.InBounds(msg) {
 			return m.startDelete(name)
+		}
+	}
+
+	// Per-tech chips: the configured set is dynamic, so we iterate the
+	// current repo's loaded TechAgents rather than a fixed list.
+	if cur := m.currentTechs(); cur != nil {
+		for _, t := range cur.SortedTechs() {
+			if z := zone.Get(zoneTechRegen(t)); z != nil && z.InBounds(msg) {
+				return m.startRegenerateTech(t)
+			}
+			if z := zone.Get(zoneTechEditBrief(t)); z != nil && z.InBounds(msg) {
+				m.startEditTech(t)
+				return nil
+			}
+			if z := zone.Get(zoneTechDelete(t)); z != nil && z.InBounds(msg) {
+				return m.startDeleteTech(t)
+			}
 		}
 	}
 	return nil

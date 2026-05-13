@@ -35,16 +35,20 @@ const (
 type overlayAgentStage int
 
 const (
-	stageGroupSpecialists overlayAgentStage = iota
+	stageGroupContextInjection overlayAgentStage = iota
+	stageGroupSpecialists
 	stageGroupExperts
 	stageGroupArbiter
 	stageGroupVibe
 )
 
 // stageGroupOrder is the rendering order top-to-bottom. It also reflects
-// runtime ordering: specialists, then repo arbiter, then vibe-coach.
-// Specialists may run sequentially or in parallel (repo-context.json).
+// runtime ordering: context injection (lang briefs / tech experts /
+// repo experts feed every specialist), then specialists, then repo
+// arbiter, then vibe-coach. Specialists may run sequentially or in
+// parallel (repo-context.json).
 var stageGroupOrder = []overlayAgentStage{
+	stageGroupContextInjection,
 	stageGroupSpecialists,
 	stageGroupArbiter,
 	stageGroupVibe,
@@ -58,17 +62,43 @@ type stageGroupMeta struct {
 }
 
 var stageGroupMetas = map[overlayAgentStage]stageGroupMeta{
-	stageGroupSpecialists: {label: "Specialists", note: ""},
-	stageGroupExperts:     {label: "Repo experts", note: ""}, // unused after repo-agents refactor; kept to satisfy the enum
-	stageGroupArbiter:     {label: "Repo arbiter", note: "after specialists"},
-	stageGroupVibe:        {label: "Vibe coach", note: "after repo arbiter"},
+	stageGroupContextInjection: {label: "Context injection", note: "before specialists"},
+	stageGroupSpecialists:      {label: "Specialists", note: ""},
+	stageGroupExperts:          {label: "Repo experts", note: ""}, // unused after repo-agents refactor; kept to satisfy the enum
+	stageGroupArbiter:          {label: "Repo arbiter", note: "after specialists"},
+	stageGroupVibe:             {label: "Vibe coach", note: "after repo arbiter"},
 }
 
-// Agent name constant for the repo arbiter row in the overlay. The runner
-// emits Stage="repo-arbiter" with Detail="start"/"done"/"skipped".
+// Agent name constants for the synthetic overlay rows. Specialist rows
+// use the specialist name directly (review.SpecFormatting etc.); the
+// rows below are the non-specialist rows the runner drives via stages
+// other than "specialist".
 const (
 	overlayAgentRepoArbiter = "repo-arbiter"
+	// Context-injection rows: each resolves from the matching runner
+	// progress stage (lang-agents / tech-agents / repo-agents) before
+	// any specialist starts.
+	overlayAgentLangBriefs  = "language-briefs"
+	overlayAgentTechExperts = "tech-experts"
+	overlayAgentRepoExperts = "repo-experts"
 )
+
+// overlayAgentLabels returns the human-friendly title for synthetic
+// overlay rows whose name is not itself a specialist key. Falls back to
+// the raw name.
+func overlayAgentLabel(name string) string {
+	switch name {
+	case overlayAgentLangBriefs:
+		return "Language briefs"
+	case overlayAgentTechExperts:
+		return "Tech experts"
+	case overlayAgentRepoExperts:
+		return "Repo experts"
+	case overlayAgentRepoArbiter:
+		return "Repo arbiter"
+	}
+	return name
+}
 
 type overlayAgentRow struct {
 	name  string
@@ -260,9 +290,17 @@ func newReviewOverlay(screenW, screenH int, dryRun bool, specialistsParallel, re
 	vp := viewport.New(innerW, innerH)
 	vp.MouseWheelEnabled = true
 	// Build the agent rows in pipeline order. The running view groups them by
-	// stage (specialists → arbiter → vibe). Each row tracks its own
-	// start/finish timestamps and retry count for actionable feedback.
-	ag := make([]overlayAgentRow, 0, len(review.AllSpecialists)+2)
+	// stage (context injection → specialists → arbiter → vibe). Each row
+	// tracks its own start/finish timestamps and retry count for actionable
+	// feedback. The context-injection rows resolve before any specialist
+	// starts (load lang briefs / tech experts / repo experts) so the user
+	// can see what's being threaded into specialists.
+	ag := make([]overlayAgentRow, 0, len(review.AllSpecialists)+5)
+	ag = append(ag,
+		overlayAgentRow{name: overlayAgentLangBriefs, stage: stageGroupContextInjection, phase: oaPending},
+		overlayAgentRow{name: overlayAgentTechExperts, stage: stageGroupContextInjection, phase: oaPending},
+		overlayAgentRow{name: overlayAgentRepoExperts, stage: stageGroupContextInjection, phase: oaPending},
+	)
 	for _, n := range review.AllSpecialists {
 		ag = append(ag, overlayAgentRow{name: n, stage: stageGroupSpecialists, phase: oaPending})
 	}
@@ -1287,6 +1325,16 @@ func (m *reviewOverlay) mergeProgress(p review.Progress) tea.Cmd {
 		m.log = append(m.log, "repo context: "+p.Detail)
 	case "context-summary":
 		m.log = append(m.log, "context vs change: "+p.Detail)
+	case "lang-agents":
+		m.applyContextInjection(overlayAgentLangBriefs, p)
+	case "tech-agents":
+		m.applyContextInjection(overlayAgentTechExperts, p)
+	case "repo-agents":
+		m.applyContextInjection(overlayAgentRepoExperts, p)
+	case "repo-evidence":
+		m.log = append(m.log, "repo evidence: "+p.Detail)
+	case "convention-witness":
+		m.log = append(m.log, "convention witness: "+p.Detail)
 	case "specialist":
 		// runner emits "<name>:start", "<name>:done", or "<name>:retry N (...)".
 		parts := strings.SplitN(p.Detail, ":", 2)
@@ -1386,6 +1434,113 @@ func (m *reviewOverlay) agentIndex(name string) int {
 		}
 	}
 	return -1
+}
+
+// applyContextInjection drives one of the synthetic Context-injection rows
+// (language-briefs / tech-experts / repo-experts) from a runner Progress.
+//
+// Detail strings the runner emits and how this maps them onto row state:
+//   - "warning: ..."           → oaErr (load failure; surface to user)
+//   - "disabled"               → oaSkipped ("disabled" right-side detail)
+//   - "" / "none" / "none ..." → oaSkipped ("none configured" detail)
+//   - "injected ..."           → oaDone with the detail as summary and a
+//                                count of injected briefs in findingsN
+//   - "loaded N brief(s)"      → oaDone with N parsed into findingsN
+//
+// All injection stages are emitted at most once per run, so rows that
+// transition straight from oaPending to a terminal phase are expected.
+func (m *reviewOverlay) applyContextInjection(name string, p review.Progress) {
+	i := m.agentIndex(name)
+	if i < 0 {
+		return
+	}
+	row := &m.agents[i]
+	now := time.Now()
+	if row.startedAt.IsZero() {
+		row.startedAt = now
+	}
+	row.finishedAt = now
+	row.expanded = false
+	detail := strings.TrimSpace(p.Detail)
+	switch {
+	case p.Err != nil:
+		row.phase = oaErr
+		row.err = p.Err
+		row.summary = detail
+	case strings.HasPrefix(detail, "warning:"):
+		row.phase = oaErr
+		row.err = fmt.Errorf("%s", strings.TrimSpace(strings.TrimPrefix(detail, "warning:")))
+		row.summary = detail
+	case detail == "" || detail == "none" || strings.HasPrefix(detail, "none"):
+		row.phase = oaSkipped
+		row.summary = detail
+		row.findingsN = 0
+		// none-injected with a "missing: ..." tail is still useful info
+		// for the log so the user notices unconfigured langs/techs.
+		if detail != "" && detail != "none" {
+			m.log = append(m.log, overlayAgentLabel(name)+": "+detail)
+		}
+	case detail == "disabled":
+		row.phase = oaSkipped
+		row.summary = "disabled in repo-context.json"
+	case strings.HasPrefix(detail, "loaded "):
+		row.phase = oaDone
+		row.summary = detail
+		row.findingsN = parseLoadedBriefCount(detail)
+	case strings.HasPrefix(detail, "injected"):
+		row.phase = oaDone
+		row.summary = detail
+		row.findingsN = countInjectedItems(detail)
+	default:
+		row.phase = oaDone
+		row.summary = detail
+	}
+}
+
+// parseLoadedBriefCount pulls "N" out of a "loaded N brief(s)" detail
+// string. Returns 0 when the format doesn't match (the row still
+// renders, just without a count badge).
+func parseLoadedBriefCount(detail string) int {
+	rest := strings.TrimSpace(strings.TrimPrefix(detail, "loaded"))
+	end := strings.Index(rest, " ")
+	if end < 0 {
+		end = len(rest)
+	}
+	n := 0
+	for _, r := range rest[:end] {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+// countInjectedItems counts the labels inside a "injected a+b+c" or
+// "injected a, b, c" detail string. The runner emits "+" between
+// language briefs and tech labels.
+func countInjectedItems(detail string) int {
+	rest := strings.TrimSpace(strings.TrimPrefix(detail, "injected"))
+	rest = strings.TrimSpace(rest)
+	// Detail may include "; missing: ..." (lang-agents only); drop it
+	// before counting.
+	if idx := strings.Index(rest, ";"); idx >= 0 {
+		rest = strings.TrimSpace(rest[:idx])
+	}
+	if rest == "" {
+		return 0
+	}
+	// Normalise "a, b" → "a+b" for a single split path.
+	rest = strings.ReplaceAll(rest, ", ", "+")
+	rest = strings.ReplaceAll(rest, ",", "+")
+	parts := strings.Split(rest, "+")
+	n := 0
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *reviewOverlay) rebuildBody() {
@@ -1739,6 +1894,12 @@ func agentStatusDetail(a *overlayAgentRow) string {
 			} else {
 				count = okStyle.Render(fmt.Sprintf("%d action(s)", a.findingsN))
 			}
+		case a.stage == stageGroupContextInjection:
+			if a.findingsN > 0 {
+				count = okStyle.Render(fmt.Sprintf("injected %d", a.findingsN))
+			} else {
+				count = okStyle.Render("loaded")
+			}
 		case a.findingsN > 0:
 			count = okStyle.Render(fmt.Sprintf("%d finding(s)", a.findingsN))
 		case a.findingsN == 0:
@@ -1750,6 +1911,20 @@ func agentStatusDetail(a *overlayAgentRow) string {
 		}
 		return base
 	case oaSkipped:
+		if a.stage == stageGroupContextInjection {
+			detail := strings.TrimSpace(a.summary)
+			switch {
+			case detail == "disabled" || strings.Contains(detail, "disabled"):
+				return dimStyle.Render("disabled")
+			case strings.HasPrefix(detail, "none injected"):
+				// Lang-agents emits "none injected; missing: ..." —
+				// surface the full detail so the user knows which
+				// languages had no brief on file.
+				return dimStyle.Render(detail)
+			default:
+				return dimStyle.Render("none configured")
+			}
+		}
 		return dimStyle.Render("skipped · no specialist findings")
 	case oaErr:
 		dur := humanElapsed(a.finishedAt.Sub(a.startedAt))

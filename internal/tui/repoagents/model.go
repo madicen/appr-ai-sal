@@ -24,6 +24,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	ra "github.com/madicen/appr-ai-sal/internal/review/repoagents"
+	ta "github.com/madicen/appr-ai-sal/internal/review/techagents"
 )
 
 // Opts configures a fresh Model.
@@ -48,6 +49,16 @@ type Opts struct {
 	AutoRegenAll bool
 }
 
+// editKind discriminates between editing a per-specialist repo-agent brief
+// and a per-technology tech-expert brief in the shared textarea.
+type editKind int
+
+const (
+	editKindNone editKind = iota
+	editKindSpecialist
+	editKindTech
+)
+
 // Model is the repo-agents tab.
 type Model struct {
 	width    int
@@ -70,15 +81,35 @@ type Model struct {
 	// per-repo cache of loaded RepoAgents.
 	agents map[string]*ra.RepoAgents
 
+	// per-repo cache of loaded TechAgents (per-repo "technology expert"
+	// briefs). Lazy-loaded the first time a repo is selected.
+	techs map[string]*ta.TechAgents
+
 	// busy["owner/repo|specialist"] true while a Regenerate command is in
 	// flight; disables the row's chips and shows a spinner-style label.
+	// Tech regenerations reuse the same map keyed by "tech:" prefix to keep
+	// busy gating uniform across both kinds of agent.
 	busy map[string]bool
 
 	// editing state. When true, the right pane swaps to a textarea for the
-	// selected (repoIdx, editSpecialist) brief.
+	// selected brief. editKind discriminates between repo-agent specialist
+	// briefs and tech-expert briefs (textarea is shared since only one edit
+	// can be in flight at a time).
 	editing        bool
+	editKind       editKind
 	editSpecialist string
+	editTech       string
 	editArea       textarea.Model
+
+	// addingTech true while the user is filling in the new-tech form.
+	// techNameInput is the canonical/display name (e.g. "Kestra"); techSeedInput
+	// is the short user-supplied description that primes the LLM.
+	addingTech    bool
+	techNameInput textinput.Model
+	techSeedInput textinput.Model
+	// techSeedFocus toggles which of the two add-tech inputs has focus
+	// (false = name, true = seed). Tab cycles between them.
+	techSeedFocus bool
 
 	statusMsg string
 	err       error
@@ -119,32 +150,45 @@ func New(o Opts) *Model {
 	ti.CharLimit = 200
 	ti.Width = max(20, w-12)
 
-	ta := textarea.New()
-	ta.ShowLineNumbers = false
-	ta.Prompt = ""
-	ta.CharLimit = 65536
-	ta.SetWidth(max(20, w-4))
-	ta.SetHeight(min(20, max(6, bodyH/2)))
-	ta.Blur()
+	techNameTI := textinput.New()
+	techNameTI.Placeholder = "kestra"
+	techNameTI.CharLimit = 80
+	techNameTI.Width = max(20, w-12)
+
+	techSeedTI := textinput.New()
+	techSeedTI.Placeholder = "Kestra workflow engine; YAML-based; plugin model"
+	techSeedTI.CharLimit = 400
+	techSeedTI.Width = max(20, w-12)
+
+	taArea := textarea.New()
+	taArea.ShowLineNumbers = false
+	taArea.Prompt = ""
+	taArea.CharLimit = 65536
+	taArea.SetWidth(max(20, w-4))
+	taArea.SetHeight(min(20, max(6, bodyH/2)))
+	taArea.Blur()
 
 	vp := viewport.New(max(1, w), bodyH)
 	vp.MouseWheelEnabled = true
 
 	m := &Model{
-		width:       w,
-		bodyH:       bodyH,
-		contentW:    max(1, w),
-		aiCfg:       o.AICfg,
-		rc:          o.RC,
-		complete:    o.Complete,
-		history:     o.History,
-		pathHistory: o.PathHistory,
-		addInput:    ti,
-		editArea:    ta,
-		agents:      map[string]*ra.RepoAgents{},
-		busy:        map[string]bool{},
-		repos:       sanitizeRepos(o.InitialRepos),
-		vp:          vp,
+		width:         w,
+		bodyH:         bodyH,
+		contentW:      max(1, w),
+		aiCfg:         o.AICfg,
+		rc:            o.RC,
+		complete:      o.Complete,
+		history:       o.History,
+		pathHistory:   o.PathHistory,
+		addInput:      ti,
+		techNameInput: techNameTI,
+		techSeedInput: techSeedTI,
+		editArea:      taArea,
+		agents:        map[string]*ra.RepoAgents{},
+		techs:         map[string]*ta.TechAgents{},
+		busy:          map[string]bool{},
+		repos:         sanitizeRepos(o.InitialRepos),
+		vp:            vp,
 	}
 	// Honour FocusRepo by adding it to the seed list (so it always shows up
 	// even when no PRs in the list use it) and selecting it as the active
@@ -256,16 +300,30 @@ func (m *Model) Resize(width, bodyHeight int) {
 	}
 	m.contentW = max(1, m.width)
 	m.addInput.Width = max(20, m.width-12)
+	m.techNameInput.Width = max(20, m.width-12)
+	m.techSeedInput.Width = max(20, m.width-12)
 	m.editArea.SetWidth(max(20, m.width-4))
 	m.editArea.SetHeight(min(20, max(6, m.bodyH/2)))
 	m.vp.Width = m.contentW
 	m.vp.Height = m.bodyH
 }
 
-// View renders the scrollable body.
+// View renders the tab. Scrollable content lives in the viewport; the
+// footer (Close / Regenerate all chips) is rendered as a sticky line
+// outside the viewport so it stays clickable no matter how long the
+// agent + tech list grows.
 func (m *Model) View() string {
+	footer := m.renderFooter()
+	footerH := lipgloss.Height(footer)
+	vpH := max(1, m.bodyH-footerH-1)
+	m.vp.Height = vpH
 	m.vp.SetContent(m.buildContent())
-	return lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(m.bodyH).Render(m.vp.View())
+	body := m.vp.View()
+	return lipgloss.NewStyle().
+		Width(m.width).
+		MaxWidth(m.width).
+		Height(m.bodyH).
+		Render(lipgloss.JoinVertical(lipgloss.Left, body, "", footer))
 }
 
 // Update implements tea.Model.
@@ -350,6 +408,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.editing = false
+		m.editKind = editKindNone
 		m.editArea.Blur()
 		m.statusMsg = fmt.Sprintf("saved %s/%s · %s (manual)", msg.Owner, msg.Repo, msg.Specialist)
 		// Re-load agents from disk so we see the persisted entry.
@@ -363,6 +422,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		key := msg.Owner + "/" + msg.Repo
 		delete(m.agents, key)
+		delete(m.techs, key)
 		out := make([]string, 0, len(m.repos))
 		for _, r := range m.repos {
 			if r != key {
@@ -375,6 +435,62 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.statusMsg = "removed repo " + key
 		return m, m.maybeLoadAgentsCmd()
+
+	case techsLoadedMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.techs[msg.Owner+"/"+msg.Repo] = msg.TA
+		return m, nil
+
+	case techRegenStartedMsg:
+		m.busy[techBusyKey(msg.Owner, msg.Repo, msg.Tech)] = true
+		m.statusMsg = fmt.Sprintf("regenerating %s/%s · tech %s …", msg.Owner, msg.Repo, msg.Tech)
+		return m, nil
+
+	case techRegenDoneMsg:
+		delete(m.busy, techBusyKey(msg.Owner, msg.Repo, msg.Tech))
+		key := msg.Owner + "/" + msg.Repo
+		if msg.Err != nil {
+			m.err = fmt.Errorf("%s · tech %s: %w", key, msg.Tech, msg.Err)
+			m.statusMsg = ""
+			return m, nil
+		}
+		if msg.Agent != nil {
+			cur, ok := m.techs[key]
+			if !ok || cur == nil {
+				cur = &ta.TechAgents{Owner: msg.Owner, Repo: msg.Repo, Agents: map[string]ta.Agent{}}
+			}
+			cur.Set(msg.Agent.Tech, *msg.Agent)
+			m.techs[key] = cur
+		}
+		m.statusMsg = fmt.Sprintf("saved %s/%s · tech %s (%s)", msg.Owner, msg.Repo, msg.Tech, time.Now().Format("15:04:05"))
+		return m, nil
+
+	case techDeletedMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		key := msg.Owner + "/" + msg.Repo
+		if cur, ok := m.techs[key]; ok && cur != nil {
+			cur.Delete(msg.Tech)
+		}
+		m.statusMsg = fmt.Sprintf("deleted %s/%s · tech %s", msg.Owner, msg.Repo, msg.Tech)
+		return m, nil
+
+	case techSavedMsg:
+		if msg.Err != nil {
+			m.err = msg.Err
+			return m, nil
+		}
+		m.editing = false
+		m.editKind = editKindNone
+		m.editArea.Blur()
+		m.statusMsg = fmt.Sprintf("saved %s/%s · tech %s (manual)", msg.Owner, msg.Repo, msg.Tech)
+		owner, repo := splitRepoKey(msg.Owner + "/" + msg.Repo)
+		return m, loadTechsCmd(owner, repo)
 	}
 
 	return m, nil
@@ -387,6 +503,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.commitEdit()
 		case msg.String() == "esc":
 			m.editing = false
+			m.editKind = editKindNone
 			m.editArea.Blur()
 			return m, nil
 		}
@@ -407,6 +524,32 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.addInput, cmd = m.addInput.Update(msg)
 		return m, cmd
 	}
+	if m.addingTech {
+		switch msg.String() {
+		case "enter":
+			return m, m.commitAddTech()
+		case "esc":
+			m.cancelAddTech()
+			return m, nil
+		case "tab", "shift+tab":
+			m.techSeedFocus = !m.techSeedFocus
+			if m.techSeedFocus {
+				m.techNameInput.Blur()
+				m.techSeedInput.Focus()
+			} else {
+				m.techSeedInput.Blur()
+				m.techNameInput.Focus()
+			}
+			return m, textinput.Blink
+		}
+		var cmd tea.Cmd
+		if m.techSeedFocus {
+			m.techSeedInput, cmd = m.techSeedInput.Update(msg)
+		} else {
+			m.techNameInput, cmd = m.techNameInput.Update(msg)
+		}
+		return m, cmd
+	}
 	switch {
 	case key.Matches(msg, closeKeys):
 		return m, func() tea.Msg { return DoneMsg{Cancelled: true} }
@@ -420,6 +563,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.maybeLoadAgentsCmd()
 	case "a":
 		m.openAddRepo()
+		return m, textinput.Blink
+	case "t":
+		m.openAddTech()
 		return m, textinput.Blink
 	case "A":
 		return m, m.regenerateAllForCurrentRepo()
@@ -445,6 +591,52 @@ func (m *Model) openAddRepo() {
 	m.addingRepo = true
 	m.addInput.SetValue("")
 	m.addInput.Focus()
+}
+
+func (m *Model) openAddTech() {
+	m.addingTech = true
+	m.techNameInput.SetValue("")
+	m.techSeedInput.SetValue("")
+	m.techSeedFocus = false
+	m.techNameInput.Focus()
+	m.techSeedInput.Blur()
+}
+
+func (m *Model) cancelAddTech() {
+	m.addingTech = false
+	m.techNameInput.Blur()
+	m.techSeedInput.Blur()
+}
+
+func (m *Model) commitAddTech() tea.Cmd {
+	owner, repo := splitRepoKey(m.currentRepoKey())
+	if owner == "" || repo == "" {
+		m.err = fmt.Errorf("no repo selected")
+		return nil
+	}
+	rawName := strings.TrimSpace(m.techNameInput.Value())
+	seed := strings.TrimSpace(m.techSeedInput.Value())
+	if rawName == "" {
+		m.err = fmt.Errorf("tech name is required")
+		return nil
+	}
+	canonical := ta.CanonicalTech(rawName)
+	if canonical == "" {
+		m.err = fmt.Errorf("invalid tech name %q (use letters/numbers)", rawName)
+		return nil
+	}
+	if m.complete == nil {
+		m.err = fmt.Errorf("LLM completion is not configured")
+		return nil
+	}
+	m.cancelAddTech()
+	m.busy[techBusyKey(owner, repo, canonical)] = true
+	m.err = nil
+	m.statusMsg = fmt.Sprintf("generating %s/%s · tech %s …", owner, repo, canonical)
+	return tea.Batch(
+		func() tea.Msg { return techRegenStartedMsg{Owner: owner, Repo: repo, Tech: canonical} },
+		regenerateTechCmd(ta.CompleteFunc(m.complete), nil, m.aiCfg, m.rc, owner, repo, canonical, rawName, seed),
+	)
 }
 
 func (m *Model) commitAddRepo() tea.Cmd {
@@ -484,8 +676,12 @@ func (m *Model) commitEdit() tea.Cmd {
 		m.err = fmt.Errorf("no repo selected")
 		return nil
 	}
-	spec := m.editSpecialist
-	return saveManualCmd(owner, repo, spec, body)
+	switch m.editKind {
+	case editKindTech:
+		return saveManualTechCmd(owner, repo, m.editTech, body)
+	default:
+		return saveManualCmd(owner, repo, m.editSpecialist, body)
+	}
 }
 
 func (m *Model) currentRepoKey() string {
@@ -503,16 +699,31 @@ func (m *Model) currentAgents() *ra.RepoAgents {
 	return m.agents[k]
 }
 
+func (m *Model) currentTechs() *ta.TechAgents {
+	k := m.currentRepoKey()
+	if k == "" {
+		return nil
+	}
+	return m.techs[k]
+}
+
 func (m *Model) maybeLoadAgentsCmd() tea.Cmd {
 	k := m.currentRepoKey()
 	if k == "" {
 		return nil
 	}
-	if _, ok := m.agents[k]; ok {
+	owner, repo := splitRepoKey(k)
+	cmds := []tea.Cmd{}
+	if _, ok := m.agents[k]; !ok {
+		cmds = append(cmds, loadAgentsCmd(owner, repo))
+	}
+	if _, ok := m.techs[k]; !ok {
+		cmds = append(cmds, loadTechsCmd(owner, repo))
+	}
+	if len(cmds) == 0 {
 		return nil
 	}
-	owner, repo := splitRepoKey(k)
-	return loadAgentsCmd(owner, repo)
+	return tea.Batch(cmds...)
 }
 
 func splitRepoKey(k string) (owner, repo string) {
@@ -581,7 +792,32 @@ func (m *Model) startEdit(specialist string) {
 		body = cur.ContextFor(specialist)
 	}
 	m.editing = true
+	m.editKind = editKindSpecialist
 	m.editSpecialist = specialist
+	m.editTech = ""
+	m.editArea.SetValue(body)
+	m.editArea.Focus()
+	_ = owner
+	_ = repo
+}
+
+// startEditTech opens the brief editor for a per-tech expert. Reuses the
+// same textarea as the per-specialist editor — only one edit can be in
+// flight at a time.
+func (m *Model) startEditTech(tech string) {
+	owner, repo := splitRepoKey(m.currentRepoKey())
+	if owner == "" || repo == "" {
+		return
+	}
+	cur := m.currentTechs()
+	body := ""
+	if cur != nil {
+		body = cur.ContextFor(tech)
+	}
+	m.editing = true
+	m.editKind = editKindTech
+	m.editSpecialist = ""
+	m.editTech = tech
 	m.editArea.SetValue(body)
 	m.editArea.Focus()
 	_ = owner
@@ -665,6 +901,123 @@ func saveManualCmd(owner, repo, specialist, body string) tea.Cmd {
 	}
 }
 
+// Tech-experts command helpers ──────────────────────────────────────────────
+
+func loadTechsCmd(owner, repo string) tea.Cmd {
+	return func() tea.Msg {
+		got, err := ta.Load(owner, repo)
+		return techsLoadedMsg{Owner: owner, Repo: repo, TA: got, Err: err}
+	}
+}
+
+func techBusyKey(owner, repo, tech string) string {
+	return owner + "/" + repo + "|tech:" + ta.CanonicalTech(tech)
+}
+
+func regenerateTechCmd(complete ta.CompleteFunc, history ta.HistoryFetcher, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo, tech, label, seed string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		agent, err := ta.Generate(ctx, ta.GenerateOpts{
+			AICfg:    aiCfg,
+			RC:       rc,
+			Owner:    owner,
+			Repo:     repo,
+			Tech:     tech,
+			Label:    label,
+			Seed:     seed,
+			Complete: complete,
+			History:  history,
+		})
+		if err != nil {
+			return techRegenDoneMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Err: err}
+		}
+		if err := ta.SaveAgent(owner, repo, *agent); err != nil {
+			return techRegenDoneMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Err: fmt.Errorf("save: %w", err)}
+		}
+		return techRegenDoneMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Agent: agent}
+	}
+}
+
+func deleteTechCmd(owner, repo, tech string) tea.Cmd {
+	return func() tea.Msg {
+		err := ta.Delete(owner, repo, tech)
+		return techDeletedMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Err: err}
+	}
+}
+
+func saveManualTechCmd(owner, repo, tech, body string) tea.Cmd {
+	return func() tea.Msg {
+		// Preserve the existing label/seed when the user is editing an
+		// existing brief manually; fall back to the canonical tech key.
+		existing, _ := ta.Load(owner, repo)
+		label := strings.TrimSpace(tech)
+		seed := ""
+		if existing != nil {
+			if a, ok := existing.Get(tech); ok {
+				if a.Label != "" {
+					label = a.Label
+				}
+				seed = a.Seed
+			}
+		}
+		agent := ta.Agent{
+			Tech:        ta.CanonicalTech(tech),
+			Label:       label,
+			Seed:        seed,
+			Context:     body,
+			GeneratedAt: time.Now().UTC(),
+			Manual:      true,
+		}
+		if err := ta.SaveAgent(owner, repo, agent); err != nil {
+			return techSavedMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Err: err}
+		}
+		return techSavedMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech)}
+	}
+}
+
+func (m *Model) startRegenerateTech(tech string) tea.Cmd {
+	owner, repo := splitRepoKey(m.currentRepoKey())
+	if owner == "" || repo == "" {
+		m.err = fmt.Errorf("no repo selected")
+		return nil
+	}
+	if m.complete == nil {
+		m.err = fmt.Errorf("LLM completion is not configured")
+		return nil
+	}
+	canonical := ta.CanonicalTech(tech)
+	if canonical == "" {
+		m.err = fmt.Errorf("invalid tech name %q", tech)
+		return nil
+	}
+	cur := m.currentTechs()
+	label := canonical
+	seed := ""
+	if cur != nil {
+		if a, ok := cur.Get(canonical); ok {
+			if a.Label != "" {
+				label = a.Label
+			}
+			seed = a.Seed
+		}
+	}
+	m.busy[techBusyKey(owner, repo, canonical)] = true
+	m.err = nil
+	return tea.Batch(
+		func() tea.Msg { return techRegenStartedMsg{Owner: owner, Repo: repo, Tech: canonical} },
+		regenerateTechCmd(ta.CompleteFunc(m.complete), nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
+	)
+}
+
+func (m *Model) startDeleteTech(tech string) tea.Cmd {
+	owner, repo := splitRepoKey(m.currentRepoKey())
+	if owner == "" || repo == "" {
+		return nil
+	}
+	return deleteTechCmd(owner, repo, tech)
+}
+
 func max(a, b int) int {
 	if a > b {
 		return a
@@ -688,9 +1041,14 @@ func (m *Model) buildContent() string {
 
 	b.WriteString(m.renderRepoSelector())
 	b.WriteString("\n")
-	b.WriteString(m.renderAgentList())
-	b.WriteString("\n")
-	b.WriteString(m.renderFooter())
+	if m.editing {
+		b.WriteString(m.renderEditPane())
+		b.WriteString("\n")
+	} else {
+		b.WriteString(m.renderAgentList())
+		b.WriteString("\n")
+		b.WriteString(m.renderTechList())
+	}
 
 	if m.statusMsg != "" {
 		b.WriteString("\n\n")
@@ -735,10 +1093,6 @@ func (m *Model) renderRepoSelector() string {
 }
 
 func (m *Model) renderAgentList() string {
-	if m.editing {
-		return m.renderEditPane()
-	}
-
 	var b strings.Builder
 	b.WriteString(boldStyle.Render("Agents") + "  ")
 	b.WriteString(dimStyle.Render("· one brief per specialist") + "\n\n")
@@ -818,9 +1172,139 @@ func (m *Model) renderAgentRow(specialist string, cur *ra.RepoAgents) string {
 	return b.String()
 }
 
+func (m *Model) renderTechList() string {
+	var b strings.Builder
+	b.WriteString(boldStyle.Render("Tech experts") + "  ")
+	b.WriteString(dimStyle.Render("· one brief per technology, shared across all specialists for this repo") + "\n\n")
+
+	if m.currentRepoKey() == "" {
+		b.WriteString(dimStyle.Render("Select a repo above to manage its tech experts."))
+		b.WriteString("\n")
+		return b.String()
+	}
+
+	cur := m.currentTechs()
+	keys := []string{}
+	if cur != nil {
+		keys = cur.SortedTechs()
+	}
+	if len(keys) == 0 {
+		b.WriteString(dimStyle.Render("No tech experts yet — press t (or click + Add tech) to add one."))
+		b.WriteString("\n")
+	} else {
+		for _, k := range keys {
+			b.WriteString(m.renderTechRow(k, cur))
+			b.WriteString("\n")
+		}
+	}
+
+	if m.addingTech {
+		b.WriteString(sectionRule.Render(strings.Repeat("─", max(8, m.contentW-2))))
+		b.WriteString("\n")
+		b.WriteString(boldStyle.Render("New tech expert") + "  ")
+		b.WriteString(dimStyle.Render("· tab to switch fields · enter to generate · esc to cancel") + "\n")
+		b.WriteString(dimStyle.Render("Name") + "  ")
+		b.WriteString(m.techNameInput.View())
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("Seed") + "  ")
+		b.WriteString(m.techSeedInput.View())
+		b.WriteString("\n\n")
+		b.WriteString(zone.Mark(ZoneAddTechSave, okStyle.Render(" Generate ")))
+		b.WriteString("  ")
+		b.WriteString(zone.Mark(ZoneAddTechCancel, errStyle.Render(" Cancel ")))
+		b.WriteString("\n")
+	} else {
+		b.WriteString(zone.Mark(ZoneAddTechOpen, chipStyle.Render(" + Add tech ")))
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (m *Model) renderTechRow(tech string, cur *ta.TechAgents) string {
+	rule := sectionRule.Render(strings.Repeat("─", max(8, m.contentW-2)))
+	var b strings.Builder
+	b.WriteString(rule + "\n")
+	owner, repo := splitRepoKey(m.currentRepoKey())
+	bk := techBusyKey(owner, repo, tech)
+
+	label := tech
+	if cur != nil {
+		label = cur.LabelFor(tech)
+	}
+	header := boldStyle.Render(label)
+	if label != tech {
+		header += " " + dimStyle.Render("("+tech+")")
+	}
+
+	status := dimStyle.Render("missing")
+	preview := ""
+	seed := ""
+	if cur != nil {
+		if a, ok := cur.Get(tech); ok {
+			when := ""
+			if !a.GeneratedAt.IsZero() {
+				when = " · " + a.GeneratedAt.Local().Format("2006-01-02 15:04")
+			}
+			labels := []string{}
+			if a.Manual {
+				labels = append(labels, warnStyle.Render("manual"))
+			} else {
+				labels = append(labels, okStyle.Render("generated"))
+			}
+			if a.Provider != "" {
+				labels = append(labels, dimStyle.Render(a.Provider))
+			}
+			if a.Model != "" {
+				labels = append(labels, dimStyle.Render(a.Model))
+			}
+			status = strings.Join(labels, " · ") + dimStyle.Render(when)
+			preview = trimPreview(a.Context, 320)
+			seed = strings.TrimSpace(a.Seed)
+		}
+	}
+	if m.busy[bk] {
+		status = chipBusy.Render(" regenerating … ")
+	}
+
+	b.WriteString(zone.Mark(zoneTechRow(tech), header+"  "+status))
+	b.WriteString("\n")
+	if seed != "" {
+		b.WriteString(dimStyle.Render("Seed: " + trimPreview(seed, 200)))
+		b.WriteString("\n")
+	}
+	if preview != "" {
+		b.WriteString(dimStyle.Render(preview))
+		b.WriteString("\n")
+	}
+	chips := []string{}
+	regenLabel := " Regenerate "
+	if m.busy[bk] {
+		regenLabel = " (running) "
+		chips = append(chips, chipBusy.Render(regenLabel))
+	} else {
+		chips = append(chips, zone.Mark(zoneTechRegen(tech), chipPrimary.Render(regenLabel)))
+	}
+	chips = append(chips, zone.Mark(zoneTechEditBrief(tech), chipStyle.Render(" Edit brief ")))
+	if cur != nil {
+		if _, ok := cur.Get(tech); ok {
+			chips = append(chips, zone.Mark(zoneTechDelete(tech), chipDanger.Render(" Delete ")))
+		}
+	}
+	b.WriteString(strings.Join(chips, "  "))
+	b.WriteString("\n")
+	return b.String()
+}
+
 func (m *Model) renderEditPane() string {
 	var b strings.Builder
-	b.WriteString(boldStyle.Render("Editing brief: " + m.editSpecialist))
+	header := "Editing brief: "
+	switch m.editKind {
+	case editKindTech:
+		header += "tech " + m.editTech
+	default:
+		header += m.editSpecialist
+	}
+	b.WriteString(boldStyle.Render(header))
 	b.WriteString("  ")
 	b.WriteString(dimStyle.Render("· ctrl+s save · esc cancel"))
 	b.WriteString("\n\n")

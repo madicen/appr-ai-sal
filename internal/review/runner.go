@@ -16,12 +16,13 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
 	"github.com/madicen/appr-ai-sal/internal/review/langagents"
 	"github.com/madicen/appr-ai-sal/internal/review/repoagents"
+	"github.com/madicen/appr-ai-sal/internal/review/techagents"
 )
 
 // Progress messages are emitted on the channel returned by Run so the TUI can
 // stream updates to the user as specialists complete.
 type Progress struct {
-	Stage   string // "checkout", "diff", "repo-context", "specialist", "vibe-coach", "repo-arbiter", "done"; vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed
+	Stage   string // "checkout", "diff", "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "vibe-coach", "repo-arbiter", "done"; vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed
 	Detail  string // free-form detail about the stage
 	Err     error  // non-nil if this stage hit an error worth surfacing
 	Result  *SpecialistResult
@@ -120,6 +121,13 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			}
 		}
 
+		// Per-repo technology expert briefs: one brief per technology, shared
+		// across every specialist for this repo. Composed into a single
+		// section so the prompt order stays deterministic. The runner emits
+		// a tech-agents Progress so the overlay's "Context injection" group
+		// can show what was loaded (or "none configured / disabled").
+		techSection := composeTechSection(pr, rc, out)
+
 		type cvOutcome struct {
 			text string
 			err  error
@@ -152,7 +160,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 
 		// Specialists: sequential by default (repo-context.json parallel_specialists),
 		// or parallel when configured / env override — see runSpecialistsPhase.
-		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, diff, perAgent, prEvidence, langSection, out)
+		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, diff, perAgent, prEvidence, langSection, techSection, out)
 
 		cv := <-cvCh
 		cvSummary := strings.TrimSpace(cv.text)
@@ -194,7 +202,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			}
 			if rc != nil && rc.RepoExpertPanel {
 				out <- Progress{Stage: "repo-arbiter", Detail: "start"}
-				arb := RunRepoArbiter(ctx, runCfg, worktree, pr, specialists, perAgent, witnesses)
+				arb := RunRepoArbiter(ctx, runCfg, worktree, pr, specialists, perAgent, techSection, witnesses)
 				if arb != nil && rc != nil && !rc.RepoArbiterDemotions {
 					arb.Demoted = nil
 				}
@@ -235,7 +243,10 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 // prEvidence is per-PR static + history evidence (currently injected only
 // for testing and docs). Empty when rc.IncludeRepoEvidence is false or the
 // harvester returned nothing.
-func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, langSection string, out chan<- Progress) []SpecialistResult {
+//
+// techSection is the rendered technology-experts section (one labelled block
+// per configured tech for this repo); shared across every specialist.
+func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, langSection string, techSection string, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "specialist", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
@@ -253,7 +264,7 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 		_ = stageWithRetry(ctx, runCfg, "specialist "+name, notify, func(sctx context.Context) error {
 			stCtx, cancel := context.WithTimeout(sctx, perStageBudget(runCfg))
 			defer cancel()
-			r = runReviewSpecialist(stCtx, runCfg, name, worktree, pr, diff, repoCtx, ev, langSection)
+			r = runReviewSpecialist(stCtx, runCfg, name, worktree, pr, diff, repoCtx, ev, langSection, techSection)
 			if r.Err != nil {
 				return r.Err
 			}
@@ -422,6 +433,53 @@ func composeLangBriefSection(diff string, out chan<- Progress) string {
 	}
 	out <- Progress{Stage: "lang-agents", Detail: detail}
 	return langagents.FormatBriefsSection(summary.Briefs)
+}
+
+// composeTechSection loads the per-repo technology experts and renders
+// them as a single user-prompt section. Emits a Progress event reporting
+// what was injected (or "none" / "disabled" / a load warning) so the
+// overlay's Context-injection group can resolve.
+//
+// The returned string is empty when the toggle is off, no PR is in
+// scope, no techs are configured, or every configured brief is empty.
+// All four cases are safe no-ops for buildReviewUserPrompt's caller.
+func composeTechSection(pr *gh.PR, rc *repoconfig.Config, out chan<- Progress) string {
+	if pr == nil {
+		return ""
+	}
+	if rc != nil && !rc.TechAgents {
+		out <- Progress{Stage: "tech-agents", Detail: "disabled"}
+		return ""
+	}
+	ta, err := techagents.Load(pr.Owner, pr.Repo)
+	if err != nil {
+		out <- Progress{Stage: "tech-agents", Detail: "warning: " + err.Error()}
+		return ""
+	}
+	if ta == nil || !ta.HasAny() {
+		out <- Progress{Stage: "tech-agents", Detail: "none"}
+		return ""
+	}
+	keys := ta.SortedTechs()
+	var b strings.Builder
+	labels := make([]string, 0, len(keys))
+	for _, k := range keys {
+		body := ta.ContextFor(k)
+		if body == "" {
+			continue
+		}
+		label := ta.LabelFor(k)
+		fmt.Fprintf(&b, "## Technology context: %s\n\n", label)
+		b.WriteString(body)
+		b.WriteString("\n\n")
+		labels = append(labels, label)
+	}
+	if len(labels) == 0 {
+		out <- Progress{Stage: "tech-agents", Detail: "none"}
+		return ""
+	}
+	out <- Progress{Stage: "tech-agents", Detail: "injected " + strings.Join(labels, "+")}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func joinLangs(langs []langagents.Language) string {
