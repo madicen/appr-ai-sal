@@ -127,25 +127,32 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 }
 
 // RunVibeCoachForDraft runs vibe-coach against the draft's *current*
-// post-arbiter, post-user-skip specialist set. This is the deferred
-// entrypoint the TUI calls at the approve->summary transition (and on
-// re-entry if the user changed skips), so the LLM only ever sees the
-// findings that are actually going to ship.
+// post-arbiter, post-user-skip specialist set. It is invoked both as
+// part of the streaming pipeline (initial generation, no user skips
+// yet) and lazily by the TUI at the approve->summary transition when
+// the user has changed the skip set since the last run, so the LLM
+// only ever sees the findings that are actually going to ship.
+//
+// notify is invoked once per retry attempt with the attempt number
+// and the underlying error; pass nil when retries don't need to be
+// surfaced (e.g. the TUI's lazy re-run).
 //
 // Wraps the call with stageWithRetry + perStageBudget so retry/timeout
-// behavior matches the inline call the streaming runner used to make.
-// Safe to call multiple times on the same draft — each call overwrites
-// d.VibeCoach.
+// behavior matches an inline call. Safe to call multiple times on the
+// same draft — each call overwrites d.VibeCoach.
 //
 // Returns a non-nil result even on error (Err is set); callers can
 // surface the error in the UI without nil-checking.
-func RunVibeCoachForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft) *VibeCoachResult {
+func RunVibeCoachForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, notify func(attempt int, err error)) *VibeCoachResult {
 	if d == nil || cfg == nil {
 		return &VibeCoachResult{Err: fmt.Errorf("vibe-coach: nil draft or config"), Prompts: []AuthorPrompt{}}
 	}
+	if notify == nil {
+		notify = func(int, error) {}
+	}
 	vibeInput := SpecialistsForVibeCoach(d, d.Specialists)
 	var res *VibeCoachResult
-	_ = stageWithRetry(ctx, cfg, "vibe-coach", func(int, error) {}, func(sctx context.Context) error {
+	_ = stageWithRetry(ctx, cfg, "vibe-coach", notify, func(sctx context.Context) error {
 		stCtx, cancel := context.WithTimeout(sctx, perStageBudget(cfg))
 		defer cancel()
 		res = runVibeCoach(stCtx, cfg, d.Worktree, d.PR, vibeInput, "")

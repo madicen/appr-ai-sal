@@ -98,11 +98,12 @@ type overlayPhase int
 const (
 	phaseRunning overlayPhase = iota
 	phaseApprove
-	// phaseGeneratingSummary is a short interstitial that runs the
-	// deferred vibe-coach call against the user's final skip set before
-	// the rendered summary is shown. The runner emits
-	// Progress{Stage: "vibe-coach", Detail: "deferred"} so this phase
-	// only exists in the TUI — it sits between approve and summary.
+	// phaseGeneratingSummary is a short interstitial that re-runs
+	// vibe-coach against the user's final skip set when it differs
+	// from the pipeline-time set. Vibe-coach normally runs as part of
+	// the review pipeline, so most users go straight from approve to
+	// summary; this phase only appears when the user actually skipped
+	// (or unskipped) findings before posting.
 	phaseGeneratingSummary
 	phaseSummary
 	phaseConfirmApprove
@@ -223,9 +224,10 @@ type reviewOverlay struct {
 	// call when the user bounces between phases. enterSummary returns
 	// nil cmd when this is true.
 	coachInFlight bool
-	// coachErr is the most recent error from the deferred vibe-coach
-	// run, surfaced in the summary header so the user knows the summary
-	// they're seeing may be stale or missing fix-prompts.
+	// coachErr is the most recent error from a TUI-triggered vibe-coach
+	// re-run (after the user changed skips), surfaced in the summary
+	// header so the user knows the summary they're seeing may be stale
+	// or missing fix-prompts.
 	coachErr error
 
 	// peruse is the read-only walkthrough mode (entered via ctrl+v from
@@ -243,11 +245,11 @@ func zoneOverlayAgent(i int) string {
 	return fmt.Sprintf("zone:overlay:agent:%d", i)
 }
 
-// newReviewOverlay builds a fresh review overlay. cfg is used to run
-// vibe-coach lazily on the approve→summary transition; pass nil in
-// tests that don't exercise that path (the overlay then skips the
-// deferred LLM call and lands directly in phaseSummary with whatever
-// the draft already has).
+// newReviewOverlay builds a fresh review overlay. cfg is used to
+// re-run vibe-coach lazily when the user changes their skip set
+// between approve and summary; pass nil in tests that don't exercise
+// that path (the overlay then skips the LLM re-run and lands directly
+// in phaseSummary with whatever the draft already has).
 func newReviewOverlay(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsParallel bool, cfg *aiconfig.Config) *reviewOverlay {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -330,10 +332,10 @@ func (m *reviewOverlay) resizeFromScreen(sw, sh int) {
 // adoptDraft installs the runner's final draft, builds approval cards,
 // and routes to the appropriate first phase. Returns a tea.Cmd that
 // callers MUST include in their tea.Batch — when the post-arbiter set
-// has no cards and the verdict isn't APPROVE, the overlay needs to
-// dispatch the deferred vibe-coach call before showing the summary.
-// (Tests that ignore the return value still work because they don't
-// exercise the deferred-LLM path.)
+// has no cards and the verdict isn't APPROVE, the overlay flips to
+// summary and (only if the draft is missing a vibe-coach result) may
+// dispatch a regeneration. The runner normally produces VibeCoach in
+// the pipeline, so the typical path is a nil cmd straight to summary.
 func (m *reviewOverlay) adoptDraft(d *review.Draft) tea.Cmd {
 	m.draft = d
 	m.approveAfterSkipDisagree = false
@@ -353,9 +355,13 @@ func (m *reviewOverlay) adoptDraft(d *review.Draft) tea.Cmd {
 	}
 	m.idx = 0
 	m.existingCommentsLoading = false
-	// If the draft came back with a non-nil VibeCoach (e.g. a stub for
-	// tests, or a legacy runner that didn't defer), record its skip
-	// hash now so a same-skip-set re-entry doesn't pointlessly re-run.
+	// The runner produces a VibeCoach result against the post-arbiter
+	// finding set (UserSkipPostKeys is empty at pipeline time). Record
+	// its skip hash so a same-skip-set entry to phaseSummary reuses
+	// the cached result instead of re-running. A nil VibeCoach (e.g.
+	// when downstream agents were skipped because every specialist
+	// came back clean) leaves the hash empty so the TUI will regenerate
+	// only if it eventually needs to.
 	if d.VibeCoach != nil {
 		m.lastCoachHash = skipSetHash(d.UserSkipPostKeys)
 	} else {
@@ -678,8 +684,8 @@ func (m *reviewOverlay) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.actPostCurrentFileLevel()
 		case "f":
 			// Finish approving early; jump to summary even with cards left.
-			// enterSummary handles syncing skips + dispatching the
-			// deferred vibe-coach call against the final set.
+			// enterSummary handles syncing skips + re-running vibe-coach
+			// only if the skip set differs from the pipeline-time run.
 			cmd := m.enterSummary()
 			return m, cmd
 		case "q", "esc":
@@ -848,11 +854,11 @@ func (m *reviewOverlay) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// vibeCoachDoneMsg is delivered when the deferred vibe-coach LLM call
-// (kicked off by enterSummary) completes. The atSkipHash captures the
-// state of d.UserSkipPostKeys when the call was issued so a stale
-// completion (user has since changed skips) doesn't overwrite a newer
-// in-flight result.
+// vibeCoachDoneMsg is delivered when the TUI's lazy vibe-coach re-run
+// (kicked off by enterSummary after the user changed skips) completes.
+// The atSkipHash captures the state of d.UserSkipPostKeys when the call
+// was issued so a stale completion (user has since changed skips again)
+// doesn't overwrite a newer in-flight result.
 type vibeCoachDoneMsg struct {
 	result      *review.VibeCoachResult
 	atSkipHash  string
@@ -929,7 +935,7 @@ func (m *reviewOverlay) enterSummary() tea.Cmd {
 func runVibeCoachCmd(d *review.Draft, cfg *aiconfig.Config, atSkipHash string) tea.Cmd {
 	requestedAt := time.Now()
 	return func() tea.Msg {
-		res := review.RunVibeCoachForDraft(context.Background(), cfg, d)
+		res := review.RunVibeCoachForDraft(context.Background(), cfg, d, nil)
 		return vibeCoachDoneMsg{result: res, atSkipHash: atSkipHash, requestedAt: requestedAt}
 	}
 }
@@ -955,9 +961,9 @@ func (m *reviewOverlay) syncUserSkipsToDraft() {
 
 // advanceCard moves to the next pending card. When the cards are
 // exhausted it transitions into the next phase (confirmApprove or, via
-// enterSummary, the deferred vibe-coach + summary path). Returns the
-// tea.Cmd that callers must include in their batch so the deferred
-// vibe-coach LLM call gets dispatched.
+// enterSummary, the summary phase — re-running vibe-coach first only
+// when the user's skip set differs from the pipeline-time run).
+// Returns the tea.Cmd that callers must include in their batch.
 //
 // Note: PostEvent() may currently return a stale verdict (vibe-coach
 // hasn't re-run yet against the final skip set). That's fine — the
@@ -1338,18 +1344,6 @@ func (m *reviewOverlay) applyAgentDetail(name, detail string, p review.Progress)
 		row.startedAt = now
 		row.finishedAt = now
 		row.err = nil
-	case detail == "deferred":
-		// Vibe-coach is run lazily at the approve→summary transition
-		// (see enterSummary). The runner emits this marker so the row
-		// shows a "deferred" pill instead of staying on pending — making
-		// it clear to the user that nothing failed; we're just waiting
-		// to see their final skip decisions before synthesizing prompts.
-		now := time.Now()
-		row.phase = oaSkipped
-		row.startedAt = now
-		row.finishedAt = now
-		row.err = nil
-		row.summary = "deferred until approve → summary (runs against your final skip set)"
 	case detail == "done":
 		row.finishedAt = time.Now()
 		row.expanded = false
@@ -1411,10 +1405,11 @@ func (m *reviewOverlay) rebuildBody() {
 	}
 }
 
-// renderGeneratingSummaryBody is the brief interstitial shown while the
-// deferred vibe-coach call is in flight. Keeps the user oriented (they
-// just pressed "finish" or the last card just resolved) and explains
-// why the summary isn't instant.
+// renderGeneratingSummaryBody is the brief interstitial shown while
+// vibe-coach is being re-run because the user changed skips between
+// the pipeline-time run and the summary phase. Keeps the user oriented
+// (they just pressed "finish" or the last card just resolved) and
+// explains why the summary isn't instant.
 func (m *reviewOverlay) renderGeneratingSummaryBody() string {
 	var b strings.Builder
 	b.WriteString(boldStyle.Render("Refining summary with your final selections…"))

@@ -10,6 +10,11 @@ func zoneTreeFile(i int) string {
 // bubblezone IDs for clickable regions.
 const (
 	ZoneFilterToggle             = "zone:filter:explicit"
+	// ZoneRefreshList is the clickable "refresh" chip on the list view's
+	// filter strip. Mirrors the keyboard "R" binding so users who don't
+	// read the status bar still have an obvious way to re-fetch the
+	// review queue from GitHub.
+	ZoneRefreshList = "zone:list:refresh"
 	ZoneConfirmYes               = "zone:confirm:yes"
 	ZoneConfirmNo                = "zone:confirm:no"
 	ZoneErrorDismiss             = "zone:error:dismiss"

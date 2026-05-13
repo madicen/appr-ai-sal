@@ -17,11 +17,12 @@ import (
 // in practice (and other tests in the package call it the same way).
 func init() { zone.NewGlobal() }
 
-// The vibe-coach LLM call is deferred to the approve→summary transition
-// so its Summary/Prompts/Verdict reflect the user's final skip set.
-// enterSummary is the single entry point that decides whether a refresh
-// is needed; these tests pin the routing decisions without requiring a
-// live LLM.
+// Vibe-coach runs as part of the review pipeline. The TUI re-runs it
+// lazily at the approve→summary transition when the user has changed
+// the skip set since the pipeline-time run, so its Summary/Prompts/
+// Verdict reflect the user's final selections. enterSummary is the
+// single entry point that decides whether a refresh is needed; these
+// tests pin the routing decisions without requiring a live LLM.
 
 const deferTestDiff = `diff --git a/a.go b/a.go
 --- /dev/null

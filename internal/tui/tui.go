@@ -483,11 +483,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case vibeCoachDoneMsg:
-		// The deferred vibe-coach goroutine completed. The overlay's
-		// handler is the only thing that knows what to do with the
-		// result; without an explicit case here the message would fall
-		// through the root Update without ever reaching the overlay,
-		// stranding it in phaseGeneratingSummary.
+		// A TUI-triggered vibe-coach re-run (kicked off when the user
+		// changed skips between approve and summary) completed. The
+		// overlay's handler is the only thing that knows what to do
+		// with the result; without an explicit case here the message
+		// would fall through the root Update without ever reaching the
+		// overlay, stranding it in phaseGeneratingSummary.
 		//
 		// The overlay's handler may re-issue against a fresher skip set
 		// (returns m.enterSummary()), so forward the cmd.
@@ -775,9 +776,12 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if z := zone.Get(ZoneFilterToggle); z != nil && z.InBounds(msg) {
 				m.resetListClickTracking()
 				m.explicitReviewerOnly = !m.explicitReviewerOnly
-				m.prsLoaded = false
 				m.updateListTitle()
-				return m, loadPRsCmd(m.explicitReviewerOnly)
+				return m, m.refreshPRListCmd()
+			}
+			if z := zone.Get(ZoneRefreshList); z != nil && z.InBounds(msg) {
+				m.resetListClickTracking()
+				return m, m.refreshPRListCmd()
 			}
 			if gi, ok := m.listGlobalIndexAtClick(msg); ok {
 				return m.listHandleItemClick(gi)
@@ -906,17 +910,15 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "f":
 		m.explicitReviewerOnly = !m.explicitReviewerOnly
-		m.prsLoaded = false
 		m.updateListTitle()
-		return m, loadPRsCmd(m.explicitReviewerOnly)
+		return m, m.refreshPRListCmd()
 	case "u":
 		m.mode = modeURLInput
 		m.urlInput.Reset()
 		m.urlInput.Focus()
 		return m, textinput.Blink
 	case "R":
-		m.prsLoaded = false
-		return m, loadPRsCmd(m.explicitReviewerOnly)
+		return m, m.refreshPRListCmd()
 	case "o":
 		return m, m.openSettings(settings.StartAI)
 	case ",", "ctrl+@":
@@ -1168,6 +1170,16 @@ func (m *Model) updateListTitle() {
 	}
 }
 
+// refreshPRListCmd flips the list back into its loading state and returns the
+// fetch command. Centralised so the keyboard binding (R), the filter toggle
+// (f / chip click), and the refresh chip click all behave identically — in
+// particular, all three flip prsLoaded=false so renderBody swaps the list out
+// for the spinner and renderFilterLine flips the chip to "refreshing…".
+func (m *Model) refreshPRListCmd() tea.Cmd {
+	m.prsLoaded = false
+	return loadPRsCmd(m.explicitReviewerOnly)
+}
+
 func (m *Model) applyProgress(p review.Progress) {
 	if p.Stage == "done" {
 		m.draft = p.Final
@@ -1192,7 +1204,7 @@ func (m *Model) relayout() {
 	bodyH := m.chromeBodyHeight()
 	headerLine := lipgloss.Height(m.renderDetailMiniHeader())
 
-	filterH := lipgloss.Height(renderFilterLine(m.explicitReviewerOnly))
+	filterH := lipgloss.Height(renderFilterLine(m.explicitReviewerOnly, !m.prsLoaded))
 	m.list.SetSize(m.width-2, max(3, bodyH-filterH))
 
 	switch m.mode {
@@ -1438,7 +1450,7 @@ func (m *Model) renderBody() string {
 		if !m.prsLoaded {
 			return appPadding.Render(m.spinner.View() + " loading PRs from GitHub…")
 		}
-		filterLine := renderFilterLine(m.explicitReviewerOnly)
+		filterLine := renderFilterLine(m.explicitReviewerOnly, !m.prsLoaded)
 		return lipgloss.JoinVertical(lipgloss.Left, filterLine, appPadding.Render(m.list.View()))
 	case modeDetail:
 		return m.renderPRDetailBody(bodyH)
@@ -1533,12 +1545,18 @@ func (m *Model) framePane(title string, vp *viewport.Model, outerW, outerH int, 
 	return prDetailPanel.Width(outerW).MaxWidth(outerW).Height(outerH).MaxHeight(outerH).Render(col)
 }
 
-func renderFilterLine(explicit bool) string {
+func renderFilterLine(explicit, refreshing bool) string {
 	label := "filter: teams+you"
 	if explicit {
 		label = "filter: explicit reviewer only"
 	}
-	return appPadding.Render(zone.Mark(ZoneFilterToggle, boldStyle.Render("  "+label+"  (click or f)  ")))
+	filterChip := zone.Mark(ZoneFilterToggle, boldStyle.Render("  "+label+"  (click or f)  "))
+	refreshLabel := "  refresh (click or R)  "
+	if refreshing {
+		refreshLabel = "  refreshing…  "
+	}
+	refreshChip := zone.Mark(ZoneRefreshList, dimStyle.Render(refreshLabel))
+	return appPadding.Render(filterChip + " " + refreshChip)
 }
 
 func (m *Model) renderStatus() string {
@@ -1554,7 +1572,7 @@ func (m *Model) renderStatus() string {
 		hint = "↑/↓ · click · double-click open · enter · u URL · O browser · o/, settings · ctrl+g repo ctx · ctrl+r repo agents · " +
 			m.renderBuildLangAgentsHint(lOwner, lRepo, lNum) +
 			" · " + m.renderBuildAgentsHint(owner, repo) +
-			" · / filter · f · R · q quit" + dry
+			" · / search · f filter · R refresh · q quit" + dry
 	case modeDetail:
 		owner, repo, number := "", "", 0
 		if m.currentPR != nil {

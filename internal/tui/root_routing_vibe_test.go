@@ -10,13 +10,14 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/review"
 )
 
-// The deferred vibe-coach feature is driven by two custom messages that
-// fly between a goroutine and the overlay: stagedFindingPostedMsg (which
-// triggers the approve→summary transition after the last card is posted)
-// and vibeCoachDoneMsg (the goroutine's response). Both flow THROUGH the
-// root Model.Update — which historically called `ro.Update(msg)` and
-// discarded the returned tea.Cmd, OR didn't have a case for the message
-// at all.
+// The TUI's lazy vibe-coach re-run (kicked off when the user changed
+// skips between approve and summary) is driven by two custom messages
+// that fly between a goroutine and the overlay: stagedFindingPostedMsg
+// (which triggers the approve→summary transition after the last card
+// is posted) and vibeCoachDoneMsg (the goroutine's response). Both
+// flow THROUGH the root Model.Update — which historically called
+// `ro.Update(msg)` and discarded the returned tea.Cmd, OR didn't have
+// a case for the message at all.
 //
 // The user-visible symptom was the overlay flipping to
 // phaseGeneratingSummary ("Refining summary with your final selections…")

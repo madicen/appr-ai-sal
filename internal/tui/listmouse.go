@@ -24,7 +24,7 @@ const (
 
 // listBodyOriginY is screen Y of the first row of the list widget (inside horizontal padding).
 func (m *Model) listBodyOriginY() int {
-	filterLines := lipgloss.Height(renderFilterLine(m.explicitReviewerOnly))
+	filterLines := lipgloss.Height(renderFilterLine(m.explicitReviewerOnly, !m.prsLoaded))
 	return lipgloss.Height(m.renderHeader()) + filterLines
 }
 
