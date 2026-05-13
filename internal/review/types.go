@@ -67,7 +67,10 @@ type Finding struct {
 	AnchorExcerpt string `json:"anchor_excerpt,omitempty"`
 	// SuggestionStrippedReason is set when validateAndPruneSuggestions cleared
 	// a non-empty Suggestion because applying it would clearly break the file
-	// (no-op replace, duplicates a nearby line, anchor-vs-comment mismatch).
+	// (no-op replace, duplicates a nearby line, anchor-vs-comment mismatch),
+	// or when validateAnchorExcerpt cleared a suggestion because the model's
+	// AnchorExcerpt did not match the line at Path:Line and could not be
+	// uniquely relocated within the same hunk.
 	// Carried through to the TUI so the human reviewer can see why the
 	// one-click fix is missing instead of guessing the model "forgot". Never
 	// posted to GitHub.
@@ -78,6 +81,13 @@ type Finding struct {
 	// info in that case; this field records why so the TUI can hint at the
 	// reason. Never posted to GitHub.
 	ActionabilityNote string `json:"-"`
+	// AnchorRelocatedFrom records the original (wrong) line number when
+	// validateAnchorExcerpt moved this finding to a different line in the
+	// same hunk because the model's AnchorExcerpt uniquely matched there.
+	// Zero when no relocation happened. Used by the TUI to render an
+	// "auto-corrected from line N → M" note so the reviewer can sanity-check
+	// the new position before accepting. Never posted to GitHub.
+	AnchorRelocatedFrom int `json:"-"`
 }
 
 // findingIsInlinePostable reports whether f should become a GitHub inline comment.

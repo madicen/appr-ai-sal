@@ -104,9 +104,12 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// declaration needs renaming, but the anchor is a comment-only
 		// line). See anchor_kind.go.
 		res.Findings = validateAnchorKind(res.Findings, parsedFiles)
-		// Strip suggestions where the model's quoted anchor_excerpt does
-		// not match the actual line at path:line — strong evidence the
-		// model anchored at the wrong line. See anchor_excerpt.go.
+		// Anchor-excerpt cross-check: when the model's quoted excerpt
+		// doesn't match the line at path:line we try to re-anchor on a
+		// unique excerpt match elsewhere in the same hunk (recording
+		// AnchorRelocatedFrom for the TUI to surface), and fall back to
+		// stripping the suggestion when no/ambiguous match. See
+		// anchor_excerpt.go for the full posture.
 		res.Findings = validateAnchorExcerpt(res.Findings, parsedFiles)
 		// Demote bare "X lacks a comment / lacks tests" findings to info
 		// when no proposed wording or suggestion is present. Docs/testing
@@ -277,14 +280,20 @@ const reviewOutputContract = `Return your review as a single JSON object and not
       "severity": "info" | "warning" | "error" | "critical",
       "comment": "<the full human-readable review text: finding, rationale, and what to do. Use plain text or simple markdown. Put ALL narrative, questions, and explanations here.>",
       "suggestion": "<EXACT literal replacement text GitHub will apply at path/line — see the suggestion contract below. Required for any local fix; empty string for findings whose fix is non-local or non-mechanical.>",
-      "anchor_excerpt": "<VERBATIM copy of the post-image line at path:line, including leading whitespace exactly as it appears in the diff. REQUIRED whenever you fill in 'suggestion' on an inline finding — the review tool deterministically compares this against the actual line and STRIPS your suggestion on mismatch, so getting this wrong is worse than leaving suggestion empty. Use empty string for general findings (path '', line 0) and for inline findings whose 'suggestion' is empty.>"
+      "anchor_excerpt": "<VERBATIM copy of the post-image line at path:line, including leading whitespace exactly as it appears in the diff. REQUIRED whenever you fill in 'suggestion' on an inline finding — the review tool deterministically compares this against the actual line and STRIPS your suggestion on mismatch (or auto-relocates the finding when the excerpt uniquely matches a different line in the same hunk), so getting this wrong is worse than leaving suggestion empty. Use empty string for general findings (path '', line 0) and for inline findings whose 'suggestion' is empty.>"
     }
   ]
 }
 
 ANCHOR PROOF (anchor_excerpt — DETERMINISTICALLY ENFORCED):
 
-Whenever "suggestion" is non-empty, "anchor_excerpt" MUST be the exact post-image text of the diff line at "line" (the line that will be DELETED when the author clicks Apply). Copy it character-for-character from the unified diff including its leading whitespace; do not strip leading "+", "-", or " " from the diff prefix (the diff shows them; the line itself does not have them). The tool normalises whitespace before comparing, but mismatch on substantive content is treated as evidence you mis-anchored and the suggestion is dropped with no human override. If you are not certain which line you are anchoring at, leave BOTH "anchor_excerpt" and "suggestion" empty and let the prose in "comment" carry the load.
+Whenever "suggestion" is non-empty, "anchor_excerpt" MUST be the exact post-image text of the diff line at "line" (the line that will be DELETED when the author clicks Apply). Copy it character-for-character from the unified diff including its leading whitespace; do not strip leading "+", "-", or " " from the diff prefix (the diff shows them; the line itself does not have them). The tool normalises whitespace before comparing.
+
+Mismatch handling (so you know what's at stake):
+   - If your excerpt does not match the line at "line" but UNIQUELY matches a different line in the same hunk, we auto-relocate the finding to that line and surface a banner to the reviewer. Quote the line correctly and this is invisible.
+   - If your excerpt does not match anywhere in the hunk, or matches multiple lines, your suggestion is stripped (the prose comment survives). A short excerpt (under 20 characters) is treated the same way — short lines like "}" or "return nil" match all over the file and can't be safely relocated.
+
+If you are not certain which line you are anchoring at, leave BOTH "anchor_excerpt" and "suggestion" empty and let the prose in "comment" carry the load.
 
 ACTIONABILITY BAR (HARD REQUIREMENT — applies to EVERY finding, inline or general):
 
