@@ -1,0 +1,39 @@
+package model
+
+import (
+	tea "github.com/charmbracelet/bubbletea"
+	zone "github.com/lrstanley/bubblezone"
+
+	"github.com/madicen/appr-ai-sal/internal/tui/zones"
+)
+
+// treeRowFromMouse resolves a file row from a click: first bubblezone row marks,
+// then the viewport body zone so padded blank rows below the last file still map
+// to a row (see bubbles/viewport lipgloss Height padding).
+//
+// Row N now sits at viewport line N (no in-pane header), so the body fallback
+// maps line index → row index 1:1 with no off-by-one.
+func (m *Model) treeRowFromMouse(msg tea.MouseMsg) (int, bool) {
+	for i := range m.treeRows {
+		if z := zone.Get(zones.TreeFile(i)); z != nil && z.InBounds(msg) {
+			return i, true
+		}
+	}
+	zb := zone.Get(zones.PaneTreeBody)
+	if zb == nil || !zb.InBounds(msg) || len(m.treeRows) == 0 {
+		return -1, false
+	}
+	_, ry := zb.Pos(msg)
+	if ry < 0 {
+		return -1, false
+	}
+	top := m.treeView.YOffset
+	contentLine := top + ry
+	if contentLine < 0 {
+		return -1, false
+	}
+	if contentLine >= len(m.treeRows) {
+		contentLine = len(m.treeRows) - 1
+	}
+	return contentLine, true
+}

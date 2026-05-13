@@ -1,0 +1,251 @@
+package review
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/madicen/appr-ai-sal/internal/review"
+)
+
+// CloseMsg is the signal the overlay sends to the root model when
+// the user is done (or chose to abort). Root then pops the stack.
+type CloseMsg struct{}
+
+func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
+	switch p.Stage {
+	case "checkout":
+		if p.Err != nil {
+			m.log = append(m.log, "checkout: "+p.Err.Error())
+		} else {
+			m.log = append(m.log, "worktree: "+p.Detail)
+		}
+	case "diff":
+		if p.Err != nil {
+			m.log = append(m.log, "diff: "+p.Err.Error())
+		} else {
+			m.log = append(m.log, "diff: "+p.Detail)
+		}
+	case "repo-context":
+		m.log = append(m.log, "repo context: "+p.Detail)
+	case "context-summary":
+		m.log = append(m.log, "context vs change: "+p.Detail)
+	case "lang-agents":
+		m.applyContextInjection(overlayAgentLangBriefs, p)
+	case "tech-agents":
+		m.applyContextInjection(overlayAgentTechExperts, p)
+	case "repo-agents":
+		m.applyContextInjection(overlayAgentRepoExperts, p)
+	case "repo-evidence":
+		m.log = append(m.log, "repo evidence: "+p.Detail)
+	case "convention-witness":
+		m.log = append(m.log, "convention witness: "+p.Detail)
+	case "specialist":
+		// runner emits "<name>:start", "<name>:done", or "<name>:retry N (...)".
+		parts := strings.SplitN(p.Detail, ":", 2)
+		if len(parts) != 2 {
+			return nil
+		}
+		name, detail := parts[0], parts[1]
+		m.applyAgentDetail(name, detail, p)
+	case "vibe-coach":
+		// runner emits Detail = "start" / "done" / "retry N (...)".
+		m.applyAgentDetail(review.SpecVibeCoach, p.Detail, p)
+	case "repo-arbiter":
+		// runner emits Detail = "start" / "done" / "skipped".
+		m.applyAgentDetail(p.Stage, p.Detail, p)
+	case "fetch-pr":
+		if p.Err != nil {
+			m.log = append(m.log, "fetch PR: "+p.Err.Error())
+		}
+	case "done":
+		// Root model receives the same progress message and sets m.draft. The
+		// overlay also adopts it directly so we can compute approval cards.
+		if p.Final != nil {
+			adoptCmd := m.AdoptDraft(p.Final)
+			fetchCmd := m.CmdAfterAdoptIfNeeded()
+			return tea.Batch(adoptCmd, fetchCmd)
+		}
+	}
+	return nil
+}
+
+// applyAgentDetail handles the "start", "done", and "retry N (...)" sub-states
+// uniformly across every agent type. It does NOT demote other running agents.
+// Multiple agents may be running when parallel dispatch is enabled in repo-context.json.
+func (m *Model) applyAgentDetail(name, detail string, p review.Progress) {
+	i := m.agentIndex(name)
+	if i < 0 {
+		return
+	}
+	row := &m.agents[i]
+	switch {
+	case detail == "start":
+		row.phase = oaRunning
+		row.startedAt = time.Now()
+		row.finishedAt = time.Time{}
+		row.err = nil
+		// Move keyboard focus to the most recently started agent so j/k
+		// hovering tracks "what just happened", but don't override the user's
+		// explicit selection if they've pressed j/k already.
+		if m.cursor < 0 || m.cursor >= len(m.agents) {
+			m.cursor = i
+		}
+	case detail == "skipped":
+		now := time.Now()
+		row.phase = oaSkipped
+		row.startedAt = now
+		row.finishedAt = now
+		row.err = nil
+	case detail == "done":
+		row.finishedAt = time.Now()
+		row.expanded = false
+		switch {
+		case p.Result != nil && p.Result.Err != nil:
+			row.phase = oaErr
+			row.err = p.Result.Err
+		case p.Result != nil:
+			row.phase = oaDone
+			row.summary = p.Result.Summary
+			row.findingsN = len(p.Result.Findings)
+		case p.Vibe != nil && p.Vibe.Err != nil:
+			row.phase = oaErr
+			row.err = p.Vibe.Err
+		case p.Vibe != nil:
+			row.phase = oaDone
+			row.summary = p.Vibe.Summary
+			row.findingsN = len(p.Vibe.Prompts)
+		case p.Arbiter != nil && p.Arbiter.Err != nil:
+			row.phase = oaErr
+			row.err = p.Arbiter.Err
+		case p.Arbiter != nil:
+			row.phase = oaDone
+			row.summary = formatArbiterRowSummary(p.Arbiter)
+			row.findingsN = len(p.Arbiter.Suppressed) + len(p.Arbiter.Demoted)
+		default:
+			row.phase = oaDone
+		}
+	case strings.HasPrefix(detail, "retry"):
+		// detail looks like "retry 2 (parse specialist output: ...)"
+		row.retries++
+		row.lastRetry = strings.TrimSpace(detail)
+	}
+}
+
+func (m *Model) agentIndex(name string) int {
+	for i := range m.agents {
+		if m.agents[i].name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// applyContextInjection drives one of the synthetic Context-injection rows
+// (language-briefs / tech-experts / repo-experts) from a runner Progress.
+//
+// Detail strings the runner emits and how this maps them onto row state:
+//   - "warning: ..."           → oaErr (load failure; surface to user)
+//   - "disabled"               → oaSkipped ("disabled" right-side detail)
+//   - "" / "none" / "none ..." → oaSkipped ("none configured" detail)
+//   - "injected ..."           → oaDone with the detail as summary and a
+//     count of injected briefs in findingsN
+//   - "loaded N brief(s)"      → oaDone with N parsed into findingsN
+//
+// All injection stages are emitted at most once per run, so rows that
+// transition straight from oaPending to a terminal phase are expected.
+func (m *Model) applyContextInjection(name string, p review.Progress) {
+	i := m.agentIndex(name)
+	if i < 0 {
+		return
+	}
+	row := &m.agents[i]
+	now := time.Now()
+	if row.startedAt.IsZero() {
+		row.startedAt = now
+	}
+	row.finishedAt = now
+	row.expanded = false
+	detail := strings.TrimSpace(p.Detail)
+	switch {
+	case p.Err != nil:
+		row.phase = oaErr
+		row.err = p.Err
+		row.summary = detail
+	case strings.HasPrefix(detail, "warning:"):
+		row.phase = oaErr
+		row.err = fmt.Errorf("%s", strings.TrimSpace(strings.TrimPrefix(detail, "warning:")))
+		row.summary = detail
+	case detail == "" || detail == "none" || strings.HasPrefix(detail, "none"):
+		row.phase = oaSkipped
+		row.summary = detail
+		row.findingsN = 0
+		// none-injected with a "missing: ..." tail is still useful info
+		// for the log so the user notices unconfigured langs/techs.
+		if detail != "" && detail != "none" {
+			m.log = append(m.log, overlayAgentLabel(name)+": "+detail)
+		}
+	case detail == "disabled":
+		row.phase = oaSkipped
+		row.summary = "disabled in repo-context.json"
+	case strings.HasPrefix(detail, "loaded "):
+		row.phase = oaDone
+		row.summary = detail
+		row.findingsN = parseLoadedBriefCount(detail)
+	case strings.HasPrefix(detail, "injected"):
+		row.phase = oaDone
+		row.summary = detail
+		row.findingsN = countInjectedItems(detail)
+	default:
+		row.phase = oaDone
+		row.summary = detail
+	}
+}
+
+// parseLoadedBriefCount pulls "N" out of a "loaded N brief(s)" detail
+// string. Returns 0 when the format doesn't match (the row still
+// renders, just without a count badge).
+func parseLoadedBriefCount(detail string) int {
+	rest := strings.TrimSpace(strings.TrimPrefix(detail, "loaded"))
+	end := strings.Index(rest, " ")
+	if end < 0 {
+		end = len(rest)
+	}
+	n := 0
+	for _, r := range rest[:end] {
+		if r < '0' || r > '9' {
+			return 0
+		}
+		n = n*10 + int(r-'0')
+	}
+	return n
+}
+
+// countInjectedItems counts the labels inside a "injected a+b+c" or
+// "injected a, b, c" detail string. The runner emits "+" between
+// language briefs and tech labels.
+func countInjectedItems(detail string) int {
+	rest := strings.TrimSpace(strings.TrimPrefix(detail, "injected"))
+	rest = strings.TrimSpace(rest)
+	// Detail may include "; missing: ..." (lang-agents only); drop it
+	// before counting.
+	if idx := strings.Index(rest, ";"); idx >= 0 {
+		rest = strings.TrimSpace(rest[:idx])
+	}
+	if rest == "" {
+		return 0
+	}
+	// Normalise "a, b" → "a+b" for a single split path.
+	rest = strings.ReplaceAll(rest, ", ", "+")
+	rest = strings.ReplaceAll(rest, ",", "+")
+	parts := strings.Split(rest, "+")
+	n := 0
+	for _, p := range parts {
+		if strings.TrimSpace(p) != "" {
+			n++
+		}
+	}
+	return n
+}
