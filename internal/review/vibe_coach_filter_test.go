@@ -367,3 +367,130 @@ func TestFilterAuthorPromptsTitlesEmpty(t *testing.T) {
 		t.Errorf("expected dropped titles=[untitled], got %v", dropped)
 	}
 }
+
+// TestSpecialistsForVibeCoachClearsSummaryWhenAllFindingsSuppressed is the
+// regression test for the bug where the vibe-coach re-surfaced an
+// arbiter-suppressed finding via the specialist's aggregate Summary text.
+// The specialist's Summary typically describes the very findings the
+// arbiter dropped ("Found inconsistent label naming throughout"), so
+// leaving it intact lets the vibe-coach LLM generate paste-ready prompts
+// for findings the reviewer already decided not to ship.
+func TestSpecialistsForVibeCoachClearsSummaryWhenAllFindingsSuppressed(t *testing.T) {
+	suppressed := Finding{Path: "a.yaml", Line: 10, Side: "RIGHT", Severity: SeverityWarning, Comment: "snake_case label"}
+	specialists := []SpecialistResult{
+		{
+			Specialist: SpecFormatting,
+			Summary:    "Found inconsistent label naming throughout the metadata.",
+			Findings:   []Finding{suppressed},
+		},
+	}
+	d := &Draft{
+		Specialists: specialists,
+		RepoArbiter: &RepoArbiterResult{
+			suppressKeySet: map[string]struct{}{
+				suppressionKey(SpecFormatting, "a.yaml", 10, "RIGHT"): {},
+			},
+		},
+	}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if len(out) != 1 {
+		t.Fatalf("want 1 specialist entry, got %d", len(out))
+	}
+	if len(out[0].Findings) != 0 {
+		t.Errorf("want 0 surviving findings, got %d: %#v", len(out[0].Findings), out[0].Findings)
+	}
+	if out[0].Summary != "" {
+		t.Errorf("want Summary cleared (because every finding was filtered), got %q", out[0].Summary)
+	}
+	if specialists[0].Summary == "" {
+		t.Error("must not mutate input slice's Summary")
+	}
+}
+
+// TestSpecialistsForVibeCoachClearsSummaryOnPartialSuppression locks in the
+// stricter posture: even when a single inline finding is filtered out of
+// a multi-finding specialist, we clear the Summary. The aggregate
+// Summary may name dropped findings ("issues with X and Y", where Y was
+// suppressed); the surviving inline findings already speak for
+// themselves, so dropping the Summary is the safer default than risking
+// the leak the user reported.
+func TestSpecialistsForVibeCoachClearsSummaryOnPartialSuppression(t *testing.T) {
+	drop := Finding{Path: "a.yaml", Line: 1, Side: "RIGHT", Severity: SeverityWarning, Comment: "drop"}
+	keep := Finding{Path: "a.yaml", Line: 2, Side: "RIGHT", Severity: SeverityWarning, Comment: "keep"}
+	specialists := []SpecialistResult{
+		{
+			Specialist: SpecFormatting,
+			Summary:    "Found 2 formatting issues: bad label naming and indentation drift.",
+			Findings:   []Finding{drop, keep},
+		},
+	}
+	d := &Draft{
+		Specialists: specialists,
+		RepoArbiter: &RepoArbiterResult{
+			suppressKeySet: map[string]struct{}{
+				suppressionKey(SpecFormatting, "a.yaml", 1, "RIGHT"): {},
+			},
+		},
+	}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if len(out[0].Findings) != 1 || out[0].Findings[0].Comment != "keep" {
+		t.Fatalf("expected only 'keep' to survive, got %+v", out[0].Findings)
+	}
+	if out[0].Summary != "" {
+		t.Errorf("want Summary cleared even on partial suppression, got %q", out[0].Summary)
+	}
+}
+
+// TestSpecialistsForVibeCoachKeepsSummaryWhenNothingFiltered confirms the
+// no-op case: when nothing is dropped (e.g. all findings are PR-wide and
+// therefore not filterable), the specialist's Summary survives so the
+// vibe-coach still has its aggregate context.
+func TestSpecialistsForVibeCoachKeepsSummaryWhenNothingFiltered(t *testing.T) {
+	prWide := Finding{Path: "", Line: 0, Severity: SeverityWarning, Comment: "global"}
+	specialists := []SpecialistResult{
+		{
+			Specialist: SpecDesign,
+			Summary:    "One PR-wide design note.",
+			Findings:   []Finding{prWide},
+		},
+	}
+	d := &Draft{
+		Specialists: specialists,
+		RepoArbiter: &RepoArbiterResult{
+			suppressKeySet: map[string]struct{}{
+				// Key targets a different specialist; this specialist
+				// has nothing inline to suppress.
+				suppressionKey(SpecFormatting, "x.go", 1, "RIGHT"): {},
+			},
+		},
+	}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if out[0].Summary != "One PR-wide design note." {
+		t.Errorf("Summary should survive when no findings were dropped, got %q", out[0].Summary)
+	}
+}
+
+// TestSpecialistsForVibeCoachKeepsSummaryForFailedSpecialist guards the
+// s.Err early-continue: a failed specialist's Summary (typically empty,
+// but possibly populated by partial output) should not be touched by the
+// filter — its findings are not iterated at all.
+func TestSpecialistsForVibeCoachKeepsSummaryForFailedSpecialist(t *testing.T) {
+	specialists := []SpecialistResult{
+		{
+			Specialist: SpecDocs,
+			Summary:    "partial output before failure",
+			Err:        fmtErrorf("boom"),
+		},
+	}
+	d := &Draft{
+		Specialists: specialists,
+		UserSkipPostKeys: map[string]struct{}{
+			// Force the function to take the filtering branch.
+			"docs|x.go|1|RIGHT": {},
+		},
+	}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if out[0].Summary != "partial output before failure" {
+		t.Errorf("failed-specialist Summary must be preserved, got %q", out[0].Summary)
+	}
+}

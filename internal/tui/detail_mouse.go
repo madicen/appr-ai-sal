@@ -5,16 +5,6 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 )
 
-func treeViewportScrollLines(m *Model) int {
-	if m.treeScrollLines > 0 {
-		return m.treeScrollLines
-	}
-	// Fallback before first refreshDetailViews. With the redundant in-pane
-	// "Changed files" header dropped, the viewport line count equals the row
-	// count exactly.
-	return max(1, len(m.treeRows))
-}
-
 // treeRowFromMouse resolves a file row from a click: first bubblezone row marks,
 // then the viewport body zone so padded blank rows below the last file still map
 // to a row (see bubbles/viewport lipgloss Height padding).

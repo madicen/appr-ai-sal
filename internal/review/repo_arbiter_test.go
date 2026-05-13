@@ -187,7 +187,15 @@ func TestFinalizeRepoArbiterDropsCriticalDemote(t *testing.T) {
 	}
 }
 
-func TestFinalizeRepoArbiterRejectsMultiRankDemote(t *testing.T) {
+// TestFinalizeRepoArbiterAcceptsMultiRankDemote is the regression for the
+// bug where the arbiter judged an error finding to be fully tolerated by
+// the repo brief, emitted demote {from: error, to: info}, and the tool
+// rejected the demote as "multi-rank" — leaving severity at error so
+// vibe-coach kept blocking on the same finding the arbiter had just
+// excused. Multi-rank drops are now allowed; the only invariant left is
+// "strictly downward", which TestFinalizeRepoArbiterRejectsUpwardDemote
+// covers.
+func TestFinalizeRepoArbiterAcceptsMultiRankDemote(t *testing.T) {
 	d := &Draft{
 		Specialists: []SpecialistResult{
 			{Specialist: SpecDocs, Findings: []Finding{
@@ -201,11 +209,78 @@ func TestFinalizeRepoArbiterRejectsMultiRankDemote(t *testing.T) {
 		},
 	}
 	FinalizeRepoArbiter(ar, d)
+	if len(ar.Demoted) != 1 {
+		t.Fatalf("expected the error→info demote to be accepted, got Demoted=%+v, DroppedDemotions=%+v", ar.Demoted, ar.DroppedDemotions)
+	}
+	if ar.Demoted[0].To != SeverityInfo {
+		t.Errorf("Demoted[0].To = %q, want info", ar.Demoted[0].To)
+	}
+	if d.Specialists[0].Findings[0].Severity != SeverityInfo {
+		t.Errorf("finding severity = %q, want info (the demote must mutate the draft so vibe-coach sees the new severity)", d.Specialists[0].Findings[0].Severity)
+	}
+}
+
+// TestFinalizeRepoArbiterRejectsUpwardDemote keeps the only structural
+// rule that survived the rule-relaxation: an arbiter cannot use "demote"
+// to RAISE a finding's severity. Same-rank no-ops are rejected too.
+func TestFinalizeRepoArbiterRejectsUpwardDemote(t *testing.T) {
+	tests := []struct {
+		name string
+		from Severity
+		to   Severity
+	}{
+		{"upward warning→error", SeverityWarning, SeverityError},
+		{"upward info→warning", SeverityInfo, SeverityWarning},
+		{"same warning→warning", SeverityWarning, SeverityWarning},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &Draft{
+				Specialists: []SpecialistResult{
+					{Specialist: SpecDocs, Findings: []Finding{
+						{Path: "x.go", Line: 3, Side: "RIGHT", Severity: tc.from, Comment: "x"},
+					}},
+				},
+			}
+			ar := &RepoArbiterResult{
+				Demoted: []DemotedFindingRef{
+					{Specialist: "docs", Path: "x.go", Line: 3, Side: "RIGHT", To: tc.to},
+				},
+			}
+			FinalizeRepoArbiter(ar, d)
+			if len(ar.Demoted) != 0 {
+				t.Errorf("expected upward/same-rank demote rejected, got Demoted=%+v", ar.Demoted)
+			}
+			if d.Specialists[0].Findings[0].Severity != tc.from {
+				t.Errorf("severity mutated from %q to %q on a rejected demote", tc.from, d.Specialists[0].Findings[0].Severity)
+			}
+		})
+	}
+}
+
+// TestFinalizeRepoArbiterRejectsUnknownTargetSeverity guards against
+// garbage values: the arbiter LLM occasionally emits things like "low"
+// or "moderate" that aren't in our enum. We refuse to demote into them
+// rather than guessing.
+func TestFinalizeRepoArbiterRejectsUnknownTargetSeverity(t *testing.T) {
+	d := &Draft{
+		Specialists: []SpecialistResult{
+			{Specialist: SpecDocs, Findings: []Finding{
+				{Path: "x.go", Line: 3, Side: "RIGHT", Severity: SeverityError, Comment: "x"},
+			}},
+		},
+	}
+	ar := &RepoArbiterResult{
+		Demoted: []DemotedFindingRef{
+			{Specialist: "docs", Path: "x.go", Line: 3, Side: "RIGHT", To: "low"},
+		},
+	}
+	FinalizeRepoArbiter(ar, d)
 	if len(ar.Demoted) != 0 {
-		t.Fatalf("expected multi-rank demote refused, got %d", len(ar.Demoted))
+		t.Errorf("expected unknown target severity rejected, got Demoted=%+v", ar.Demoted)
 	}
 	if d.Specialists[0].Findings[0].Severity != SeverityError {
-		t.Fatal("severity should not have been mutated")
+		t.Error("severity must not be mutated when the demote is rejected")
 	}
 }
 

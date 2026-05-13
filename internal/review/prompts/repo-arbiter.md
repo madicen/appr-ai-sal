@@ -45,13 +45,19 @@ one that does the job:
   contradicts an explicit repo norm in the matching brief, or when the
   convention witness is `congruent` *and* the brief explicitly says the
   pattern is tolerated.
-- **demote** — drop the finding's severity by exactly one rank
-  (`error`→`warning`, `warning`→`info`). The finding stays visible at
-  strict review intensity, but balanced/lenient/critical-only intensities
-  drop the demoted rank automatically via the strictness floor. Use when
-  the finding is *plausibly* worth raising but the convention witness is
-  `congruent` (the rest of the repo doesn't do this either) and the brief
-  is silent or only weakly tolerates it.
+- **demote** — drop the finding's severity to any lower rank you judge
+  appropriate (`error`→`warning`, `error`→`info`, `warning`→`info`). The
+  finding stays visible at strict review intensity, but
+  balanced/lenient/critical-only intensities drop the lower-severity
+  finding automatically via the strictness floor. Use when the finding is
+  *plausibly* worth raising but the convention witness is `congruent`
+  (the rest of the repo doesn't do this either) and the brief is silent
+  or only weakly tolerates it. **Pick the lowest severity that still
+  honestly represents your judgement** — a half-demoted `error`→`warning`
+  on a finding the brief plainly tolerates will still read as blocking to
+  vibe-coach, which defeats the point of demoting at all. If the brief
+  fully tolerates the pattern, demote straight to `info` (or use
+  `suppress` when the severity rules allow).
 
 When in doubt between suppress and demote, prefer **demote** — it preserves
 the signal under strict review and only quiets the finding when the user
@@ -83,8 +89,13 @@ appropriate.
   (regardless of specialist).
 - **Never** demote a finding from the **security** specialist.
 - **Never** demote a finding at **severity critical**.
-- A demote MUST drop exactly one rank. The tool drops entries that try to
-  skip ranks or that target `info` severity (no lower rank exists).
+- A demote MUST move STRICTLY DOWNWARD. The tool drops entries whose `to`
+  severity is the same as or higher than the current one (upward
+  "demotes" are rejected), targets a non-existent severity, or omits
+  `to` on a finding that's already at `info` (no lower rank exists).
+  Multi-rank drops (`error`→`info`) ARE allowed when the brief justifies
+  it — that's how you fully de-fang a finding the repo deliberately
+  tolerates.
 - Suppression and demotion entries must reference an inline finding the
   tool already knows about — same `path` and `line` (and `side`,
   defaulting RIGHT) as what the specialist filed; otherwise the tool drops

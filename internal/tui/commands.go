@@ -183,6 +183,39 @@ func postSingleFindingCmd(ref gh.Ref, pr *gh.PR, specialist string, f review.Fin
 	}
 }
 
+// postSingleFindingFileLevelCmd posts one finding as a file-level review
+// comment (subject_type=file, no line/side). The TUI reaches for this when
+// the reviewer presses F on a cardError state — i.e. the finding's
+// intended line isn't on a hunk in the current diff AND the AnchorExcerpt
+// relocation didn't find a unique fallback line. The body adds a short
+// "(intended for line N — anchored to file because that line isn't on a
+// hunk in the current diff)" preamble before the usual comment so the
+// reader on GitHub still sees the original line the model meant.
+func postSingleFindingFileLevelCmd(ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, dryRun bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		body := review.ReviewCommentBodyForFileLevel(specialist, f)
+		if dryRun {
+			preview := fmt.Sprintf("POST %s/%s/pulls/%d/comments (file-level)\n\n%s",
+				ref.Owner, ref.Repo, ref.Number, prettyJSON(struct {
+					Body        string `json:"body"`
+					CommitID    string `json:"commit_id"`
+					Path        string `json:"path"`
+					SubjectType string `json:"subject_type"`
+				}{Body: body, CommitID: pr.HeadSHA, Path: f.Path, SubjectType: "file"}))
+			return dryRunPayloadMsg{Title: "Dry-run: single file-level comment (not posted)", Payload: preview}
+		}
+		if drift := preflightHeadDrift(ctx, ref, pr); drift != nil {
+			return errMsg{drift}
+		}
+		if err := gh.CreatePullReviewFileLevelComment(ctx, ref, pr.HeadSHA, f.Path, body); err != nil {
+			return errMsg{err}
+		}
+		return stagedFindingPostedMsg{}
+	}
+}
+
 // preflightHeadDrift returns a *gh.HeadDriftError when the PR's current head
 // SHA on GitHub doesn't match the SHA we cached on draft/pr (force-push,
 // new commit). It returns nil if the SHAs match, if pr is nil, or if the

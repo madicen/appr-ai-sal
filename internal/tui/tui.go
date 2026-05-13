@@ -471,8 +471,29 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		)
 
 	case stagedFindingPostedMsg:
+		// Posting the last card causes advanceCard → enterSummary, which
+		// returns the vibe-coach goroutine cmd. We MUST forward that cmd
+		// or the overlay flips into phaseGeneratingSummary with
+		// coachInFlight=true but no goroutine ever runs, leaving the UI
+		// stuck on the "Refining summary…" interstitial forever.
 		if ro := m.reviewOverlayOnTop(); ro != nil {
-			ro.Update(msg)
+			_, cmd := ro.Update(msg)
+			return m, cmd
+		}
+		return m, nil
+
+	case vibeCoachDoneMsg:
+		// The deferred vibe-coach goroutine completed. The overlay's
+		// handler is the only thing that knows what to do with the
+		// result; without an explicit case here the message would fall
+		// through the root Update without ever reaching the overlay,
+		// stranding it in phaseGeneratingSummary.
+		//
+		// The overlay's handler may re-issue against a fresher skip set
+		// (returns m.enterSummary()), so forward the cmd.
+		if ro := m.reviewOverlayOnTop(); ro != nil {
+			_, cmd := ro.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 
@@ -521,8 +542,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case existingPRCommentsMsg:
+		// The overlay's handler can return a markCardsAlreadyOnGitHub
+		// cmd — forward it so the duplicate-detection pass actually runs
+		// instead of stalling on "Checking GitHub for inline comments…".
 		if ro := m.reviewOverlayOnTop(); ro != nil {
-			ro.Update(msg)
+			_, cmd := ro.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 
@@ -545,7 +570,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if ro := m.reviewOverlayOnTop(); ro != nil {
-			ro.Update(msg)
+			_, cmd := ro.Update(msg)
+			return m, cmd
 		}
 		return m, nil
 
@@ -1548,16 +1574,6 @@ func (m *Model) renderStatus() string {
 		hint = "enter submit · esc cancel" + dry
 	}
 	return statusBar.Width(m.width).Render(hint)
-}
-
-func renderPRSummary(pr *gh.PR) string {
-	var b strings.Builder
-	b.WriteString(boldStyle.Render(fmt.Sprintf("%s#%d  %s", pr.Repository, pr.Number, pr.Title)) + "\n")
-	b.WriteString(dimStyle.Render(fmt.Sprintf("by @%s · %s → %s · %s", pr.Author, pr.HeadRef, pr.BaseRef, pr.URL)) + "\n")
-	if strings.TrimSpace(pr.Body) != "" {
-		b.WriteString("\n" + pr.Body + "\n")
-	}
-	return b.String()
 }
 
 func humanSince(t time.Time) string {

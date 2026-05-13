@@ -8,7 +8,6 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
 
-	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
 )
 
@@ -34,18 +33,6 @@ type treeRow struct {
 	IsDeleted   bool
 	FindingsN   int // count of inline findings anchored in this file (across all specialists)
 	HighestSev  string
-}
-
-func renderSectionTitle(title string) string {
-	return sectionTitleStyle.Render(strings.ToUpper(title))
-}
-
-// renderPRMeta is title + author/refs/URL (no PR body).
-func renderPRMeta(pr *gh.PR) string {
-	var b strings.Builder
-	b.WriteString(boldStyle.Render(fmt.Sprintf("%s#%d  %s", pr.Repository, pr.Number, pr.Title)) + "\n")
-	b.WriteString(dimStyle.Render(fmt.Sprintf("by @%s · %s → %s · %s", pr.Author, pr.HeadRef, pr.BaseRef, pr.URL)))
-	return b.String()
 }
 
 // buildTreeRows builds the list shown in the left tree pane.

@@ -330,6 +330,64 @@ func CreatePullReviewComment(ctx context.Context, ref Ref, commitID string, c Re
 	return nil
 }
 
+// pullReviewFileCommentInput is the JSON body for the file-level variant of
+// POST .../pulls/{n}/comments. The "subject_type" field switches the API
+// from "comment is anchored at this line in the diff" to "comment is
+// attached to this file as a whole" — no line or side required, and the
+// comment renders on the file header in the Files-changed tab instead of
+// on a specific diff row. The enum value MUST be lowercase ("file"); the
+// API rejects "FILE" despite older docs spelling it that way.
+type pullReviewFileCommentInput struct {
+	Body        string `json:"body"`
+	CommitID    string `json:"commit_id"`
+	Path        string `json:"path"`
+	SubjectType string `json:"subject_type"`
+}
+
+// CreatePullReviewFileLevelComment posts a single file-level review comment
+// on the PR — anchored to the file as a whole instead of to a particular
+// line in the diff. This is the escape hatch the TUI offers when a
+// finding's line no longer lands on any hunk (e.g. a force-push moved the
+// surrounding code and the model's anchor_excerpt didn't uniquely match a
+// new line either): the comment still attaches to the right file, just
+// without a precise diff anchor.
+//
+// Failure handling mirrors CreatePullReviewComment: on a non-2xx response
+// we return an *APIError parsed from gh's combined output with the failing
+// comment attached as a synthetic ReviewComment (line 0, no side) so the
+// caller's diagnostic-render path can name the file even though there was
+// no inline anchor.
+func CreatePullReviewFileLevelComment(ctx context.Context, ref Ref, commitID, path, body string) error {
+	if commitID == "" {
+		return fmt.Errorf("empty commit id")
+	}
+	if path == "" {
+		return fmt.Errorf("path is required for file-level comments")
+	}
+	payload := pullReviewFileCommentInput{
+		Body:        body,
+		CommitID:    commitID,
+		Path:        path,
+		SubjectType: "file",
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("marshal file-level comment: %w", err)
+	}
+	apiPath := fmt.Sprintf("repos/%s/%s/pulls/%d/comments", ref.Owner, ref.Repo, ref.Number)
+	cmd := exec.CommandContext(ctx, "gh", "api", apiPath, "--method", "POST", "--input", "-")
+	cmd.Stdin = bytes.NewReader(raw)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		ae := parseGHError(out, apiPath)
+		ae.CommitID = commitID
+		echo := ReviewComment{Path: path, Body: body}
+		ae.Comment = &echo
+		return ae
+	}
+	return nil
+}
+
 // GetPRHeadSHA returns just the current .head.sha for the PR. Used as a
 // lightweight pre-flight check before posting an inline comment, so we can
 // detect that the PR was force-pushed since the review was generated and
