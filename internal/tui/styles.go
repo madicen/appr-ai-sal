@@ -1,6 +1,10 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/madicen/appr-ai-sal/internal/theme"
+)
 
 var (
 	// Layout
@@ -32,20 +36,6 @@ var (
 				Background(lipgloss.AdaptiveColor{Light: "#E8E8E8", Dark: "#2C2C2C"}).
 				Padding(0, 0)
 
-	// Specialist tags shown next to comments
-	tagFormatting = tagStyle("#7AA2F7") // blue
-	tagDesign     = tagStyle("#BB9AF7") // purple
-	tagTesting    = tagStyle("#9ECE6A") // green
-	tagDocs       = tagStyle("#E0AF68") // yellow
-	tagSecurity   = tagStyle("#F7768E") // red
-	tagVibeCoach  = tagStyle("#7DCFFF") // cyan
-
-	// Severity styles for the inline finding lines
-	sevInfo     = lipgloss.NewStyle().Foreground(lipgloss.Color("#7AA2F7"))
-	sevWarning  = lipgloss.NewStyle().Foreground(lipgloss.Color("#E0AF68"))
-	sevError    = lipgloss.NewStyle().Foreground(lipgloss.Color("#F7768E")).Bold(true)
-	sevCritical = lipgloss.NewStyle().Foreground(lipgloss.Color("#FF5555")).Bold(true)
-
 	// Misc text styles
 	dimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 	boldStyle = lipgloss.NewStyle().Bold(true)
@@ -60,6 +50,9 @@ var (
 				Bold(true)
 )
 
+// tagStyle returns a row-tag style for the given hex background. Tag colours
+// come from the runtime theme (theme.Color), so styles are rebuilt on every
+// renderTag call rather than baked into package globals.
 func tagStyle(hex string) lipgloss.Style {
 	return lipgloss.NewStyle().
 		Foreground(lipgloss.Color("#FFFFFF")).
@@ -68,20 +61,55 @@ func tagStyle(hex string) lipgloss.Style {
 		Bold(true)
 }
 
+// Severity styles are rebuilt per call so they reflect any live theme
+// override. The variables below preserve the historical call-site shape
+// (sevWarning.Render("+ ")) without freezing the colour at startup.
+func sevStyle(k theme.Key, bold bool) lipgloss.Style {
+	s := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Color(k)))
+	if bold {
+		s = s.Bold(true)
+	}
+	return s
+}
+
+type severityStyle struct {
+	key  theme.Key
+	bold bool
+}
+
+func (s severityStyle) Render(parts ...string) string {
+	return sevStyle(s.key, s.bold).Render(parts...)
+}
+
+var (
+	sevInfo     = severityStyle{key: theme.KeySevInfo}
+	sevWarning  = severityStyle{key: theme.KeySevWarning}
+	sevError    = severityStyle{key: theme.KeySevError, bold: true}
+	sevCritical = severityStyle{key: theme.KeySevCritical, bold: true}
+)
+
 func renderTag(specialist string) string {
 	switch specialist {
 	case "formatting":
-		return tagFormatting.Render(specialist)
+		return tagStyle(theme.Color(theme.KeyTagFormatting)).Render(specialist)
 	case "design":
-		return tagDesign.Render(specialist)
+		return tagStyle(theme.Color(theme.KeyTagDesign)).Render(specialist)
 	case "testing":
-		return tagTesting.Render(specialist)
+		return tagStyle(theme.Color(theme.KeyTagTesting)).Render(specialist)
 	case "docs":
-		return tagDocs.Render(specialist)
+		return tagStyle(theme.Color(theme.KeyTagDocs)).Render(specialist)
 	case "security":
-		return tagSecurity.Render(specialist)
+		return tagStyle(theme.Color(theme.KeyTagSecurity)).Render(specialist)
 	case "vibe-coach":
-		return tagVibeCoach.Render(specialist)
+		return tagStyle(theme.Color(theme.KeyTagVibeCoach)).Render(specialist)
+	case "language-briefs":
+		return tagStyle(theme.Color(theme.KeyTagLangBriefs)).Render("language briefs")
+	case "tech-experts":
+		return tagStyle(theme.Color(theme.KeyTagTechExperts)).Render("tech experts")
+	case "repo-experts":
+		return tagStyle(theme.Color(theme.KeyTagRepoExperts)).Render("repo experts")
+	case "repo-arbiter":
+		return tagStyle(theme.Color(theme.KeyTagRepoArbiter)).Render("repo arbiter")
 	default:
 		return lipgloss.NewStyle().Padding(0, 1).Render(specialist)
 	}

@@ -2,6 +2,7 @@ package repoagents
 
 import (
 	ra "github.com/madicen/appr-ai-sal/internal/review/repoagents"
+	ta "github.com/madicen/appr-ai-sal/internal/review/techagents"
 )
 
 // DoneMsg signals the root TUI that this tab should close. Cancelled is
@@ -63,5 +64,45 @@ type savedMsg struct {
 type repoRemovedMsg struct {
 	Owner string
 	Repo  string
+	Err   error
+}
+
+// techsLoadedMsg delivers the per-repo TechAgents map for owner/repo.
+type techsLoadedMsg struct {
+	Owner string
+	Repo  string
+	TA    *ta.TechAgents
+	Err   error
+}
+
+// techRegenStartedMsg is emitted when a tech regenerate command is dispatched.
+type techRegenStartedMsg struct {
+	Owner string
+	Repo  string
+	Tech  string
+}
+
+// techRegenDoneMsg is emitted when a tech regenerate command completes.
+type techRegenDoneMsg struct {
+	Owner string
+	Repo  string
+	Tech  string
+	Agent *ta.Agent
+	Err   error
+}
+
+// techDeletedMsg is emitted when a delete-tech command completes.
+type techDeletedMsg struct {
+	Owner string
+	Repo  string
+	Tech  string
+	Err   error
+}
+
+// techSavedMsg is emitted when a manual tech-brief edit is persisted.
+type techSavedMsg struct {
+	Owner string
+	Repo  string
+	Tech  string
 	Err   error
 }

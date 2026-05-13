@@ -9,4 +9,6 @@ type DoneMsg struct {
 	Err       error
 	// RepoSaved is true after repo-context.json was written from the Repo context tab.
 	RepoSaved bool
+	// ThemeSaved is true after theme.json was written from the Theme tab.
+	ThemeSaved bool
 }

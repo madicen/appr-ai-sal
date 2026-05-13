@@ -56,7 +56,10 @@ func augmentPromptsForProvider(p aiconfig.Provider, systemPrompt, userPrompt str
 // langSection is the rendered language-conventions section (one or two
 // langagents briefs joined by FormatBriefsSection), shared across every
 // specialist — repo-independent and computed once per review.
-func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, langSection string) SpecialistResult {
+// techSection is the rendered technology-experts section (one labelled
+// block per configured tech for this repo); shared across every specialist
+// and computed once per review.
+func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, langSection string, techSection string) SpecialistResult {
 	res := SpecialistResult{Specialist: name, Findings: []Finding{}}
 
 	systemPrompt, err := SpecialistPrompt(name)
@@ -65,8 +68,8 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		return res
 	}
 
-	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, langSection)
-	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != ""
+	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, langSection, techSection)
+	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	systemPrompt, userPrompt = augmentPromptsForProvider(cfg.Provider, systemPrompt, userPrompt, hasContext)
 
 	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
@@ -205,9 +208,9 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	return res
 }
 
-func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, langSection string) string {
+func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, langSection string, techSection string) string {
 	var b strings.Builder
-	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != ""
+	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	if hasContext {
 		b.WriteString(claudeReviewIntro)
 	} else {
@@ -224,11 +227,17 @@ func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictn
 		b.WriteString("\n\n")
 	}
 	b.WriteString(strictnessBlockForSpecialists(strict))
-	// Language conventions go BEFORE the repo brief: language defaults
-	// are universal facts the repo-agent brief is allowed to override
-	// for repo-specific deltas, so the repo brief reads naturally after
-	// the universal one.
+	// Section ordering is intentional. Language conventions are universal
+	// facts (no repo, no tech). Technology experts are cross-repo
+	// conventions for one stack inside this repo. The repo-agent brief is
+	// per-(repo, specialist) and may override either; repo evidence is
+	// per-PR and is the most local of all. The downstream prompt reads
+	// from broadest to narrowest scope.
 	if s := strings.TrimSpace(langSection); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
+	if s := strings.TrimSpace(techSection); s != "" {
 		b.WriteString(s)
 		b.WriteString("\n\n")
 	}

@@ -52,6 +52,8 @@ github.com/lrstanley/bubblezone v1.0.0 h1:bIpUaBilD42rAQwlg/4u5aTqVAt6DSRKYZuSdm
 github.com/lrstanley/bubblezone v1.0.0/go.mod h1:kcTekA8HE/0Ll2bWzqHlhA2c513KDNLW7uDfDP4Mly8=
 github.com/lucasb-eyer/go-colorful v1.4.0 h1:UtrWVfLdarDgc44HcS7pYloGHJUjHV/4FwW4TvVgFr4=
 github.com/lucasb-eyer/go-colorful v1.4.0/go.mod h1:R4dSotOR9KMtayYi1e77YzuveK+i7ruzyGqttikkLy0=
+github.com/madicen/bubble-color-picker v0.1.1 h1:q0t8eB2fO30UmtG1yq8YtWwIWnAYKc+8TKaMO4Fw37k=
+github.com/madicen/bubble-color-picker v0.1.1/go.mod h1:FYuObZ/Qmkoxe7Fbj63KQR76gKBgc0kBfkdqp8+S6gs=
 github.com/madicen/bubble-overlay v0.0.0-20260501223332-738f3c5bb323 h1:rCcYGgrW5glpn4zbwQ62Xxq6oUgHWasrFjOe5VJUlM0=
 github.com/madicen/bubble-overlay v0.0.0-20260501223332-738f3c5bb323/go.mod h1:ORdxBpICBUVKcWInZJbjk3ITTemh2rK3DYSDHykkp10=
 github.com/mattn/go-isatty v0.0.20 h1:xfD0iDuEKnDkl03q4limB+vH+GxLEtL/jb4xVJSWWEY=

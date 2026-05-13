@@ -62,6 +62,11 @@ type Config struct {
 	// specialists and the repo arbiter, classifying testing/docs findings as
 	// congruent / divergent / unknown vs the PR's static evidence. Default true.
 	ConventionWitness bool `json:"convention_witness,omitempty"`
+	// TechAgents enables per-repo "technology expert" briefs (one brief per
+	// technology, shared across all specialists for that repo). When false,
+	// stored briefs are left on disk but not injected at review time.
+	// Default true.
+	TechAgents bool `json:"tech_agents,omitempty"`
 }
 
 // Default returns defaults suitable for merging.
@@ -80,6 +85,7 @@ func Default() *Config {
 		IncludeRepoEvidence:        true,
 		RepoArbiterDemotions:       true,
 		ConventionWitness:          true,
+		TechAgents:                 true,
 	}
 }
 
@@ -142,6 +148,11 @@ func Load() (*Config, error) {
 		c.ConventionWitness = fileCfg.ConventionWitness
 	} else {
 		c.ConventionWitness = true
+	}
+	if bytes.Contains(b, []byte(`"tech_agents"`)) {
+		c.TechAgents = fileCfg.TechAgents
+	} else {
+		c.TechAgents = true
 	}
 	c.Normalize()
 	return c, nil
