@@ -141,3 +141,140 @@ func TestNormaliseExcerpt(t *testing.T) {
 		}
 	}
 }
+
+// anchorRelocateDiff contains a hunk where multiple post-image lines have
+// distinct, substantive content so we can exercise the re-anchor path
+// (lines 3 and 6 share `result := process(config)` content for the
+// ambiguous-match case).
+const anchorRelocateDiff = `diff --git a/work.go b/work.go
+--- a/work.go
++++ b/work.go
+@@ -1,2 +1,9 @@
+ package work
+ 
++config := loadConfig("primary")
++result := process(config)
++log.Println("primary run complete")
++config := loadConfig("secondary")
++result := process(config)
++log.Println("secondary run complete")
+`
+
+// TestValidateAnchorExcerptReanchorsOnUniqueMatch reproduces the
+// screenshot failure mode: the model anchors at the wrong line but its
+// quoted excerpt uniquely matches a different line in the same hunk, so
+// we re-anchor and keep the suggestion intact.
+func TestValidateAnchorExcerptReanchorsOnUniqueMatch(t *testing.T) {
+	files := ParseDiff(anchorRelocateDiff)
+	f := Finding{
+		Path:          "work.go",
+		Line:          8, // wrong: "log.Println(\"secondary run complete\")"
+		Side:          "RIGHT",
+		Severity:      SeverityWarning,
+		Comment:       "Use log.Printf for structured logs.",
+		AnchorExcerpt: `log.Println("primary run complete")`,
+		Suggestion:    `log.Printf("primary run complete\n")`,
+	}
+	out := validateAnchorExcerpt([]Finding{f}, files)
+	if out[0].Line != 5 {
+		t.Fatalf("expected re-anchor to line 5, got Line=%d", out[0].Line)
+	}
+	if out[0].AnchorRelocatedFrom != 8 {
+		t.Fatalf("expected AnchorRelocatedFrom=8, got %d", out[0].AnchorRelocatedFrom)
+	}
+	if out[0].Suggestion == "" {
+		t.Fatalf("suggestion should survive a clean relocation, got empty (reason=%q)", out[0].SuggestionStrippedReason)
+	}
+	if out[0].SuggestionStrippedReason != "" {
+		t.Fatalf("clean relocation should not record a stripped reason, got: %q", out[0].SuggestionStrippedReason)
+	}
+}
+
+// TestValidateAnchorExcerptStripsOnAmbiguousMatch confirms we don't pick
+// a random line when the excerpt matches multiple post-image lines. The
+// reason string names the ambiguity so the TUI can surface it.
+func TestValidateAnchorExcerptStripsOnAmbiguousMatch(t *testing.T) {
+	files := ParseDiff(anchorRelocateDiff)
+	// Lines 4 and 7 both have content "result := process(config)".
+	f := Finding{
+		Path:          "work.go",
+		Line:          5, // distinct from both matches
+		Side:          "RIGHT",
+		Severity:      SeverityWarning,
+		Comment:       "Capture process errors here.",
+		AnchorExcerpt: `result := process(config)`,
+		Suggestion: "result, err := process(config)\n" +
+			"if err != nil {\n" +
+			"	return err\n" +
+			"}",
+	}
+	out := validateAnchorExcerpt([]Finding{f}, files)
+	if out[0].Line != 5 {
+		t.Fatalf("ambiguous case should not change Line, got %d", out[0].Line)
+	}
+	if out[0].AnchorRelocatedFrom != 0 {
+		t.Fatalf("ambiguous case should not record a relocation, got AnchorRelocatedFrom=%d", out[0].AnchorRelocatedFrom)
+	}
+	if out[0].Suggestion != "" {
+		t.Fatalf("suggestion should be stripped on ambiguous match, got: %q", out[0].Suggestion)
+	}
+	if !strings.Contains(out[0].SuggestionStrippedReason, "ambiguous") {
+		t.Fatalf("expected 'ambiguous' reason, got: %q", out[0].SuggestionStrippedReason)
+	}
+}
+
+// TestValidateAnchorExcerptShortExcerptStripsWithoutRelocation guards
+// against false-positive relocation on short syntactic excerpts like `}`
+// or `return nil` that match all over the file. The substantiveSuggestionLineMin
+// floor (shared with suggestion_validate.go) suppresses the relocate
+// attempt and we strip the suggestion instead.
+func TestValidateAnchorExcerptShortExcerptStripsWithoutRelocation(t *testing.T) {
+	files := ParseDiff(anchorRelocateDiff)
+	f := Finding{
+		Path:          "work.go",
+		Line:          5, // anchor line is `log.Println(...)` — does not trim to `}`
+		Side:          "RIGHT",
+		Severity:      SeverityInfo,
+		Comment:       "Close brace placement.",
+		AnchorExcerpt: "}", // 1 char after trim → below threshold
+		Suggestion:    "// some replacement",
+	}
+	out := validateAnchorExcerpt([]Finding{f}, files)
+	if out[0].Line != 5 {
+		t.Fatalf("short-excerpt case should never relocate, got Line=%d", out[0].Line)
+	}
+	if out[0].AnchorRelocatedFrom != 0 {
+		t.Fatalf("short-excerpt case should not record a relocation, got AnchorRelocatedFrom=%d", out[0].AnchorRelocatedFrom)
+	}
+	if out[0].Suggestion != "" {
+		t.Fatalf("short-excerpt case should strip suggestion, got: %q", out[0].Suggestion)
+	}
+	if !strings.Contains(out[0].SuggestionStrippedReason, "too short") {
+		t.Fatalf("expected 'too short' reason, got: %q", out[0].SuggestionStrippedReason)
+	}
+}
+
+// TestValidateAnchorExcerptRelocatedFindingFlowsThroughPruneSuggestions
+// is the order-of-operations guard: after we relocate, the downstream
+// validateAndPruneSuggestions must look at the *new* line so it doesn't
+// false-positive on the original (wrong) anchor.
+func TestValidateAnchorExcerptRelocatedFindingFlowsThroughPruneSuggestions(t *testing.T) {
+	files := ParseDiff(anchorRelocateDiff)
+	f := Finding{
+		Path:          "work.go",
+		Line:          8, // wrong anchor
+		Side:          "RIGHT",
+		Severity:      SeverityWarning,
+		Comment:       "Switch to Printf.",
+		AnchorExcerpt: `log.Println("primary run complete")`,
+		Suggestion:    `log.Printf("primary run complete\n")`,
+	}
+	relocated := validateAnchorExcerpt([]Finding{f}, files)
+	final := validateAndPruneSuggestions(relocated, files)
+	if final[0].Line != 5 {
+		t.Fatalf("expected relocated line 5 to survive prune pass, got Line=%d", final[0].Line)
+	}
+	if final[0].Suggestion == "" {
+		t.Fatalf("relocated suggestion should survive prune pass, got empty (reason=%q)", final[0].SuggestionStrippedReason)
+	}
+}

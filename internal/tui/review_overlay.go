@@ -1835,7 +1835,15 @@ func (m *reviewOverlay) renderApprovalBody() string {
 			b.WriteString("  " + dimStyle.Render(fmt.Sprintf("(demoted from %s by repo arbiter)", string(orig))))
 		}
 	}
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	// Anchor auto-correction note: validateAnchorExcerpts moved the
+	// finding when the model's quoted excerpt matched a different line in
+	// the same hunk. The reviewer should sanity-check the new position
+	// before accepting, so we surface it inline next to the location.
+	if from := cur.finding.Finding.AnchorRelocatedFrom; from > 0 && from != cur.finding.Finding.Line {
+		b.WriteString(warnStyle.Render(fmt.Sprintf("⚠ Anchor auto-corrected from line %d → %d based on the model's quoted excerpt; verify the new position.", from, cur.finding.Finding.Line)) + "\n")
+	}
+	b.WriteString("\n")
 
 	// Diff hunk preview
 	if cur.hunk != nil {
