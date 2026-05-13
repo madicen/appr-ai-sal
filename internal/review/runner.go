@@ -21,7 +21,7 @@ import (
 // Progress messages are emitted on the channel returned by Run so the TUI can
 // stream updates to the user as specialists complete.
 type Progress struct {
-	Stage   string // "checkout", "diff", "repo-context", "specialist", "vibe-coach", "repo-arbiter", "done"; Detail may be "skipped" for vibe/repo stages when specialists had no findings
+	Stage   string // "checkout", "diff", "repo-context", "specialist", "vibe-coach", "repo-arbiter", "done"; vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed
 	Detail  string // free-form detail about the stage
 	Err     error  // non-nil if this stage hit an error worth surfacing
 	Result  *SpecialistResult
@@ -205,13 +205,17 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				out <- Progress{Stage: "repo-arbiter", Detail: "done", Arbiter: arb}
 			}
 
-			// Vibe-coach is deferred to the approve->summary transition in
-			// the TUI so its Summary / Prompts / Verdict reflect the truly
-			// final finding set (post-arbiter AND post-user-skip). The
-			// runner only emits a "deferred" progress marker so the overlay
-			// can render an appropriate row while it waits for the user to
-			// finish triaging cards. See RunVibeCoachForDraft.
-			out <- Progress{Stage: "vibe-coach", Detail: "deferred"}
+			// Vibe-coach runs as part of the pipeline against the
+			// post-arbiter specialist set so the user sees a final summary
+			// the moment they reach the approve phase. The TUI re-runs it
+			// lazily only if the user changes the skip set during approve
+			// (see reviewOverlay.enterSummary + RunVibeCoachForDraft).
+			out <- Progress{Stage: "vibe-coach", Detail: "start"}
+			vibe := RunVibeCoachForDraft(ctx, runCfg, final, func(attempt int, err error) {
+				out <- Progress{Stage: "vibe-coach", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
+			})
+			final.VibeCoach = vibe
+			out <- Progress{Stage: "vibe-coach", Detail: "done", Vibe: vibe}
 		}
 
 		out <- Progress{Stage: "done", Final: final}
