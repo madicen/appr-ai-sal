@@ -1,4 +1,9 @@
 // Package aiconfig holds AI inference settings (provider, model, keys, timeouts).
+//
+// The on-disk shape supports multiple named profiles. The active profile's
+// fields are mirrored onto the Config's top-level fields so existing
+// callers that read cfg.Provider / cfg.Model / cfg.BaseURL / cfg.APIKey /
+// cfg.TimeoutSec / cfg.RetryMax* keep working unchanged.
 package aiconfig
 
 import (
@@ -36,7 +41,46 @@ const (
 	ReviewStrict ReviewStrictness = "strict"
 )
 
+// DefaultProfileName is the synthesized profile name for legacy configs
+// that have no profiles list on disk.
+const DefaultProfileName = "default"
+
+// Profile is one named (provider, model, baseURL, apiKey, timeout, retry)
+// preset. The user can switch between profiles from the PR detail
+// controls panel without re-typing credentials.
+type Profile struct {
+	Name             string   `json:"name"`
+	Provider         Provider `json:"provider,omitempty"`
+	BaseURL          string   `json:"base_url,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	APIKey           string   `json:"api_key,omitempty"`
+	TimeoutSec       int      `json:"timeout_sec,omitempty"`
+	RetryMaxAttempts int      `json:"retry_max_attempts,omitempty"`
+	RetryBaseMS      int      `json:"retry_base_ms,omitempty"`
+	RetryMaxMS       int      `json:"retry_max_ms,omitempty"`
+}
+
+// Clone returns a deep copy.
+func (p Profile) Clone() Profile { return p }
+
+// Summary returns a short "provider · model" label for UI rows.
+func (p Profile) Summary() string {
+	prov := string(p.Provider)
+	if prov == "" {
+		prov = "claude"
+	}
+	model := strings.TrimSpace(p.Model)
+	if model == "" {
+		model = "(default)"
+	}
+	return prov + " · " + model
+}
+
 // Config is the resolved AI settings after Load / merges.
+//
+// The top-level fields (Provider, BaseURL, Model, APIKey, TimeoutSec,
+// RetryMax*) are always a copy of the active profile so existing review
+// runner code can continue to read them directly.
 type Config struct {
 	Provider         Provider         `json:"provider,omitempty"`
 	BaseURL          string           `json:"base_url,omitempty"`
@@ -50,15 +94,24 @@ type Config struct {
 	RetryBaseMS int `json:"retry_base_ms,omitempty"`
 	// RetryMaxMS caps exponential backoff growth per wait. 0 uses default (120000).
 	RetryMaxMS int `json:"retry_max_ms,omitempty"`
+
+	// Profiles is the on-disk list of named (provider, model, ...) presets.
+	// The active profile's fields are mirrored onto the top-level fields.
+	Profiles []Profile `json:"profiles,omitempty"`
+	// ActiveProfile names which entry of Profiles is currently in use.
+	ActiveProfile string `json:"active_profile,omitempty"`
 }
 
 // DefaultConfig returns built-in defaults (before file, env, or flags).
 func DefaultConfig() *Config {
-	return &Config{
+	c := &Config{
 		Provider:         ProviderClaude,
 		TimeoutSec:       300,
 		ReviewStrictness: ReviewBalanced,
+		ActiveProfile:    DefaultProfileName,
 	}
+	c.Profiles = []Profile{c.snapshotProfile(DefaultProfileName)}
+	return c
 }
 
 // ConfigDir is the app config directory (same rules as prompt overrides).
@@ -81,16 +134,20 @@ func DefaultPath() string {
 	return filepath.Join(ConfigDir(), "ai.json")
 }
 
-// Clone returns a shallow copy safe to pass into async work.
+// Clone returns a deep copy safe to pass into async work.
 func (c *Config) Clone() *Config {
 	if c == nil {
 		return DefaultConfig()
 	}
 	cp := *c
+	if c.Profiles != nil {
+		cp.Profiles = make([]Profile, len(c.Profiles))
+		copy(cp.Profiles, c.Profiles)
+	}
 	return &cp
 }
 
-// Merge overlays non-zero fields from o onto c.
+// Merge overlays non-zero fields from o onto c (active profile only).
 func (c *Config) Merge(o *Config) {
 	if o == nil {
 		return
@@ -162,6 +219,9 @@ func ParseReviewStrictness(s string) (ReviewStrictness, error) {
 
 // Load reads defaults, optional JSON at DefaultPath(), then environment.
 // Resolution order for each field: defaults < file < env.
+//
+// On-disk migration: a legacy file with no `profiles` key is automatically
+// wrapped into a single "default" profile.
 func Load() (*Config, error) {
 	c := DefaultConfig()
 	path := DefaultPath()
@@ -170,8 +230,20 @@ func Load() (*Config, error) {
 		if err := json.Unmarshal(b, &fileCfg); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
-		// File may omit provider; normalize after merge.
-		c.Merge(&fileCfg)
+		if len(fileCfg.Profiles) == 0 {
+			// Legacy flat shape: wrap top-level fields into one "default" profile.
+			c.Merge(&fileCfg)
+			c.Profiles = []Profile{c.snapshotProfile(DefaultProfileName)}
+			c.ActiveProfile = DefaultProfileName
+		} else {
+			c.Profiles = make([]Profile, len(fileCfg.Profiles))
+			copy(c.Profiles, fileCfg.Profiles)
+			c.ActiveProfile = strings.TrimSpace(fileCfg.ActiveProfile)
+			if fileCfg.ReviewStrictness != "" {
+				c.ReviewStrictness = fileCfg.ReviewStrictness
+			}
+			c.applyActiveProfile()
+		}
 	} else if !os.IsNotExist(err) {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
@@ -256,7 +328,229 @@ func (c *Config) normalize() error {
 	if c.RetryBaseMS > c.RetryMaxMS {
 		c.RetryBaseMS = c.RetryMaxMS
 	}
+	if len(c.Profiles) == 0 {
+		c.ActiveProfile = DefaultProfileName
+		c.Profiles = []Profile{c.snapshotProfile(DefaultProfileName)}
+	} else {
+		// Make sure ActiveProfile points at an existing entry; if not,
+		// fall back to the first profile.
+		if _, ok := c.findProfileIndex(c.ActiveProfile); !ok {
+			c.ActiveProfile = c.Profiles[0].Name
+		}
+		// Mirror top-level fields back onto the active profile slot so
+		// env / flag merges that updated the flat fields stay consistent
+		// with the persisted profile.
+		c.syncActiveProfileFromFlat()
+	}
 	return nil
+}
+
+// snapshotProfile builds a Profile from the current top-level fields.
+func (c *Config) snapshotProfile(name string) Profile {
+	return Profile{
+		Name:             strings.TrimSpace(name),
+		Provider:         c.Provider,
+		BaseURL:          c.BaseURL,
+		Model:            c.Model,
+		APIKey:           c.APIKey,
+		TimeoutSec:       c.TimeoutSec,
+		RetryMaxAttempts: c.RetryMaxAttempts,
+		RetryBaseMS:      c.RetryBaseMS,
+		RetryMaxMS:       c.RetryMaxMS,
+	}
+}
+
+// findProfileIndex returns the index of the named profile (case-insensitive
+// on the trimmed name) and whether it was found.
+func (c *Config) findProfileIndex(name string) (int, bool) {
+	target := strings.ToLower(strings.TrimSpace(name))
+	if target == "" {
+		return -1, false
+	}
+	for i, p := range c.Profiles {
+		if strings.ToLower(strings.TrimSpace(p.Name)) == target {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// applyActiveProfile copies the active profile's fields onto the top-level
+// fields. Called after loading (or after SetActive) so existing callers
+// reading cfg.Provider / cfg.Model / etc. see the right values.
+func (c *Config) applyActiveProfile() {
+	if len(c.Profiles) == 0 {
+		return
+	}
+	idx, ok := c.findProfileIndex(c.ActiveProfile)
+	if !ok {
+		idx = 0
+		c.ActiveProfile = c.Profiles[0].Name
+	}
+	p := c.Profiles[idx]
+	c.Provider = p.Provider
+	c.BaseURL = p.BaseURL
+	c.Model = p.Model
+	c.APIKey = p.APIKey
+	c.TimeoutSec = p.TimeoutSec
+	c.RetryMaxAttempts = p.RetryMaxAttempts
+	c.RetryBaseMS = p.RetryBaseMS
+	c.RetryMaxMS = p.RetryMaxMS
+}
+
+// syncActiveProfileFromFlat copies the top-level fields back into the
+// active profile slot. Called by normalize() so flag / env overrides that
+// adjusted the flat fields are reflected in Profiles for the next save.
+func (c *Config) syncActiveProfileFromFlat() {
+	idx, ok := c.findProfileIndex(c.ActiveProfile)
+	if !ok {
+		return
+	}
+	c.Profiles[idx] = c.snapshotProfile(c.Profiles[idx].Name)
+}
+
+// Active returns a copy of the active profile (synthesised from top-level
+// fields if Profiles is empty). The returned value is safe to mutate.
+func (c *Config) Active() Profile {
+	if c == nil {
+		return Profile{Name: DefaultProfileName, Provider: ProviderClaude, TimeoutSec: 300}
+	}
+	if idx, ok := c.findProfileIndex(c.ActiveProfile); ok {
+		return c.Profiles[idx]
+	}
+	if len(c.Profiles) > 0 {
+		return c.Profiles[0]
+	}
+	return c.snapshotProfile(DefaultProfileName)
+}
+
+// SetActive switches to the named profile and mirrors its fields onto the
+// top-level fields. Returns an error when the name does not match any
+// existing profile.
+func (c *Config) SetActive(name string) error {
+	if c == nil {
+		return fmt.Errorf("nil config")
+	}
+	idx, ok := c.findProfileIndex(name)
+	if !ok {
+		return fmt.Errorf("profile %q not found", name)
+	}
+	c.ActiveProfile = c.Profiles[idx].Name
+	c.applyActiveProfile()
+	return nil
+}
+
+// AddProfile appends p to the profile list. Returns an error when a
+// profile with the same name already exists or when the name is empty.
+func (c *Config) AddProfile(p Profile) error {
+	if c == nil {
+		return fmt.Errorf("nil config")
+	}
+	name := strings.TrimSpace(p.Name)
+	if name == "" {
+		return fmt.Errorf("profile name is empty")
+	}
+	if _, ok := c.findProfileIndex(name); ok {
+		return fmt.Errorf("profile %q already exists", name)
+	}
+	p.Name = name
+	c.Profiles = append(c.Profiles, p)
+	return nil
+}
+
+// UpdateProfile replaces the profile at the given name. The top-level
+// fields are re-synced from the active profile when the updated profile
+// is the active one.
+func (c *Config) UpdateProfile(name string, p Profile) error {
+	if c == nil {
+		return fmt.Errorf("nil config")
+	}
+	idx, ok := c.findProfileIndex(name)
+	if !ok {
+		return fmt.Errorf("profile %q not found", name)
+	}
+	if strings.TrimSpace(p.Name) == "" {
+		p.Name = c.Profiles[idx].Name
+	}
+	// If the rename collides with a different existing entry, refuse.
+	if !strings.EqualFold(p.Name, c.Profiles[idx].Name) {
+		if other, exists := c.findProfileIndex(p.Name); exists && other != idx {
+			return fmt.Errorf("profile %q already exists", p.Name)
+		}
+	}
+	wasActive := strings.EqualFold(c.ActiveProfile, c.Profiles[idx].Name)
+	c.Profiles[idx] = p
+	if wasActive {
+		c.ActiveProfile = p.Name
+		c.applyActiveProfile()
+	}
+	return nil
+}
+
+// DeleteProfile removes the named profile. The last profile cannot be
+// deleted (the file would have no active profile to fall back to). If
+// the deleted profile was active, the first remaining profile becomes
+// active.
+func (c *Config) DeleteProfile(name string) error {
+	if c == nil {
+		return fmt.Errorf("nil config")
+	}
+	if len(c.Profiles) <= 1 {
+		return fmt.Errorf("cannot delete the last profile")
+	}
+	idx, ok := c.findProfileIndex(name)
+	if !ok {
+		return fmt.Errorf("profile %q not found", name)
+	}
+	wasActive := strings.EqualFold(c.ActiveProfile, c.Profiles[idx].Name)
+	c.Profiles = append(c.Profiles[:idx], c.Profiles[idx+1:]...)
+	if wasActive {
+		c.ActiveProfile = c.Profiles[0].Name
+		c.applyActiveProfile()
+	}
+	return nil
+}
+
+// RenameProfile renames an existing profile. The active-profile pointer
+// is updated when the renamed entry is currently active.
+func (c *Config) RenameProfile(oldName, newName string) error {
+	if c == nil {
+		return fmt.Errorf("nil config")
+	}
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("new profile name is empty")
+	}
+	idx, ok := c.findProfileIndex(oldName)
+	if !ok {
+		return fmt.Errorf("profile %q not found", oldName)
+	}
+	if other, exists := c.findProfileIndex(newName); exists && other != idx {
+		return fmt.Errorf("profile %q already exists", newName)
+	}
+	wasActive := strings.EqualFold(c.ActiveProfile, c.Profiles[idx].Name)
+	c.Profiles[idx].Name = newName
+	if wasActive {
+		c.ActiveProfile = newName
+	}
+	return nil
+}
+
+// CycleActive moves the active pointer by delta (typically +/-1) through
+// the profile list, wrapping at the ends. No-op when fewer than 2
+// profiles are configured.
+func (c *Config) CycleActive(delta int) {
+	if c == nil || len(c.Profiles) < 2 {
+		return
+	}
+	idx, ok := c.findProfileIndex(c.ActiveProfile)
+	if !ok {
+		idx = 0
+	}
+	n := len(c.Profiles)
+	idx = ((idx+delta)%n + n) % n
+	c.ActiveProfile = c.Profiles[idx].Name
+	c.applyActiveProfile()
 }
 
 // MergeFlags applies non-empty CLI overrides (empty string means “leave unchanged”).
@@ -306,7 +600,18 @@ func Save(c *Config, path string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	b, err := json.MarshalIndent(c, "", "  ")
+	// Persist only the profile list + active selector + strictness; the
+	// flat fields are rebuilt from the active profile on load.
+	persisted := struct {
+		ReviewStrictness ReviewStrictness `json:"review_strictness,omitempty"`
+		Profiles         []Profile        `json:"profiles"`
+		ActiveProfile    string           `json:"active_profile,omitempty"`
+	}{
+		ReviewStrictness: c.ReviewStrictness,
+		Profiles:         c.Profiles,
+		ActiveProfile:    c.ActiveProfile,
+	}
+	b, err := json.MarshalIndent(persisted, "", "  ")
 	if err != nil {
 		return err
 	}

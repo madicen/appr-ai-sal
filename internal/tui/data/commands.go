@@ -301,6 +301,54 @@ func PostReviewWithVerdictCmd(ref gh.Ref, draft *review.Draft, dryRun bool, even
 	}
 }
 
+// PostApproveBareCmd posts a content-free GitHub APPROVE — event=APPROVE with
+// an explicit empty body. It is the "Approve only" path from the no-findings
+// auto-approve confirmation, where the default would otherwise attach the
+// rendered "no issues found by any agent" summary body. The reviewer may want
+// to submit the approval without publishing any review text at all; this
+// command is that escape hatch.
+//
+// The self-author downgrade still applies — GitHub rejects APPROVE on your own
+// PR, so the post is coerced to event=COMMENT with just an explanatory note as
+// the body (no full rendered summary, since the reviewer asked for no body).
+func PostApproveBareCmd(ref gh.Ref, draft *review.Draft, dryRun bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		viewer, _ := gh.ViewerLogin(ctx)
+		event, body, intent := review.EffectiveApproveBareEventAndBody(draft, viewer)
+		if dryRun {
+			preview := fmt.Sprintf("POST %s/%s/pulls/%d/reviews (verdict event=%s, approve-only)\n",
+				ref.Owner, ref.Repo, ref.Number, event)
+			if intent != event {
+				preview += fmt.Sprintf("NOTE: You are the PR author — GitHub rejects event=%s; posting as %s.\n", intent, event)
+			}
+			preview += "\n" + prettyJSON(struct {
+				Body     string `json:"body"`
+				Event    string `json:"event"`
+				CommitID string `json:"commit_id"`
+			}{Body: body, Event: event, CommitID: draft.PR.HeadSHA})
+			title := "Dry-run: " + event + " review · approve only (not posted)"
+			if intent != event {
+				title = fmt.Sprintf("Dry-run: %s review (own PR: cannot submit %s; note-only comment) (not posted)", event, intent)
+			}
+			return DryRunPayloadMsg{Title: title, Payload: preview}
+		}
+		rev := gh.Review{
+			CommitID: draft.PR.HeadSHA,
+			Body:     body,
+			Event:    event,
+		}
+		if drift := preflightHeadDrift(ctx, ref, draft.PR); drift != nil {
+			return ErrMsg{drift}
+		}
+		if err := gh.PostReview(ctx, ref, rev); err != nil {
+			return ErrMsg{err}
+		}
+		return PostDoneMsg{}
+	}
+}
+
 // DryRunPayloadMsg is emitted by every Post*Cmd path when dry-run is enabled,
 // carrying a human-readable preview the caller can render in a modal.
 type DryRunPayloadMsg struct {

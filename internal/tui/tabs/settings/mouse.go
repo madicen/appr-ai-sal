@@ -88,6 +88,32 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		m.blurInputs()
 		return nil
 	}
+	if m.panelTab == 0 {
+		// Profile row clicks: select that row.
+		for i := range m.draft.Profiles {
+			if z := zone.Get(ZoneProfileRow(i)); z != nil && z.InBounds(msg) {
+				m.commitEditorToSelectedProfile()
+				m.selectedProfileIdx = i
+				m.loadEditorFromSelectedProfile()
+				m.focus = fieldProfilePicker
+				m.blurInputs()
+				return nil
+			}
+		}
+		if z := zone.Get(ZoneProfileSetActive); z != nil && z.InBounds(msg) {
+			m.focus = fieldProfilePicker
+			m.blurInputs()
+			return m.activateSelectedProfile()
+		}
+		if z := zone.Get(ZoneProfileAdd); z != nil && z.InBounds(msg) {
+			return m.addNewProfile()
+		}
+		if z := zone.Get(ZoneProfileDelete); z != nil && z.InBounds(msg) {
+			m.focus = fieldProfilePicker
+			m.blurInputs()
+			return m.deleteSelectedProfile()
+		}
+	}
 	if m.panelTab == 1 {
 		if z := zone.Get(ZoneRepoToggleIncludePR); z != nil && z.InBounds(msg) {
 			m.repoIncludePR = !m.repoIncludePR

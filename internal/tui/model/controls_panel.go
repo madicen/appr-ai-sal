@@ -1,0 +1,211 @@
+package model
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/x/ansi"
+	zone "github.com/lrstanley/bubblezone"
+
+	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	langagentsstore "github.com/madicen/appr-ai-sal/internal/review/langagents"
+	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
+	techagentsstore "github.com/madicen/appr-ai-sal/internal/review/techagents"
+	"github.com/madicen/appr-ai-sal/internal/tui/styles"
+	"github.com/madicen/appr-ai-sal/internal/tui/zones"
+)
+
+// renderControlsPane builds the body of the right-hand "Review controls"
+// pane: strictness rows, AI profile picker, agent freshness cards,
+// run-mode toggles, and a "Start review" primary button. Width is the
+// inner content width inside the pane border.
+func (m *Model) renderControlsPane(width int) string {
+	if width < 4 {
+		width = 4
+	}
+	var b strings.Builder
+	b.WriteString(m.renderControlsStrictness(width))
+	b.WriteString("\n")
+	b.WriteString(m.renderControlsProfile(width))
+	b.WriteString("\n")
+	b.WriteString(m.renderControlsAgents(width))
+	b.WriteString("\n")
+	b.WriteString(m.renderControlsToggles(width))
+	b.WriteString("\n")
+	b.WriteString(m.renderControlsStartButton(width))
+	return b.String()
+}
+
+func (m *Model) renderControlsStrictness(width int) string {
+	cur := aiconfig.ReviewBalanced
+	if m.opts.AIConfig != nil {
+		cur = m.opts.AIConfig.ReviewStrictness
+	}
+	var b strings.Builder
+	b.WriteString(styles.BoldStyle.Render("Strictness") + "\n")
+	rows := []struct {
+		zoneID string
+		level  aiconfig.ReviewStrictness
+		label  string
+		hint   string
+	}{
+		{zones.ControlsStrictCriticalOnly, aiconfig.ReviewCriticalOnly, "critical only", "merge blockers"},
+		{zones.ControlsStrictLenient, aiconfig.ReviewLenient, "lenient", "error + critical"},
+		{zones.ControlsStrictBalanced, aiconfig.ReviewBalanced, "balanced", "warning and above"},
+		{zones.ControlsStrictStrict, aiconfig.ReviewStrict, "strict", "info-level nits"},
+	}
+	for _, r := range rows {
+		mark := "  "
+		if r.level == cur {
+			mark = styles.OkStyle.Render("● ")
+		}
+		line := fmt.Sprintf("%s%-13s %s", mark, r.label, styles.DimStyle.Render(r.hint))
+		b.WriteString(zone.Mark(r.zoneID, fitToWidth(line, width)) + "\n")
+	}
+	return b.String()
+}
+
+func (m *Model) renderControlsProfile(width int) string {
+	var b strings.Builder
+	b.WriteString(styles.BoldStyle.Render("AI profile") + "\n")
+	cfg := m.opts.AIConfig
+	if cfg == nil || len(cfg.Profiles) == 0 {
+		b.WriteString(styles.DimStyle.Render("(no profiles configured — open settings)") + "\n")
+		b.WriteString(zone.Mark(zones.ControlsProfileEdit, styles.DimStyle.Render(" edit in settings (o) ")) + "\n")
+		return b.String()
+	}
+	active := cfg.Active()
+	prev := zone.Mark(zones.ControlsProfilePrev, " ‹ ")
+	next := zone.Mark(zones.ControlsProfileNext, " › ")
+	name := styles.BoldStyle.Render(active.Name)
+	summary := styles.DimStyle.Render(active.Summary())
+	b.WriteString(prev + " " + name + " " + next + "\n")
+	b.WriteString(summary + "\n")
+	if len(cfg.Profiles) > 1 {
+		b.WriteString(styles.DimStyle.Render(fmt.Sprintf("%d profiles · click ‹/› or settings", len(cfg.Profiles))) + "\n")
+	}
+	b.WriteString(zone.Mark(zones.ControlsProfileEdit, styles.DimStyle.Render(" edit in settings (o) ")) + "\n")
+	return b.String()
+}
+
+func (m *Model) renderControlsAgents(width int) string {
+	owner, repo, number := "", "", 0
+	if m.currentPR != nil {
+		owner = m.currentPR.Owner
+		repo = m.currentPR.Repo
+		number = m.currentPR.Number
+	}
+	var b strings.Builder
+	b.WriteString(styles.BoldStyle.Render("Context agents") + "\n")
+	b.WriteString(zone.Mark(zones.ControlsRepoAgents, fitToWidth(repoAgentRow(m.repoAgentsFreshness(owner, repo)), width)) + "\n")
+	b.WriteString(zone.Mark(zones.ControlsTechAgents, fitToWidth(techAgentRow(techAgentsFreshness(owner, repo)), width)) + "\n")
+	b.WriteString(zone.Mark(zones.ControlsLangAgents, fitToWidth(langAgentRow(m.langAgentsFreshness(owner, repo, number)), width)) + "\n")
+	return b.String()
+}
+
+func repoAgentRow(state repoagentsstore.Freshness) string {
+	label := "Repo agents"
+	switch state {
+	case repoagentsstore.FreshnessMissing:
+		return styles.ErrStyle.Render(" ● ") + label + " " + styles.ErrStyle.Render("missing") + " — " + styles.DimStyle.Render("ctrl+b")
+	case repoagentsstore.FreshnessIncomplete:
+		return styles.WarnStyle.Render(" ● ") + label + " " + styles.WarnStyle.Render("partial") + " — " + styles.DimStyle.Render("ctrl+b")
+	case repoagentsstore.FreshnessStale:
+		return styles.WarnStyle.Render(" ● ") + label + " " + styles.WarnStyle.Render("stale") + " — " + styles.DimStyle.Render("ctrl+b")
+	case repoagentsstore.FreshnessFresh:
+		return styles.OkStyle.Render(" ● ") + label + " " + styles.OkStyle.Render("fresh") + " — " + styles.DimStyle.Render("ctrl+b")
+	default:
+		return styles.DimStyle.Render(" ● ") + label + " — " + styles.DimStyle.Render("ctrl+b")
+	}
+}
+
+func techAgentRow(state techagentsstore.Freshness) string {
+	label := "Tech experts"
+	switch state {
+	case techagentsstore.FreshnessMissing:
+		// Tech experts are an opt-in per-repo feature with no canonical
+		// expected set, so absence is the default — render in dim, not
+		// red, so it reads as a hint rather than an error.
+		return styles.DimStyle.Render(" ● ") + label + " " + styles.DimStyle.Render("not configured") + " — " + styles.DimStyle.Render("ctrl+t to add")
+	case techagentsstore.FreshnessStale:
+		return styles.WarnStyle.Render(" ● ") + label + " " + styles.WarnStyle.Render("stale") + " — " + styles.DimStyle.Render("ctrl+t")
+	case techagentsstore.FreshnessFresh:
+		return styles.OkStyle.Render(" ● ") + label + " " + styles.OkStyle.Render("fresh") + " — " + styles.DimStyle.Render("ctrl+t")
+	default:
+		return styles.DimStyle.Render(" ● ") + label + " — " + styles.DimStyle.Render("ctrl+t")
+	}
+}
+
+func langAgentRow(state langagentsstore.Freshness) string {
+	label := "Lang experts"
+	switch state {
+	case langagentsstore.FreshnessMissing:
+		return styles.ErrStyle.Render(" ● ") + label + " " + styles.ErrStyle.Render("missing") + " — " + styles.DimStyle.Render("ctrl+l")
+	case langagentsstore.FreshnessStale:
+		return styles.WarnStyle.Render(" ● ") + label + " " + styles.WarnStyle.Render("stale") + " — " + styles.DimStyle.Render("ctrl+l")
+	case langagentsstore.FreshnessFresh:
+		return styles.OkStyle.Render(" ● ") + label + " " + styles.OkStyle.Render("fresh") + " — " + styles.DimStyle.Render("ctrl+l")
+	default:
+		return styles.DimStyle.Render(" ● ") + label + " — " + styles.DimStyle.Render("ctrl+l")
+	}
+}
+
+// techAgentsFreshness returns the freshness for the current PR's tech
+// experts, with a short cache so the renderer doesn't re-read disk on
+// every frame. Mirrors the repoAgentsFreshnessCache pattern.
+func techAgentsFreshness(owner, repo string) techagentsstore.Freshness {
+	if strings.TrimSpace(owner) == "" || strings.TrimSpace(repo) == "" {
+		return techagentsstore.FreshnessUnknown
+	}
+	return techagentsstore.LoadFreshness(owner, repo, time.Now(), techagentsstore.DefaultStaleAfter)
+}
+
+func (m *Model) renderControlsToggles(width int) string {
+	var b strings.Builder
+	b.WriteString(styles.BoldStyle.Render("Run options") + "\n")
+	parallel, _ := repoParallelExecutionFlags()
+	b.WriteString(zone.Mark(zones.ControlsToggleParallel, fitToWidth(toggleRow("Parallel specialists", parallel), width)) + "\n")
+	b.WriteString(zone.Mark(zones.ControlsToggleDryRun, fitToWidth(toggleRow("Dry run", m.opts.DryRun), width)) + "\n")
+	b.WriteString(zone.Mark(zones.ControlsTogglePeruse, fitToWidth(toggleRow("Peruse mode (ctrl+v)", m.peruseRequested), width)) + "\n")
+	return b.String()
+}
+
+func toggleRow(label string, on bool) string {
+	mark := styles.DimStyle.Render("[ ]")
+	if on {
+		mark = styles.OkStyle.Render("[x]")
+	}
+	return mark + " " + label
+}
+
+func (m *Model) renderControlsStartButton(width int) string {
+	var b strings.Builder
+	startLabel := " Start review (r) "
+	startBtn := styles.OkStyle.Render(startLabel)
+	if m.currentPR == nil {
+		startBtn = styles.DimStyle.Render(startLabel)
+	}
+	b.WriteString(zone.Mark(zones.ControlsStartReview, startBtn) + "\n")
+	peruseLabel := " Peruse (ctrl+v) "
+	peruseBtn := styles.DimStyle.Render(peruseLabel)
+	b.WriteString(zone.Mark(zones.ControlsStartReviewPeruse, peruseBtn) + "\n")
+	return b.String()
+}
+
+// fitToWidth pads / truncates a styled line so it fits exactly w cells.
+// Trailing-space padding makes click hit-testing extend to the right
+// edge of the pane (zones use printable cell width per row).
+func fitToWidth(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	cw := ansi.StringWidth(s)
+	if cw > w {
+		return ansi.Truncate(s, w, "…")
+	}
+	if cw < w {
+		s += strings.Repeat(" ", w-cw)
+	}
+	return s
+}

@@ -21,7 +21,11 @@ type pane int
 const (
 	paneTree pane = iota
 	paneDiff
+	paneControls
 )
+
+// paneCount is the number of cyclable panes on the PR detail view.
+const paneCount = 3
 
 // prDetailPanel is the outer frame for each pane of the PR detail body.
 var prDetailPanel = styles.LeftPanel

@@ -34,11 +34,14 @@ const (
 
 const (
 	fieldStrictness = iota
+	fieldProfilePicker
+	fieldProfileName
 	fieldProvider
 	fieldBaseURL
 	fieldModel
 	fieldAPIKey
 	fieldTimeout
+	fieldAICount
 )
 
 // Repo context tab focus order (must match advanceRepoFocus / renderRepoPanel).
@@ -79,11 +82,19 @@ type Model struct {
 
 	strictIdx int
 
-	provider textinput.Model
-	baseURL  textinput.Model
-	model    textinput.Model
-	apiKey   textinput.Model
-	timeout  textinput.Model
+	// Profile editor state. selectedProfileIdx is the index of the
+	// profile in draft.Profiles whose fields are currently shown in the
+	// editor (provider/baseURL/model/apiKey/timeout textinputs). It moves
+	// independently of draft.ActiveProfile (the user can edit a non-active
+	// profile and "Set active" later).
+	selectedProfileIdx int
+
+	profileName textinput.Model
+	provider    textinput.Model
+	baseURL     textinput.Model
+	model       textinput.Model
+	apiKey      textinput.Model
+	timeout     textinput.Model
 
 	// Repo context tab (structured form; persisted as repo-context.json).
 	repoRoots       textarea.Model
@@ -142,25 +153,21 @@ func New(o Opts) *Model {
 	}
 
 	m := &Model{
-		width:      w,
-		bodyH:      bodyH,
-		contentW:   max(1, w),
-		fieldWidth: fieldW,
-		draft:      draft,
-		strictIdx:  strictnessIndex(draft.ReviewStrictness),
-		provider:   mk("claude | gemini | ollama | openai_compatible", textinput.EchoNormal),
-		baseURL:    mk("optional; Ollama default if empty", textinput.EchoNormal),
-		model:      mk("model id", textinput.EchoNormal),
-		apiKey:     mk("optional for Ollama", textinput.EchoPassword),
-		timeout:    mk("seconds (default 300)", textinput.EchoNormal),
+		width:       w,
+		bodyH:       bodyH,
+		contentW:    max(1, w),
+		fieldWidth:  fieldW,
+		draft:       draft,
+		strictIdx:   strictnessIndex(draft.ReviewStrictness),
+		profileName: mk("profile name (e.g. sonnet, fast, ollama)", textinput.EchoNormal),
+		provider:    mk("claude | gemini | ollama | openai_compatible", textinput.EchoNormal),
+		baseURL:     mk("optional; Ollama default if empty", textinput.EchoNormal),
+		model:       mk("model id", textinput.EchoNormal),
+		apiKey:      mk("optional for Ollama", textinput.EchoPassword),
+		timeout:     mk("seconds (default 300)", textinput.EchoNormal),
 	}
-	m.provider.SetValue(string(draft.Provider))
-	m.baseURL.SetValue(draft.BaseURL)
-	m.model.SetValue(draft.Model)
-	if draft.APIKey != "" {
-		m.apiKey.SetValue(draft.APIKey)
-	}
-	m.timeout.SetValue(strconv.Itoa(draft.TimeoutSec))
+	m.selectedProfileIdx = m.indexOfActiveProfile()
+	m.loadEditorFromSelectedProfile()
 
 	rr := textarea.New()
 	rr.ShowLineNumbers = false
@@ -194,8 +201,8 @@ func New(o Opts) *Model {
 
 	switch o.StartSection {
 	case StartAI:
-		m.focus = fieldProvider
-		m.provider.Focus()
+		m.focus = fieldProfilePicker
+		m.blurInputs()
 	case StartRepoContext:
 		m.panelTab = 1
 		m.focusRepoField(repoFieldRoots)
@@ -207,6 +214,89 @@ func New(o Opts) *Model {
 		m.blurInputs()
 	}
 	return m
+}
+
+// indexOfActiveProfile returns the index of the active profile in
+// draft.Profiles, falling back to 0 when not found / empty.
+func (m *Model) indexOfActiveProfile() int {
+	if m == nil || m.draft == nil || len(m.draft.Profiles) == 0 {
+		return 0
+	}
+	for i, p := range m.draft.Profiles {
+		if strings.EqualFold(strings.TrimSpace(p.Name), strings.TrimSpace(m.draft.ActiveProfile)) {
+			return i
+		}
+	}
+	return 0
+}
+
+// loadEditorFromSelectedProfile copies the selected profile's fields into
+// the textinput models so the editor reflects the row the cursor is on.
+func (m *Model) loadEditorFromSelectedProfile() {
+	if m == nil || m.draft == nil {
+		return
+	}
+	if m.selectedProfileIdx < 0 || m.selectedProfileIdx >= len(m.draft.Profiles) {
+		m.selectedProfileIdx = 0
+	}
+	if len(m.draft.Profiles) == 0 {
+		// Should not happen after Load() / DefaultConfig(); guard anyway.
+		m.profileName.SetValue("")
+		m.provider.SetValue("")
+		m.baseURL.SetValue("")
+		m.model.SetValue("")
+		m.apiKey.SetValue("")
+		m.timeout.SetValue("300")
+		return
+	}
+	p := m.draft.Profiles[m.selectedProfileIdx]
+	m.profileName.SetValue(p.Name)
+	m.provider.SetValue(string(p.Provider))
+	m.baseURL.SetValue(p.BaseURL)
+	m.model.SetValue(p.Model)
+	if p.APIKey != "" {
+		m.apiKey.SetValue(p.APIKey)
+	} else {
+		m.apiKey.SetValue("")
+	}
+	t := p.TimeoutSec
+	if t <= 0 {
+		t = 300
+	}
+	m.timeout.SetValue(strconv.Itoa(t))
+}
+
+// commitEditorToSelectedProfile copies the textinputs into the selected
+// profile slot. Called before profile-list mutations (Add / Delete / move
+// selection / SetActive / submitSave) so in-progress edits aren't lost.
+func (m *Model) commitEditorToSelectedProfile() {
+	if m == nil || m.draft == nil {
+		return
+	}
+	if m.selectedProfileIdx < 0 || m.selectedProfileIdx >= len(m.draft.Profiles) {
+		return
+	}
+	prof := m.draft.Profiles[m.selectedProfileIdx]
+	prof.Name = strings.TrimSpace(m.profileName.Value())
+	if prof.Name == "" {
+		prof.Name = m.draft.Profiles[m.selectedProfileIdx].Name
+	}
+	if p, err := aiconfig.ParseProvider(strings.TrimSpace(m.provider.Value())); err == nil {
+		prof.Provider = p
+	}
+	prof.BaseURL = strings.TrimSpace(m.baseURL.Value())
+	prof.Model = strings.TrimSpace(m.model.Value())
+	prof.APIKey = m.apiKey.Value()
+	if ts := strings.TrimSpace(m.timeout.Value()); ts != "" {
+		if n, err := strconv.Atoi(ts); err == nil && n > 0 {
+			prof.TimeoutSec = n
+		}
+	}
+	wasActive := strings.EqualFold(m.draft.ActiveProfile, m.draft.Profiles[m.selectedProfileIdx].Name)
+	m.draft.Profiles[m.selectedProfileIdx] = prof
+	if wasActive {
+		m.draft.ActiveProfile = prof.Name
+	}
 }
 
 func (m *Model) initRepoFieldsFromDisk() {
@@ -265,6 +355,7 @@ func (m *Model) Resize(width, bodyHeight int) {
 	}
 	m.contentW = max(1, m.width)
 	m.fieldWidth = max(20, m.width-4)
+	m.profileName.Width = m.fieldWidth
 	m.provider.Width = m.fieldWidth
 	m.baseURL.Width = m.fieldWidth
 	m.model.Width = m.fieldWidth
@@ -426,18 +517,35 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.focus == fieldProfilePicker {
+			switch msg.String() {
+			case "up", "k":
+				m.commitEditorToSelectedProfile()
+				if m.selectedProfileIdx > 0 {
+					m.selectedProfileIdx--
+				}
+				m.loadEditorFromSelectedProfile()
+				return m, nil
+			case "down", "j":
+				m.commitEditorToSelectedProfile()
+				if m.selectedProfileIdx < len(m.draft.Profiles)-1 {
+					m.selectedProfileIdx++
+				}
+				m.loadEditorFromSelectedProfile()
+				return m, nil
+			case "enter":
+				return m, m.activateSelectedProfile()
+			case "n":
+				return m, m.addNewProfile()
+			case "d":
+				return m, m.deleteSelectedProfile()
+			}
+		}
 		var cmd tea.Cmd
-		switch m.focus {
-		case fieldProvider:
-			m.provider, cmd = m.provider.Update(msg)
-		case fieldBaseURL:
-			m.baseURL, cmd = m.baseURL.Update(msg)
-		case fieldModel:
-			m.model, cmd = m.model.Update(msg)
-		case fieldAPIKey:
-			m.apiKey, cmd = m.apiKey.Update(msg)
-		case fieldTimeout:
-			m.timeout, cmd = m.timeout.Update(msg)
+		if ti := m.focusedInput(); ti != nil {
+			updated, c := ti.Update(msg)
+			*ti = updated
+			cmd = c
 		}
 		return m, cmd
 
@@ -459,9 +567,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *Model) advanceFocus(delta int) {
 	m.blurInputs()
-	m.focus = (m.focus + delta + 6) % 6
-	if m.focus != fieldStrictness {
-		m.focusedInput().Focus()
+	m.focus = (m.focus + delta + fieldAICount) % fieldAICount
+	if m.focus != fieldStrictness && m.focus != fieldProfilePicker {
+		if ti := m.focusedInput(); ti != nil {
+			ti.Focus()
+		}
 	}
 }
 
@@ -534,6 +644,7 @@ func (m *Model) updateThemeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) blurInputs() {
+	m.profileName.Blur()
 	m.provider.Blur()
 	m.baseURL.Blur()
 	m.model.Blur()
@@ -620,6 +731,8 @@ func (m *Model) repoBlinkCmd() tea.Cmd {
 
 func (m *Model) focusedInput() *textinput.Model {
 	switch m.focus {
+	case fieldProfileName:
+		return &m.profileName
 	case fieldProvider:
 		return &m.provider
 	case fieldBaseURL:
@@ -628,42 +741,127 @@ func (m *Model) focusedInput() *textinput.Model {
 		return &m.model
 	case fieldAPIKey:
 		return &m.apiKey
-	default:
+	case fieldTimeout:
 		return &m.timeout
+	default:
+		return nil
 	}
+}
+
+// activateSelectedProfile sets the selected row as the active profile.
+func (m *Model) activateSelectedProfile() tea.Cmd {
+	if m == nil || m.draft == nil {
+		return nil
+	}
+	if m.selectedProfileIdx < 0 || m.selectedProfileIdx >= len(m.draft.Profiles) {
+		return nil
+	}
+	m.commitEditorToSelectedProfile()
+	m.draft.ActiveProfile = m.draft.Profiles[m.selectedProfileIdx].Name
+	// Mirror onto top-level fields so callers reading cfg.Provider see the
+	// active profile while still in the settings overlay.
+	m.draft.Provider = m.draft.Profiles[m.selectedProfileIdx].Provider
+	m.draft.BaseURL = m.draft.Profiles[m.selectedProfileIdx].BaseURL
+	m.draft.Model = m.draft.Profiles[m.selectedProfileIdx].Model
+	m.draft.APIKey = m.draft.Profiles[m.selectedProfileIdx].APIKey
+	m.draft.TimeoutSec = m.draft.Profiles[m.selectedProfileIdx].TimeoutSec
+	return nil
+}
+
+// addNewProfile appends a fresh profile with a unique placeholder name and
+// focuses it for editing.
+func (m *Model) addNewProfile() tea.Cmd {
+	if m == nil || m.draft == nil {
+		return nil
+	}
+	m.commitEditorToSelectedProfile()
+	base := "profile"
+	name := base
+	i := 2
+	for {
+		clash := false
+		for _, p := range m.draft.Profiles {
+			if strings.EqualFold(strings.TrimSpace(p.Name), name) {
+				clash = true
+				break
+			}
+		}
+		if !clash {
+			break
+		}
+		name = base + "-" + strconv.Itoa(i)
+		i++
+	}
+	m.draft.Profiles = append(m.draft.Profiles, aiconfig.Profile{
+		Name:       name,
+		Provider:   aiconfig.ProviderClaude,
+		TimeoutSec: 300,
+	})
+	m.selectedProfileIdx = len(m.draft.Profiles) - 1
+	m.loadEditorFromSelectedProfile()
+	m.focus = fieldProfileName
+	m.blurInputs()
+	m.profileName.Focus()
+	return textinput.Blink
+}
+
+// deleteSelectedProfile removes the selected profile (no-op when only one
+// remains; ActiveProfile shifts when the deleted entry was active).
+func (m *Model) deleteSelectedProfile() tea.Cmd {
+	if m == nil || m.draft == nil {
+		return nil
+	}
+	if len(m.draft.Profiles) <= 1 {
+		return nil
+	}
+	if m.selectedProfileIdx < 0 || m.selectedProfileIdx >= len(m.draft.Profiles) {
+		return nil
+	}
+	deleted := m.draft.Profiles[m.selectedProfileIdx].Name
+	m.draft.Profiles = append(m.draft.Profiles[:m.selectedProfileIdx], m.draft.Profiles[m.selectedProfileIdx+1:]...)
+	if strings.EqualFold(strings.TrimSpace(m.draft.ActiveProfile), strings.TrimSpace(deleted)) {
+		m.draft.ActiveProfile = m.draft.Profiles[0].Name
+	}
+	if m.selectedProfileIdx >= len(m.draft.Profiles) {
+		m.selectedProfileIdx = len(m.draft.Profiles) - 1
+	}
+	m.loadEditorFromSelectedProfile()
+	return nil
 }
 
 func (m *Model) submitSave() tea.Cmd {
 	return func() tea.Msg {
-		p, err := aiconfig.ParseProvider(strings.TrimSpace(m.provider.Value()))
-		if err != nil {
-			return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: err}}
-		}
-		ts := strings.TrimSpace(m.timeout.Value())
-		timeoutSec := 300
-		if ts != "" {
-			n, err := strconv.Atoi(ts)
-			if err != nil || n <= 0 {
-				return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: fmt.Errorf("invalid timeout: must be a positive integer")}}
+		m.commitEditorToSelectedProfile()
+		// Validate every profile (provider + timeout) before persisting so
+		// the on-disk file isn't left half-valid on a typo.
+		for i, p := range m.draft.Profiles {
+			parsed, err := aiconfig.ParseProvider(strings.TrimSpace(string(p.Provider)))
+			if err != nil {
+				return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: fmt.Errorf("profile %q: %w", p.Name, err)}}
 			}
-			timeoutSec = n
+			m.draft.Profiles[i].Provider = parsed
+			if strings.TrimSpace(p.Name) == "" {
+				return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: fmt.Errorf("profile at row %d has empty name", i+1)}}
+			}
+			if p.TimeoutSec <= 0 {
+				m.draft.Profiles[i].TimeoutSec = 300
+			}
 		}
 		rs := m.draft.ReviewStrictness
 		if _, err := aiconfig.ParseReviewStrictness(string(rs)); err != nil {
 			rs = strictnessAt(m.strictIdx)
 		}
-		cfg := &aiconfig.Config{
-			Provider:         p,
-			ReviewStrictness: rs,
-			BaseURL:          strings.TrimSpace(m.baseURL.Value()),
-			Model:            strings.TrimSpace(m.model.Value()),
-			APIKey:           m.apiKey.Value(),
-			TimeoutSec:       timeoutSec,
-		}
-		if err := aiconfig.Save(cfg, ""); err != nil {
+		m.draft.ReviewStrictness = rs
+		if err := aiconfig.Save(m.draft, ""); err != nil {
 			return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: err}}
 		}
-		return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Cfg: cfg.Clone()}}
+		// Re-load so the returned config has the active profile mirrored
+		// onto top-level fields the way callers expect.
+		fresh, err := aiconfig.Load()
+		if err != nil {
+			return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: err}}
+		}
+		return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Cfg: fresh}}
 	}
 }
 
@@ -750,6 +948,67 @@ func (m *Model) renderTabStrip() string {
 	return row + "\n" + dimStyle.Render("click tabs or [ ] to switch") + "\n"
 }
 
+// renderProfileList draws the profile-row table + action buttons.
+func (m *Model) renderProfileList() string {
+	var b strings.Builder
+	b.WriteString(boldStyle.Render("AI profiles") + "\n")
+	hint := "click row · ↑/↓ select · enter set active · n add · d delete"
+	if m.focus == fieldProfilePicker {
+		b.WriteString(boldStyle.Render(hint) + "\n\n")
+	} else {
+		b.WriteString(dimStyle.Render(hint) + "\n\n")
+	}
+	if m.draft == nil || len(m.draft.Profiles) == 0 {
+		b.WriteString(dimStyle.Render("(no profiles)") + "\n\n")
+		return b.String()
+	}
+	for i, p := range m.draft.Profiles {
+		marker := "  "
+		if i == m.selectedProfileIdx && m.focus == fieldProfilePicker {
+			marker = boldStyle.Render("> ")
+		} else if i == m.selectedProfileIdx {
+			marker = "> "
+		}
+		active := "( )"
+		if strings.EqualFold(strings.TrimSpace(p.Name), strings.TrimSpace(m.draft.ActiveProfile)) {
+			active = okStyle.Render("(●)")
+		}
+		row := fmt.Sprintf("%s%s  %-16s  %s", marker, active, truncRight(p.Name, 16), dimStyle.Render(p.Summary()))
+		b.WriteString(zone.Mark(ZoneProfileRow(i), row) + "\n")
+	}
+	b.WriteString("\n")
+	b.WriteString(zone.Mark(ZoneProfileSetActive, okStyle.Render(" Set active ")) + "  ")
+	b.WriteString(zone.Mark(ZoneProfileAdd, okStyle.Render(" + Add ")) + "  ")
+	b.WriteString(zone.Mark(ZoneProfileDelete, errStyle.Render(" Delete ")))
+	b.WriteString("\n")
+	return b.String()
+}
+
+// truncRight pads (or truncates) s to w cells with trailing spaces.
+func truncRight(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if len(s) > w {
+		if w <= 1 {
+			return "…"
+		}
+		return s[:w-1] + "…"
+	}
+	for len(s) < w {
+		s += " "
+	}
+	return s
+}
+
+// fieldLabel renders a label, bolded when the field is currently focused.
+func (m *Model) fieldLabel(label string, field int) string {
+	if m.focus == field {
+		return boldStyle.Render(label)
+	}
+	return label
+}
+
 func (m *Model) renderStrictnessRows() string {
 	var b strings.Builder
 	b.WriteString(boldStyle.Render("Review strictness") + "\n")
@@ -788,16 +1047,21 @@ func (m *Model) buildForm() string {
 		b.WriteString(dimStyle.Render("tab / shift+tab fields · ctrl+s save · esc cancel · [ ] repo tab") + "\n\n")
 		b.WriteString(m.renderStrictnessRows())
 		b.WriteString("\n")
-		b.WriteString(boldStyle.Render("AI") + "\n\n")
-		b.WriteString("provider\n")
+		b.WriteString(m.renderProfileList())
+		b.WriteString("\n")
+		b.WriteString(boldStyle.Render("Edit profile") + "\n")
+		b.WriteString(dimStyle.Render("changes apply to the selected row above; click 'Set active' to use it for reviews") + "\n\n")
+		b.WriteString(m.fieldLabel("name", fieldProfileName) + "\n")
+		b.WriteString(m.profileName.View() + "\n\n")
+		b.WriteString(m.fieldLabel("provider", fieldProvider) + "\n")
 		b.WriteString(m.provider.View() + "\n\n")
-		b.WriteString("base URL\n")
+		b.WriteString(m.fieldLabel("base URL", fieldBaseURL) + "\n")
 		b.WriteString(m.baseURL.View() + "\n\n")
-		b.WriteString("model\n")
+		b.WriteString(m.fieldLabel("model", fieldModel) + "\n")
 		b.WriteString(m.model.View() + "\n\n")
-		b.WriteString("API key (masked)\n")
+		b.WriteString(m.fieldLabel("API key (masked)", fieldAPIKey) + "\n")
 		b.WriteString(m.apiKey.View() + "\n\n")
-		b.WriteString("timeout (sec)\n")
+		b.WriteString(m.fieldLabel("timeout (sec)", fieldTimeout) + "\n")
 		b.WriteString(m.timeout.View() + "\n\n")
 		b.WriteString(dimStyle.Render("Config file: "+aiconfig.DefaultPath()) + "\n\n")
 	} else {

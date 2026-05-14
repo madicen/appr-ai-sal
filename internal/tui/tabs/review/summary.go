@@ -170,13 +170,27 @@ func (m *Model) renderConfirmApproveBody() string {
 		b.WriteString(styles.DimStyle.Render("Every configured specialist reviewed this diff and produced no actionable feedback to leave on the diff or in a written summary. It recommends approving this pull request.") + "\n\n")
 		b.WriteString(styles.DimStyle.Render("appr-ai-sal is an assistive tool — your APPROVE signal still represents your own review of this PR, not the AI's.") + "\n\n")
 		b.WriteString(styles.BoldStyle.Render("Submit GitHub APPROVE on this pull request?") + "\n\n")
-		b.WriteString(styles.DimStyle.Render("The review will be submitted with event ") +
+		// Two paths into the same APPROVE event:
+		//   • "Approve PR (y)" attaches the rendered "no issues found by any
+		//     agent" body so the review on GitHub explains the thumbs-up.
+		//   • "Approve only (a)" posts APPROVE with no body at all, for
+		//     reviewers who don't want any AI-authored text published on the
+		//     PR alongside their approval.
+		b.WriteString(styles.DimStyle.Render("Pressing ") +
+			styles.OkStyle.Render("y") +
+			styles.DimStyle.Render(" submits event ") +
 			styles.OkStyle.Render("APPROVE") +
-			styles.DimStyle.Render(" and a brief body explaining no issues were found.") + "\n\n")
+			styles.DimStyle.Render(" with a brief body explaining no issues were found.") + "\n")
+		b.WriteString(styles.DimStyle.Render("Pressing ") +
+			styles.OkStyle.Render("a") +
+			styles.DimStyle.Render(" submits event ") +
+			styles.OkStyle.Render("APPROVE") +
+			styles.DimStyle.Render(" with no comment body — a content-free approval.") + "\n\n")
 
 		yes := zone.Mark(zones.StagedSummaryYes, styles.OkStyle.Render(" Approve PR (y) "))
+		approveOnly := zone.Mark(zones.StagedSummaryApproveOnly, styles.OkStyle.Render(" Approve only (a) "))
 		q := zone.Mark(zones.StagedQuit, styles.ErrStyle.Render(" Abort (q) "))
-		b.WriteString(yes + "  " + q + "\n")
+		b.WriteString(yes + "  " + approveOnly + "  " + q + "\n")
 	} else {
 		onPR, sessPosted, _ := m.tallyCardKinds()
 		if len(m.cards) > 0 {
@@ -335,7 +349,7 @@ func (m *Model) helpForPhase() string {
 			return "↑/↓ scroll · q exit" + peruseSuffix
 		}
 		if m.noFindingsApprove {
-			return "y APPROVE · R refresh PR · q abort"
+			return "y APPROVE with body · a APPROVE without body · R refresh PR · q abort"
 		}
 		return "y APPROVE · n leave a comment-only review · R refresh PR · q abort"
 	case phasePosted:

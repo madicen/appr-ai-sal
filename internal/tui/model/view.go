@@ -107,14 +107,10 @@ func (m *Model) renderStatus() string {
 			" · " + m.renderBuildAgentsHint(owner, repo) +
 			" · / search · f filter · R refresh · q quit" + dry
 	case modeDetail:
-		owner, repo, number := "", "", 0
-		if m.currentPR != nil {
-			owner, repo, number = m.currentPR.Owner, m.currentPR.Repo, m.currentPR.Number
-		}
-		hint = "tab pane · j/k nav · r review · a reopen approval · O browser · g description · d diff-only · P bulk · ctrl+r repo agents · " +
-			m.renderBuildLangAgentsHint(owner, repo, number) +
-			" · " + m.renderBuildAgentsHint(owner, repo) +
-			" · ctrl+d/u · esc back" + dry
+		// Per-agent state (repo / tech / lang) is owned by the right-hand
+		// "Review controls" pane now; the bottom status bar carries only
+		// the cross-cutting keybindings.
+		hint = "tab pane · j/k nav · r review · c toggle controls · a reopen approval · O browser · g description · d diff-only · P bulk · esc back" + dry
 	case modeSettings:
 		hint = "[ ] tabs · ctrl+s save · esc · tab fields · ↑/↓ strictness · wheel · o AI · , review · ctrl+g repo tab · ctrl+c quit" + dry
 	case modeRepoAgents:

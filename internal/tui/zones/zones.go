@@ -45,11 +45,16 @@ const (
 	RepoContextToggle    = "zone:review:repo-context"
 	PaneTree             = "zone:pane:tree"
 	PaneDiff             = "zone:pane:diff"
+	// PaneControls is the right-hand "Review controls" pane on the PR
+	// detail view: strictness, profile picker, agent state, toggles,
+	// Start Review button.
+	PaneControls = "zone:pane:controls"
 	// Pane viewport interiors (below each pane title) — used to map
 	// clicks on lipgloss-padded blank rows at the bottom of a viewport
 	// to the last row.
 	PaneTreeBody     = "zone:pane:tree:body"
 	PaneDiffBody     = "zone:pane:diff:body"
+	PaneControlsBody = "zone:pane:controls:body"
 	ReopenApproval   = "zone:detail:reopen"
 	DescriptionToggle = "zone:detail:description"
 	// BuildRepoAgents is the clickable chip in the PR detail mini-header
@@ -66,4 +71,22 @@ const (
 	// that opens the current PR's GitHub URL in the user's default
 	// browser.
 	OpenInBrowser = "zone:detail:open-in-browser"
+
+	// Controls panel zones — clickable rows / buttons inside the
+	// right-hand "Review controls" pane.
+	ControlsStrictCriticalOnly  = "zone:controls:strict:critical_only"
+	ControlsStrictLenient       = "zone:controls:strict:lenient"
+	ControlsStrictBalanced      = "zone:controls:strict:balanced"
+	ControlsStrictStrict        = "zone:controls:strict:strict"
+	ControlsProfilePrev         = "zone:controls:profile:prev"
+	ControlsProfileNext         = "zone:controls:profile:next"
+	ControlsProfileEdit         = "zone:controls:profile:edit"
+	ControlsRepoAgents          = "zone:controls:agents:repo"
+	ControlsTechAgents          = "zone:controls:agents:tech"
+	ControlsLangAgents          = "zone:controls:agents:lang"
+	ControlsToggleParallel      = "zone:controls:toggle:parallel"
+	ControlsToggleDryRun        = "zone:controls:toggle:dry-run"
+	ControlsTogglePeruse        = "zone:controls:toggle:peruse"
+	ControlsStartReview         = "zone:controls:start"
+	ControlsStartReviewPeruse   = "zone:controls:start-peruse"
 )
