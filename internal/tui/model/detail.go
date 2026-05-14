@@ -13,6 +13,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
+	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review"
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
 	"github.com/madicen/appr-ai-sal/internal/tui/overlays"
@@ -74,12 +75,22 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 		}
 	}
 
-	// Tree row clicks (zone per row, then viewport body for padded filler rows)
-	if ti, ok := m.treeRowFromMouse(msg); ok {
+	// Tree row clicks (zone per row, then viewport body for padded filler rows).
+	// File rows update selection + reset diff scroll; folder rows toggle
+	// collapsed state for that subtree.
+	if hit, ok := m.treeRowFromMouse(msg); ok {
 		m.focusedPane = paneTree
-		m.treeIdx = ti
-		m.selectedFilePath = m.treeRows[ti].Path
-		m.diffView.SetYOffset(0)
+		m.treeIdx = hit.viewLine
+		if hit.isFolder {
+			m.toggleFolderCollapse(m.treeViewRows[hit.viewLine].fullPath)
+			return m, nil
+		}
+		fi := m.treeViewRows[hit.viewLine].fileIndex
+		if fi >= 0 && fi < len(m.treeRows) {
+			m.selectedFilePath = m.treeRows[fi].Path
+			m.diffView.SetYOffset(0)
+		}
+		m.scrollToSelectedFile = true
 		m.refreshDetailViews()
 		return m, nil
 	}
@@ -131,10 +142,21 @@ func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
 	case zoneInBounds(zones.ControlsLangAgents, msg):
 		return m.openLangAgents(), true
 	case zoneInBounds(zones.ControlsToggleParallel, msg):
-		// Parallel specialists is a repoconfig knob, not a transient
-		// runtime flag. Direct the user to the settings tab where the
-		// persistent toggle lives.
-		return m.openSettings(settings.StartRepoContext), true
+		// Parallel specialists is a repoconfig knob (persists across
+		// runs), but flipping it inline matches the muscle memory the
+		// other Run-options toggles set: click to flip, see the change
+		// immediately, run with it. We load → toggle → save → refresh.
+		// If an env var (APPR_AI_SAL_PARALLEL_SPECIALISTS) is overriding
+		// the disk value at runtime, the visual will keep showing the
+		// env-forced state — that's consistent with the env taking
+		// precedence everywhere else.
+		if err := m.toggleParallelSpecialists(); err != nil {
+			// Fall back to opening settings on save failure so the user
+			// still has a way to flip the bit (and can see the error
+			// surface from the settings save flow).
+			return m.openSettings(settings.StartRepoContext), true
+		}
+		return nil, true
 	case zoneInBounds(zones.ControlsToggleDryRun, msg):
 		m.opts.DryRun = !m.opts.DryRun
 		m.refreshDetailViews()
@@ -170,6 +192,33 @@ func (m *Model) cycleAIProfile(delta int) {
 	}
 	m.opts.AIConfig.CycleActive(delta)
 	m.refreshDetailViews()
+}
+
+// toggleParallelSpecialists flips repoconfig.ParallelSpecialists on disk
+// (the same value the Settings → Repo context tab edits) and refreshes the
+// detail views so the new state shows immediately. The toggle in the
+// controls panel reads its label via repoParallelExecutionFlags, which
+// re-reads the config every render, so the next refresh picks up the new
+// value automatically.
+//
+// Note: APPR_AI_SAL_PARALLEL_SPECIALISTS, when set, is applied on top of the
+// loaded value at runtime, so an env-forced state will continue to win
+// visually. We still write the user's choice through to disk so it sticks
+// once the env var is unset.
+func (m *Model) toggleParallelSpecialists() error {
+	cfg, err := repoconfig.Load()
+	if err != nil {
+		return err
+	}
+	if cfg == nil {
+		cfg = repoconfig.Default()
+	}
+	cfg.ParallelSpecialists = !cfg.ParallelSpecialists
+	if err := repoconfig.Save(cfg, ""); err != nil {
+		return err
+	}
+	m.refreshDetailViews()
+	return nil
 }
 
 func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -241,6 +290,30 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.detailNavigate(-1)
 		m.refreshDetailViews()
 		return m, nil
+	case " ":
+		// Space on a folder row toggles its collapsed state; on a file
+		// row it's consumed (no-op) so it doesn't accidentally page-scroll
+		// the tree pane. Other panes still page-scroll on space via the
+		// viewport fallthrough below.
+		if m.focusedPane == paneTree {
+			if m.treeIdx >= 0 && m.treeIdx < len(m.treeViewRows) {
+				vr := m.treeViewRows[m.treeIdx]
+				if !vr.isFile {
+					m.toggleFolderCollapse(vr.fullPath)
+				}
+			}
+			return m, nil
+		}
+	case "enter":
+		// Enter on a folder row toggles collapse, on a file row it's a
+		// no-op (selection is already updated by j/k or click).
+		if m.focusedPane == paneTree && m.treeIdx >= 0 && m.treeIdx < len(m.treeViewRows) {
+			vr := m.treeViewRows[m.treeIdx]
+			if !vr.isFile {
+				m.toggleFolderCollapse(vr.fullPath)
+			}
+			return m, nil
+		}
 	case "ctrl+d":
 		m.diffView.ScrollDown(max(1, m.diffView.Height/2))
 		return m, nil
@@ -304,12 +377,20 @@ func (m *Model) cyclePane(dir int) {
 func (m *Model) detailNavigate(dir int) {
 	switch m.focusedPane {
 	case paneTree:
-		if len(m.treeRows) == 0 {
+		if len(m.treeViewRows) == 0 {
 			return
 		}
-		m.treeIdx = clampInt(m.treeIdx+dir, 0, len(m.treeRows)-1)
-		m.selectedFilePath = m.treeRows[m.treeIdx].Path
-		m.diffView.SetYOffset(0)
+		m.treeIdx = clampInt(m.treeIdx+dir, 0, len(m.treeViewRows)-1)
+		// Update selectedFilePath only when the cursor lands on a file
+		// row — folder rows leave the diff pane sticky on the previously
+		// selected file so navigating through folder headers doesn't
+		// blank the diff.
+		vr := m.treeViewRows[m.treeIdx]
+		if vr.isFile && vr.fileIndex >= 0 && vr.fileIndex < len(m.treeRows) {
+			m.selectedFilePath = m.treeRows[vr.fileIndex].Path
+			m.diffView.SetYOffset(0)
+		}
+		m.scrollToSelectedFile = true
 	case paneDiff:
 		if dir > 0 {
 			m.diffView.ScrollDown(1)
@@ -382,9 +463,102 @@ func (m *Model) applyProgress(p review.Progress) {
 
 func (m *Model) recomputeTreeRows() {
 	m.treeRows = buildTreeRows(m.parsedDiff, m.draft)
-	if m.treeIdx >= len(m.treeRows) {
-		m.treeIdx = max(0, len(m.treeRows)-1)
+	m.recomputeTreeView()
+}
+
+// recomputeTreeView rebuilds the hierarchical view rows + index maps from
+// the current treeRows + collapsedFolders. Called whenever treeRows or
+// the collapse state changes. After rebuilding it tries to keep treeIdx
+// pointing at the currently selected file's row so cursor position
+// doesn't jump on toggle.
+func (m *Model) recomputeTreeView() {
+	if m.collapsedFolders == nil {
+		m.collapsedFolders = map[string]bool{}
 	}
+	view, fileToLine, lineToFile := buildTreeView(m.treeRows, m.collapsedFolders)
+	m.treeViewRows = view
+	m.treeFileToLine = fileToLine
+	m.treeLineToFile = lineToFile
+
+	// Re-anchor the cursor onto the row matching m.selectedFilePath when
+	// possible; falls back to clamping into bounds if the selected file is
+	// hidden (e.g. its parent folder was just collapsed).
+	if m.selectedFilePath != "" {
+		for i, fr := range m.treeRows {
+			if fr.Path == m.selectedFilePath {
+				if i < len(fileToLine) && fileToLine[i] >= 0 {
+					m.treeIdx = fileToLine[i]
+				}
+				break
+			}
+		}
+	}
+	if m.treeIdx >= len(m.treeViewRows) {
+		m.treeIdx = max(0, len(m.treeViewRows)-1)
+	}
+	if m.treeIdx < 0 {
+		m.treeIdx = 0
+	}
+}
+
+// applyScrollToSelectedFile, when m.scrollToSelectedFile is set, adjusts
+// the tree viewport's YOffset so m.treeIdx (the cursor row) sits inside
+// the visible window. Mirrors jj-tui's GraphResult.FileIndexToLineIndex
+// + scrollToSelectedFile gate so wheel-scroll never fights cursor moves.
+//
+// Strategy: if the cursor is above the visible window scroll up to put
+// it on the top line; if below, scroll down to put it on the bottom
+// line. Otherwise leave YOffset alone.
+func (m *Model) applyScrollToSelectedFile() {
+	if !m.scrollToSelectedFile {
+		return
+	}
+	m.scrollToSelectedFile = false
+	if m.treeView.Height <= 0 || len(m.treeViewRows) == 0 {
+		return
+	}
+	target := m.treeIdx
+	if target < 0 || target >= len(m.treeViewRows) {
+		return
+	}
+	top := m.treeView.YOffset
+	bottom := top + m.treeView.Height - 1
+	switch {
+	case target < top:
+		m.treeView.SetYOffset(target)
+	case target > bottom:
+		m.treeView.SetYOffset(target - m.treeView.Height + 1)
+	}
+}
+
+// toggleFolderCollapse flips the collapsed state of fullPath, rebuilds
+// the view rows, and triggers a refresh + scroll-to-selected so the
+// resulting layout keeps the toggled folder visible. fullPath is the
+// cumulative directory path stored on a folder treeViewRow (no trailing
+// slash).
+func (m *Model) toggleFolderCollapse(fullPath string) {
+	if fullPath == "" {
+		return
+	}
+	if m.collapsedFolders == nil {
+		m.collapsedFolders = map[string]bool{}
+	}
+	if m.collapsedFolders[fullPath] {
+		delete(m.collapsedFolders, fullPath)
+	} else {
+		m.collapsedFolders[fullPath] = true
+	}
+	m.recomputeTreeView()
+	// After collapse, re-anchor cursor onto the toggled folder's row
+	// (recomputeTreeView only re-anchored to the selected file).
+	for i, vr := range m.treeViewRows {
+		if !vr.isFile && vr.fullPath == fullPath {
+			m.treeIdx = i
+			break
+		}
+	}
+	m.scrollToSelectedFile = true
+	m.refreshDetailViews()
 }
 
 func (m *Model) refreshDetailViews() {
@@ -412,9 +586,10 @@ func (m *Model) refreshDetailViews() {
 	// Tree pane: do not run util.WrapForViewport here — renderTreePane already fits
 	// each row to contentCols; wrapping would split bubblezone row markers across
 	// lines and break mouse hit-testing.
-	treeContent := renderTreePane(m.treeRows, m.treeIdx, m.treeView.Width, m.focusedPane == paneTree)
+	treeContent := renderTreePane(m.treeViewRows, m.treeRows, m.collapsedFolders, m.treeIdx, m.treeView.Width, m.focusedPane == paneTree)
 	m.treeScrollLines = util.ViewportLineCount(treeContent)
 	m.treeView.SetContent(treeContent)
+	m.applyScrollToSelectedFile()
 
 	// Controls pane: only repopulate when actually visible — relayout
 	// shrinks the viewport to 1x1 when hidden, so wasted work is small

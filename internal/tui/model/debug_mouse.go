@@ -51,8 +51,12 @@ func (m *Model) debugLogDetailMouse(msg tea.MouseMsg) {
 		appendZoneY("treeRow0", zones.TreeFile(0))
 	}
 
-	if ti, ok := m.treeRowFromMouse(msg); ok {
-		fmt.Fprintf(&b, " ->treeIdx=%d", ti)
+	if hit, ok := m.treeRowFromMouse(msg); ok {
+		kind := "file"
+		if hit.isFolder {
+			kind = "folder"
+		}
+		fmt.Fprintf(&b, " ->treeIdx=%d(%s)", hit.viewLine, kind)
 	}
 
 	fmt.Fprintln(os.Stderr, b.String())

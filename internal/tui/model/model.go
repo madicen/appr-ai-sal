@@ -173,10 +173,25 @@ type Model struct {
 	// PR detail layout: tree + diff.
 	parsedDiff       []review.FileDiff
 	treeRows         []treeRow
-	treeIdx          int
+	treeIdx          int // cursor row into treeViewRows (folders + files)
 	focusedPane      pane
 	selectedFilePath string
 	diffOnly         bool
+
+	// Tree view (hierarchical, with collapsible folders) — derived from
+	// treeRows + collapsedFolders. treeIdx indexes treeViewRows so j/k
+	// can land on folder rows and toggle them with space; files set
+	// selectedFilePath while folder rows leave it sticky. Built by
+	// buildTreeView; rebuilt on every recomputeTreeRows / collapse.
+	treeViewRows     []treeViewRow
+	treeFileToLine   []int // index into treeRows -> line index in treeViewRows
+	treeLineToFile   []int // index into treeViewRows -> index into treeRows (-1 for folders)
+	collapsedFolders map[string]bool
+
+	// scrollToSelectedFile is set on j/k / file click / refresh so the
+	// next refreshDetailViews scrolls the selected row into view; reset
+	// after applying so wheel-scroll doesn't fight with cursor scroll.
+	scrollToSelectedFile bool
 
 	treeView     viewport.Model
 	diffView     viewport.Model
@@ -458,6 +473,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.draft = nil
 		m.parsedDiff = review.ParseDiff(m.diff)
 		m.recordPRLanguages(msg.PR, m.parsedDiff)
+		// Loading a different PR shouldn't carry collapse state forward —
+		// the folder paths from the previous PR are likely irrelevant.
+		m.collapsedFolders = map[string]bool{}
 		m.treeRows = buildTreeRows(m.parsedDiff, m.draft)
 		m.treeIdx = 0
 		m.diffOnly = false
@@ -466,6 +484,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(m.parsedDiff) > 0 {
 			m.selectedFilePath = m.parsedDiff[0].Path
 		}
+		m.recomputeTreeView()
+		m.scrollToSelectedFile = true
 		m.mode = modeDetail
 		m.refreshDetailViews()
 		return m, nil
@@ -504,6 +524,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.parsedDiff = review.ParseDiff(m.diff)
 				m.recordPRLanguages(msg.PR, m.parsedDiff)
 				m.treeRows = buildTreeRows(m.parsedDiff, m.draft)
+				m.recomputeTreeView()
 				m.refreshDetailViews()
 			}
 			if m.draft != nil && m.draft.PR != nil && m.draft.PR.Number == msg.PR.Number {

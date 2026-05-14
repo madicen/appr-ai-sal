@@ -15,6 +15,14 @@ func TreeFile(i int) string {
 	return fmt.Sprintf("zone:tree:file:%d", i)
 }
 
+// TreeFolder marks a folder header row in the hierarchical files tree.
+// Clicks on a folder zone toggle that folder's collapsed state. Indexed
+// by view-row position (i.e. index into treeViewRows) so the same row
+// can be a file zone or a folder zone, never both.
+func TreeFolder(i int) string {
+	return fmt.Sprintf("zone:tree:folder:%d", i)
+}
+
 // bubblezone IDs for clickable regions.
 const (
 	FilterToggle = "zone:filter:explicit"

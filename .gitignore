@@ -24,4 +24,4 @@ coverage.txt
 .env.local
 
 # jj-tui
-.jj-tui-config.json
+.jj-tui.json

@@ -9,6 +9,7 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	techagentsstore "github.com/madicen/appr-ai-sal/internal/review/techagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
@@ -96,6 +97,63 @@ func TestMiniHeaderHasNoAgentChips(t *testing.T) {
 	}
 	if strings.Contains(header, "build lang experts") {
 		t.Fatalf("mini-header still contains 'build lang experts': %q", header)
+	}
+}
+
+// Clicking the "Parallel specialists" toggle in the Run options list must
+// flip the on-disk repoconfig knob in place — not navigate the user to the
+// Settings tab. The earlier "open settings" routing was confusing because
+// it broke the muscle memory the sibling toggles ("Dry run", "Peruse")
+// already established (click → flip → done).
+func TestControlsClickToggleParallelFlipsRepoConfigInline(t *testing.T) {
+	t.Setenv("APPR_AI_SAL_CONFIG_DIR", t.TempDir())
+	// Defensively neutralize any APPR_AI_SAL_PARALLEL_SPECIALISTS the
+	// dev shell may have set: it would otherwise win at read time and
+	// the next test run could observe a different on-disk start value.
+	t.Setenv("APPR_AI_SAL_PARALLEL_SPECIALISTS", "")
+
+	m := detailFixtureModel(t)
+	if m.controlsHidden {
+		t.Fatalf("controls pane unexpectedly hidden at fixture width")
+	}
+	_ = m.View()
+
+	startCfg, err := repoconfig.Load()
+	if err != nil {
+		t.Fatalf("repoconfig.Load: %v", err)
+	}
+	startVal := startCfg.ParallelSpecialists
+
+	msg := clickCenterOfZone(t, zones.ControlsToggleParallel)
+	out, _ := m.detailHandleMouse(msg, false)
+	m2 := out.(*Model)
+
+	if m2.mode != modeDetail {
+		t.Fatalf("toggle click must keep us in detail mode (was %v); regression: navigated to settings", m2.mode)
+	}
+	got, err := repoconfig.Load()
+	if err != nil {
+		t.Fatalf("repoconfig.Load after toggle: %v", err)
+	}
+	if got.ParallelSpecialists == startVal {
+		t.Fatalf("ParallelSpecialists did not flip on disk: got %v, want %v", got.ParallelSpecialists, !startVal)
+	}
+
+	// Click again: must flip back. This pins the round-trip behavior so
+	// future refactors of the toggle helper can't silently degrade to
+	// "set, never unset".
+	msg = clickCenterOfZone(t, zones.ControlsToggleParallel)
+	out, _ = m2.detailHandleMouse(msg, false)
+	m3 := out.(*Model)
+	got2, err := repoconfig.Load()
+	if err != nil {
+		t.Fatalf("repoconfig.Load after second toggle: %v", err)
+	}
+	if got2.ParallelSpecialists != startVal {
+		t.Fatalf("second toggle did not return to start: got %v, want %v", got2.ParallelSpecialists, startVal)
+	}
+	if m3.mode != modeDetail {
+		t.Fatalf("second toggle click must keep us in detail mode (was %v)", m3.mode)
 	}
 }
 
