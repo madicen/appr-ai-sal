@@ -1,0 +1,52 @@
+// Package styles owns every lipgloss style used by the root TUI, the
+// tabs, and the overlay stack. Tag and severity colours are sourced from
+// internal/theme on every render so user customisation in the Theme
+// settings tab takes effect without a TUI restart.
+package styles
+
+import "github.com/charmbracelet/lipgloss"
+
+var (
+	// AppPadding is the standard 1-cell horizontal padding applied to most
+	// body content so the active text never butts against the terminal
+	// edge.
+	AppPadding = lipgloss.NewStyle().Padding(0, 1)
+
+	// HeaderBar is the full-width purple bar at the top of every screen.
+	HeaderBar = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#5D2D91")).
+			Padding(0, 1)
+
+	// StatusBar is the dim help/footer line at the bottom of the screen.
+	StatusBar = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#888888")).
+			Padding(0, 1)
+
+	// PanelBorder is the colour for two-pane layouts; high enough
+	// contrast on both light and dark backgrounds to read as a real box.
+	PanelBorder = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#9A9A9A"}
+
+	// LeftPanel frames a column with a rounded border tinted by
+	// PanelBorder.
+	LeftPanel = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(PanelBorder).
+			Padding(0, 1)
+
+	// DetailPaneTitleStyle is the one-line strip drawn above each scroll
+	// viewport in the PR detail and staged-comments views.
+	DetailPaneTitleStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#BBBBBB"}).
+				Background(lipgloss.AdaptiveColor{Light: "#E8E8E8", Dark: "#2C2C2C"}).
+				Padding(0, 0)
+
+	// ModalButtonStyle styles secondary modal actions (Copy, OK, etc.) in
+	// a jj-tui-style filled chip.
+	ModalButtonStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFFFFF")).
+				Background(lipgloss.Color("#30363d")).
+				Padding(0, 1).
+				Bold(true)
+)
