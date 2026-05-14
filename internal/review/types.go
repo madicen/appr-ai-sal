@@ -1282,21 +1282,35 @@ func joinQuoted(s []string) string {
 // RenderBody renders the top-level review body: vibe-coach verdict + summary + one
 // combined AI prompt, then optional consolidated PR-wide bullets and agent failures.
 // Per-specialist headings are intentionally omitted — inline-only feedback lives on the diff.
+//
+// The body is deliberately framed as a *summary* produced by an assistive
+// tool, not as the review itself. The actual review is performed by the
+// human running appr-ai-sal — any APPROVE / REQUEST_CHANGES / COMMENT
+// signal on the PR represents that individual's own judgement after
+// consulting the AI output. The wording here, the heading, and the
+// human-reviewer disclaimer are all in service of that framing so PR
+// authors don't read a green checkmark and assume "the AI approved this".
+//
+// The `produced by **appr-ai-sal**` substring is the marker used by
+// gh.DetectPriorAprrAISalActivity to recognise tool-authored bodies on
+// re-runs; keep it intact when editing the disclosure below.
 func (d *Draft) RenderBody() string {
 	if d != nil && d.HasNoFindings() {
-		// The standard disclosure mentions "inline comments on the diff" and an
-		// "executive summary" — both nonsensical when the pipeline returned
+		// The standard disclosure mentions "inline comments on the diff" and a
+		// "written summary" — both nonsensical when the pipeline returned
 		// nothing. Use a tailored body so the GitHub APPROVE we post in this
 		// case explains why instead of looking content-free.
-		return "## appr-ai-sal review\n\n" +
-			"✅ **No issues found by any agent** — every configured specialist reviewed this diff and produced no actionable feedback to leave on the diff or in a written summary. Approving this pull request.\n\n" +
-			"> **AI disclosure:** This review was produced by **appr-ai-sal** (automated AI tools). Verify everything before merging.\n"
+		return "## appr-ai-sal summary\n\n" +
+			"✅ **No issues found by any agent** — every configured specialist reviewed this diff and produced no actionable feedback to leave on the diff or in a written summary. It recommends Approving this pull request.\n\n" +
+			"_The review is still manually performed by the person using appr-ai-sal. It is not a replacement for manual review._\n\n" +
+			"> **AI disclosure:** This summary was produced by **appr-ai-sal** (automated AI tools).\n"
 	}
 	var b string
-	b += "## appr-ai-sal review\n\n"
-	b += "> **AI disclosure:** This review was produced by **appr-ai-sal** (automated AI tools). "
+	b += "## appr-ai-sal summary\n\n"
+	b += "> **AI disclosure:** This summary was produced by **appr-ai-sal** (automated AI tools) to assist the human reviewer. "
 	b += "**Line-level feedback** appears as **inline comments on the diff** where agents cited paths and lines. "
-	b += "This top-level comment is an executive summary plus optional paste-ready AI instructions. Verify everything before merging.\n\n"
+	b += "This top-level comment summarises that feedback and offers optional paste-ready AI instructions for the author.\n\n"
+	b += "_The review is still manually performed by the person using appr-ai-sal — any approve, request-changes, or comment signal represents that individual's own review and judgement, not an automated decision. It is not a replacement for manual review._\n\n"
 
 	vcDisp := d.effectiveVibeCoach()
 	if vcDisp != nil && vcDisp.Err == nil {

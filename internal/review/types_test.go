@@ -389,7 +389,7 @@ func TestEffectiveReviewEventAndBodySelfAuthorDowngradesVerdict(t *testing.T) {
 	if ev2 != "COMMENT" || intent2 != "APPROVE" {
 		t.Fatalf("approve event/intent: got %q / %q want COMMENT / APPROVE", ev2, intent2)
 	}
-	if !strings.Contains(body2, "does not allow") || !strings.Contains(body2, "## appr-ai-sal review") {
+	if !strings.Contains(body2, "does not allow") || !strings.Contains(body2, "## appr-ai-sal summary") {
 		t.Fatalf("expected preamble + full summary for self-approve: %s", body2)
 	}
 }
@@ -653,6 +653,56 @@ func TestRenderBodyNoFindingsTailoredBody(t *testing.T) {
 	}
 	if strings.Contains(body, "executive summary") {
 		t.Fatalf("standard disclosure should be replaced when no findings: %s", body)
+	}
+	// The no-findings body is the most likely place for a future drift
+	// to slip in wording that implies the AI itself "reviewed and
+	// approved" the PR. Lock in the assist-the-human framing and the
+	// "It recommends Approving" phrasing so a regression here trips a
+	// test instead of shipping to GitHub.
+	if !strings.Contains(body, "It recommends Approving this pull request.") {
+		t.Fatalf("no-findings body should phrase the recommendation as the tool's, not as the verdict itself: %s", body)
+	}
+	if !strings.Contains(body, "not a replacement for manual review") {
+		t.Fatalf("no-findings body should keep the human-reviewer disclaimer: %s", body)
+	}
+	if !strings.Contains(body, "## appr-ai-sal summary") {
+		t.Fatalf("body heading should say summary, not review: %s", body)
+	}
+	// Detection marker must remain so re-runs still recognise this
+	// body as one previously posted by the tool.
+	if !strings.Contains(body, "produced by **appr-ai-sal**") {
+		t.Fatalf("AprrAISalReviewBodyMarker substring must remain in disclosure: %s", body)
+	}
+}
+
+func TestRenderBodyStandardDisclosureFramesAsAssist(t *testing.T) {
+	// The standard (with-findings) body must also frame appr-ai-sal as
+	// an assistive tool — the verdict on the PR represents the human
+	// reviewer's judgement, not the AI's. This is the most-posted body
+	// shape, so the framing matters more here than in the no-findings
+	// fallback.
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{{
+			Specialist: "design",
+			Findings: []Finding{
+				{Path: "a.go", Line: 1, Comment: "nit", Severity: SeverityInfo},
+			},
+		}},
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictApprove, Summary: "ok"},
+	}
+	body := d.RenderBody()
+	if !strings.Contains(body, "## appr-ai-sal summary") {
+		t.Fatalf("body heading should say summary: %s", body)
+	}
+	if !strings.Contains(body, "to assist the human reviewer") {
+		t.Fatalf("disclosure should describe appr-ai-sal as assistive: %s", body)
+	}
+	if !strings.Contains(body, "not a replacement for manual review") {
+		t.Fatalf("disclosure should include the human-reviewer disclaimer: %s", body)
+	}
+	if !strings.Contains(body, "produced by **appr-ai-sal**") {
+		t.Fatalf("AprrAISalReviewBodyMarker substring must remain: %s", body)
 	}
 }
 

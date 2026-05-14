@@ -401,11 +401,18 @@ func (m *Model) flashPeruse(hint string) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// summaryPhaseOfferApproveWithoutSummary reports whether we should offer GitHub
-// APPROVE with an empty body from the summary step. That applies when the merge
-// verdict is not already APPROVE and this session posted no inline comments —
-// e.g. the user skipped every suggestion, had no postable inlines, or only
-// findings already on the PR.
+// summaryPhaseOfferApproveWithoutSummary reports whether the summary step
+// should *nudge* the user toward submitting a body-less APPROVE — i.e.
+// surface the contextual "you posted no inline comments this session, you
+// can approve without publishing the summary" hint paragraph. That applies
+// when the merge verdict is not already APPROVE and this session posted
+// no inline comments — e.g. the user skipped every suggestion, had no
+// postable inlines, or only findings already on the PR.
+//
+// This governs only the suggestion text. The "Approve only (a)" button
+// itself is always available at phaseSummary (see
+// summaryPhaseAllowApproveOnly) — the human reviewer must always be able
+// to override the AI's verdict and approve.
 func (m *Model) summaryPhaseOfferApproveWithoutSummary() bool {
 	if m.peruse {
 		// Peruse never offers approval shortcuts — the whole point is
@@ -426,4 +433,29 @@ func (m *Model) summaryPhaseOfferApproveWithoutSummary() bool {
 		return true
 	}
 	return skippedOnly > 0 || onPR+skippedOnly == len(m.cards)
+}
+
+// summaryPhaseAllowApproveOnly reports whether the "Approve only" button
+// should be rendered (and the corresponding `a` key + click zone be live)
+// at phaseSummary.
+//
+// The button is intentionally always available so the human reviewer can
+// approve at any time — whether they posted inline comments, skipped them
+// all, or never had any to start with. The previous gate
+// (summaryPhaseOfferApproveWithoutSummary) hid the button after a single
+// inline post, which conflated "we suggest this path" with "this path is
+// allowed"; the user-facing principle is that the GitHub approval signal
+// always represents the human's own judgement, so the option to approve
+// must always be reachable from the final review screen.
+//
+// Only peruse mode (read-only walkthrough) and a missing draft/PR
+// disable it.
+func (m *Model) summaryPhaseAllowApproveOnly() bool {
+	if m.peruse {
+		return false
+	}
+	if m.draft == nil || m.draft.PR == nil {
+		return false
+	}
+	return true
 }
