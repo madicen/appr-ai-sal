@@ -887,6 +887,31 @@ func EffectiveReviewEventAndBody(d *Draft, requestedEvent, viewerLogin string) (
 	return "COMMENT", note + full, intendedEvent
 }
 
+// EffectiveApproveBareEventAndBody is the "Approve only" variant of
+// EffectiveReviewEventAndBody — it posts event=APPROVE with an explicit empty
+// body regardless of what RenderBodyForEvent would otherwise pick. Used by the
+// "Approve only" button in the no-findings auto-approve flow so the reviewer
+// can submit a content-free thumbs-up instead of the default summary body that
+// explains every agent ran clean.
+//
+// The self-author downgrade still applies — GitHub rejects APPROVE on your own
+// PR, so we coerce to event=COMMENT with just the explanatory note as the body
+// (no rendered summary appended, since the reviewer asked for no body). intendedEvent is always "APPROVE" so callers can surface the requested action
+// when describing the downgrade.
+func EffectiveApproveBareEventAndBody(d *Draft, viewerLogin string) (event string, body string, intendedEvent string) {
+	intendedEvent = "APPROVE"
+	if d == nil || d.PR == nil {
+		return "APPROVE", "", intendedEvent
+	}
+	author := normalizeGitHubLogin(d.PR.Author)
+	viewer := normalizeGitHubLogin(viewerLogin)
+	if author == "" || viewer == "" || !strings.EqualFold(author, viewer) {
+		return "APPROVE", "", intendedEvent
+	}
+	const note = "_GitHub does not allow **approve** reviews on your own pull request. Posted as a **comment** review with no body._"
+	return "COMMENT", note, intendedEvent
+}
+
 // combineAuthorPrompts joins vibe-coach prompts into one paste block for the
 // review body. Each prompt is rendered as "## <title>\n\n<text>" inside a
 // plain ` + "`text`" + ` fence, separated from the next prompt by "---".
@@ -1302,7 +1327,8 @@ func (d *Draft) RenderBody() string {
 		// case explains why instead of looking content-free.
 		return "## appr-ai-sal summary\n\n" +
 			"✅ **No issues found by any agent** — every configured specialist reviewed this diff and produced no actionable feedback to leave on the diff or in a written summary. It recommends Approving this pull request.\n\n" +
-			"_The review is still manually performed by the person using appr-ai-sal. It is not a replacement for manual review._\n\n" +
+			"> [!CAUTION]\n" +
+			"> The review is still manually performed by the person using appr-ai-sal. It is **not** a replacement for manual review.\n\n" +
 			"> **AI disclosure:** This summary was produced by **appr-ai-sal** (automated AI tools).\n"
 	}
 	var b string
@@ -1310,7 +1336,8 @@ func (d *Draft) RenderBody() string {
 	b += "> **AI disclosure:** This summary was produced by **appr-ai-sal** (automated AI tools) to assist the human reviewer. "
 	b += "**Line-level feedback** appears as **inline comments on the diff** where agents cited paths and lines. "
 	b += "This top-level comment summarises that feedback and offers optional paste-ready AI instructions for the author.\n\n"
-	b += "_The review is still manually performed by the person using appr-ai-sal — any approve, request-changes, or comment signal represents that individual's own review and judgement, not an automated decision. It is not a replacement for manual review._\n\n"
+	b += "> [!CAUTION]\n"
+	b += "> The review is still manually performed by the person using appr-ai-sal — any approve, request-changes, or comment signal represents that individual's own review and judgement, not an automated decision. It is **not** a replacement for manual review.\n\n"
 
 	vcDisp := d.effectiveVibeCoach()
 	if vcDisp != nil && vcDisp.Err == nil {

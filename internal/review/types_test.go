@@ -427,6 +427,66 @@ func TestEffectiveReviewEventAndBodySelfCommentUnchanged(t *testing.T) {
 	}
 }
 
+// EffectiveApproveBareEventAndBody must produce an APPROVE event with an
+// explicit empty body for an arbitrary reviewer — regardless of what would
+// normally be appended (e.g. the "no issues found" recap RenderBodyForEvent
+// attaches when HasNoFindings is true). This is the contract the "Approve
+// only" path relies on so the GitHub review goes through with no AI-authored
+// text.
+func TestEffectiveApproveBareEventAndBodyOtherReviewerEmptyBody(t *testing.T) {
+	d := &Draft{
+		PR: &gh.PR{Author: "alice", HeadSHA: "abc"},
+		// Populate the draft enough that RenderBodyForEvent("APPROVE")
+		// would otherwise return non-empty content via HasNoFindings —
+		// the bare path must override that.
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictApprove},
+	}
+	ev, body, intent := EffectiveApproveBareEventAndBody(d, "bob")
+	if ev != "APPROVE" || intent != "APPROVE" {
+		t.Fatalf("event/intent: got %q / %q want APPROVE / APPROVE", ev, intent)
+	}
+	if body != "" {
+		t.Fatalf("approve-only body must be empty for non-author reviewer, got %q", body)
+	}
+}
+
+// EffectiveApproveBareEventAndBody must downgrade to COMMENT when the viewer
+// is the PR author (GitHub rejects APPROVE on your own PR) — but unlike the
+// regular self-author downgrade path, it must NOT attach the full rendered
+// summary as the body. The reviewer asked for "no body"; the only content we
+// add is a short note explaining why the event was coerced.
+func TestEffectiveApproveBareEventAndBodySelfAuthorDowngradesToNoteOnly(t *testing.T) {
+	d := &Draft{
+		PR: &gh.PR{Author: "octocat", HeadSHA: "abc"},
+		VibeCoach: &VibeCoachResult{
+			Verdict: VibeVerdictApprove,
+			Summary: "Looks fine.",
+		},
+	}
+	ev, body, intent := EffectiveApproveBareEventAndBody(d, "@OctoCat")
+	if ev != "COMMENT" || intent != "APPROVE" {
+		t.Fatalf("event/intent: got %q / %q want COMMENT / APPROVE", ev, intent)
+	}
+	if !strings.Contains(body, "does not allow") {
+		t.Fatalf("self-author downgrade must include the explanatory note: %s", body)
+	}
+	if strings.Contains(body, "Looks fine.") {
+		t.Fatalf("approve-only self-author downgrade must NOT attach the rendered summary, got: %s", body)
+	}
+	if strings.Contains(body, "## appr-ai-sal summary") {
+		t.Fatalf("approve-only self-author downgrade must NOT attach the rendered summary heading, got: %s", body)
+	}
+}
+
+// Approve-only on a Draft missing a PR (defensive case) must still return
+// APPROVE/empty-body without panicking.
+func TestEffectiveApproveBareEventAndBodyNilPR(t *testing.T) {
+	ev, body, intent := EffectiveApproveBareEventAndBody(&Draft{}, "bob")
+	if ev != "APPROVE" || intent != "APPROVE" || body != "" {
+		t.Fatalf("nil PR: got %q / %q / body=%q want APPROVE / APPROVE / empty", ev, intent, body)
+	}
+}
+
 func TestSpecialistsForVibeCoachRemovesSuppressedInlines(t *testing.T) {
 	specs := []SpecialistResult{
 		{Specialist: SpecDocs, Findings: []Finding{
@@ -662,8 +722,16 @@ func TestRenderBodyNoFindingsTailoredBody(t *testing.T) {
 	if !strings.Contains(body, "It recommends Approving this pull request.") {
 		t.Fatalf("no-findings body should phrase the recommendation as the tool's, not as the verdict itself: %s", body)
 	}
-	if !strings.Contains(body, "not a replacement for manual review") {
+	// Disclaimer is now wrapped in a GitHub CAUTION alert so it renders
+	// red on PR pages, with "not" bolded to draw the eye.
+	if !strings.Contains(body, "replacement for manual review") {
 		t.Fatalf("no-findings body should keep the human-reviewer disclaimer: %s", body)
+	}
+	if !strings.Contains(body, "> [!CAUTION]") {
+		t.Fatalf("no-findings disclaimer should be wrapped in a CAUTION alert so it renders red: %s", body)
+	}
+	if !strings.Contains(body, "is **not** a replacement") {
+		t.Fatalf("no-findings disclaimer should bold 'not' for emphasis: %s", body)
 	}
 	if !strings.Contains(body, "## appr-ai-sal summary") {
 		t.Fatalf("body heading should say summary, not review: %s", body)
@@ -698,8 +766,16 @@ func TestRenderBodyStandardDisclosureFramesAsAssist(t *testing.T) {
 	if !strings.Contains(body, "to assist the human reviewer") {
 		t.Fatalf("disclosure should describe appr-ai-sal as assistive: %s", body)
 	}
-	if !strings.Contains(body, "not a replacement for manual review") {
+	// Disclaimer is now wrapped in a GitHub CAUTION alert so it renders
+	// red on PR pages, with "not" bolded to draw the eye.
+	if !strings.Contains(body, "replacement for manual review") {
 		t.Fatalf("disclosure should include the human-reviewer disclaimer: %s", body)
+	}
+	if !strings.Contains(body, "> [!CAUTION]") {
+		t.Fatalf("standard disclaimer should be wrapped in a CAUTION alert so it renders red: %s", body)
+	}
+	if !strings.Contains(body, "is **not** a replacement") {
+		t.Fatalf("standard disclaimer should bold 'not' for emphasis: %s", body)
 	}
 	if !strings.Contains(body, "produced by **appr-ai-sal**") {
 		t.Fatalf("AprrAISalReviewBodyMarker substring must remain: %s", body)

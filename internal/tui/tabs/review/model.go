@@ -766,6 +766,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "y", "Y", "enter":
 			return m.actPostApprove()
+		case "a", "A":
+			// "Approve only" — the no-findings auto-approve flow is the
+			// only branch where actPostApprove attaches a non-empty body
+			// (the "no issues found by any agent" recap), so that's the
+			// only branch where the user-facing distinction matters. In
+			// the regular branch APPROVE already posts an empty body so
+			// a is silently equivalent and we deliberately ignore it to
+			// keep that screen's contract single-button.
+			if m.noFindingsApprove {
+				return m.actPostApproveOnly()
+			}
+			return m, nil
 		case "n", "N":
 			// In the no-findings auto-approve flow there is no summary to
 			// fall back to, so swallow n. Otherwise route to phaseSummary
@@ -863,6 +875,17 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		case phaseConfirmApprove:
 			if z := zone.Get(zones.StagedSummaryYes); z != nil && z.InBounds(msg) {
 				return m.actPostApprove()
+			}
+			// The "Approve only" zone is only rendered in the no-findings
+			// auto-approve flow (the only branch where actPostApprove
+			// would otherwise attach the rendered "no issues found"
+			// body). Mirror the keyboard handler's noFindingsApprove
+			// gate so a stale zone from a previous render can't fire
+			// the bare-body post outside that branch.
+			if m.noFindingsApprove {
+				if z := zone.Get(zones.StagedSummaryApproveOnly); z != nil && z.InBounds(msg) {
+					return m.actPostApproveOnly()
+				}
 			}
 			// The no-findings approve flow doesn't render the "no" zone (no
 			// comment-only review to fall back to when there's nothing to

@@ -194,6 +194,100 @@ func TestReviewOverlayNoFindingsConfirmApproveSwallowsN(t *testing.T) {
 	}
 }
 
+// TestNoFindingsConfirmApproveRendersApproveOnlyButton locks in the contract
+// that the no-findings auto-approve screen offers two paths: "Approve PR (y)"
+// which attaches the rendered "no issues found by any agent" body, and
+// "Approve only (a)" which posts APPROVE with no body. Before this option
+// existed the user could only post APPROVE with the AI-authored recap; now
+// they can opt out of publishing any review text alongside the approval.
+func TestNoFindingsConfirmApproveRendersApproveOnlyButton(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil)
+	d := &review.Draft{
+		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
+		Diff: skipAllTestDiff,
+	}
+	ro.AdoptDraft(d)
+	if ro.phase != phaseConfirmApprove || !ro.noFindingsApprove {
+		t.Fatalf("setup phase=%v noFindingsApprove=%v want phaseConfirmApprove + true", ro.phase, ro.noFindingsApprove)
+	}
+	body := ro.renderConfirmApproveBody()
+	if !strings.Contains(body, "Approve PR (y)") {
+		t.Fatalf("no-findings confirm should still render the body-attached approve button: %s", body)
+	}
+	if !strings.Contains(body, "Approve only (a)") {
+		t.Fatalf("no-findings confirm must render the bare-approve button: %s", body)
+	}
+	if !strings.Contains(body, "no comment body") {
+		t.Fatalf("no-findings confirm should explain the approve-only path: %s", body)
+	}
+	help := ro.helpForPhase()
+	if !strings.Contains(help, "APPROVE without body") {
+		t.Fatalf("phaseConfirmApprove help line should describe the bare approve option: %q", help)
+	}
+}
+
+// TestNoFindingsConfirmApproveAKeyTriggersBareApprove verifies that 'a' in
+// the no-findings auto-approve flow dispatches a command (the bare-body
+// approve) rather than being swallowed like 'n' is. The phase stays in
+// phaseConfirmApprove until the post completes — matching how 'y' behaves
+// here today.
+func TestNoFindingsConfirmApproveAKeyTriggersBareApprove(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil)
+	d := &review.Draft{
+		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
+		Diff: skipAllTestDiff,
+	}
+	ro.AdoptDraft(d)
+	if ro.phase != phaseConfirmApprove || !ro.noFindingsApprove {
+		t.Fatalf("setup phase=%v noFindingsApprove=%v want phaseConfirmApprove + true", ro.phase, ro.noFindingsApprove)
+	}
+	out, cmd := ro.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	ro = out.(*Model)
+	if cmd == nil {
+		t.Fatal("pressing 'a' at phaseConfirmApprove with noFindingsApprove should dispatch a bare-approve command")
+	}
+	if ro.phase != phaseConfirmApprove {
+		t.Fatalf("phase should remain phaseConfirmApprove until the post completes, got %v", ro.phase)
+	}
+}
+
+// TestRegularConfirmApproveAKeyIgnored makes sure the bare-approve key only
+// has an effect in the no-findings flow. In the regular phaseConfirmApprove
+// branch (verdict was APPROVE because the user skipped every blocker, or the
+// AI verdict was APPROVE outright) the 'y' button already posts APPROVE with
+// no body, so 'a' would be a redundant alias and the screen deliberately
+// keeps its single-button contract.
+func TestRegularConfirmApproveAKeyIgnored(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil)
+	d := &review.Draft{
+		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
+		Diff: skipAllTestDiff,
+		Specialists: []review.SpecialistResult{
+			{Specialist: review.SpecDocs, Findings: []review.Finding{
+				{Path: "a.go", Line: 1, Side: "RIGHT", Severity: review.SeverityWarning, Comment: "c1"},
+			}},
+		},
+		VibeCoach: &review.VibeCoachResult{Verdict: review.VibeVerdictRequestChanges},
+	}
+	ro.AdoptDraft(d)
+	out, _ := ro.actSkipCurrent()
+	ro = out.(*Model)
+	if ro.phase != phaseConfirmApprove {
+		t.Fatalf("setup phase=%v want phaseConfirmApprove (skip-disagree path)", ro.phase)
+	}
+	if ro.noFindingsApprove {
+		t.Fatal("setup must NOT have noFindingsApprove for this test")
+	}
+	out, cmd := ro.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	ro = out.(*Model)
+	if cmd != nil {
+		t.Fatal("'a' must be a no-op outside the no-findings auto-approve flow")
+	}
+	if ro.phase != phaseConfirmApprove {
+		t.Fatalf("phase should remain phaseConfirmApprove, got %v", ro.phase)
+	}
+}
+
 func TestReviewOverlayNoFindingsHelpHidesCommentOnlyHint(t *testing.T) {
 	ro := New(120, 44, false, false, false, nil)
 	d := &review.Draft{

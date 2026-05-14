@@ -381,6 +381,13 @@ func (m *Model) actPostSummary() (tea.Model, tea.Cmd) {
 
 // actPostApprove posts a GitHub review with event=APPROVE and an empty body.
 // Reachable only from phaseConfirmApprove (verdict=approve, user clicks Approve).
+//
+// In the no-findings auto-approve flow (m.noFindingsApprove) the underlying
+// Draft.RenderBodyForEvent attaches the "no issues found by any agent"
+// rendered body to the APPROVE post so the GitHub review explains the
+// thumbs-up. The "Approve only" sibling action (actPostApproveOnly) bypasses
+// that and posts APPROVE with an explicit empty body for reviewers who don't
+// want any review text published alongside the approval.
 func (m *Model) actPostApprove() (tea.Model, tea.Cmd) {
 	if m.peruse {
 		return m.flashPeruse("peruse mode — no approving; q to exit without sending anything")
@@ -389,6 +396,24 @@ func (m *Model) actPostApprove() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, data.PostReviewWithVerdictCmd(m.draft.Ref, m.draft, m.dryRun, "APPROVE")
+}
+
+// actPostApproveOnly posts a content-free GitHub APPROVE — event=APPROVE with
+// an explicit empty body, bypassing the "no issues found by any agent"
+// summary that actPostApprove would otherwise attach in the no-findings
+// auto-approve flow. Reachable from phaseConfirmApprove when
+// m.noFindingsApprove is set (the only state where actPostApprove would
+// produce a non-empty body) and from phaseSummary as the "Approve only"
+// button there, where APPROVE always means "no body" already so the two
+// paths are equivalent.
+func (m *Model) actPostApproveOnly() (tea.Model, tea.Cmd) {
+	if m.peruse {
+		return m.flashPeruse("peruse mode — no approving; q to exit without sending anything")
+	}
+	if m.draft == nil || m.draft.PR == nil {
+		return m, nil
+	}
+	return m, data.PostApproveBareCmd(m.draft.Ref, m.draft, m.dryRun)
 }
 
 // flashPeruse records a one-frame help-line hint to surface why an

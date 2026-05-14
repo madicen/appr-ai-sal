@@ -11,6 +11,7 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 	overlay "github.com/madicen/bubble-overlay"
 
+	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
@@ -31,6 +32,8 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 		switch {
 		case zoneInBounds(zones.PaneTree, msg):
 			util.WheelScrollViewport(&m.treeView, msg)
+		case !m.controlsHidden && zoneInBounds(zones.PaneControls, msg):
+			util.WheelScrollViewport(&m.controlsView, msg)
 		case zoneInBounds(zones.PaneDiff, msg) || m.mouseYInChromeBody(msg):
 			util.WheelScrollViewport(&m.diffView, msg)
 		}
@@ -53,12 +56,6 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 		m.refreshDetailViews()
 		return m, nil
 	}
-	if z := zone.Get(zones.BuildRepoAgents); z != nil && z.InBounds(msg) {
-		return m, m.openRepoAgentsForCurrentPR(true)
-	}
-	if z := zone.Get(zones.BuildLangAgents); z != nil && z.InBounds(msg) {
-		return m, m.openLangAgents()
-	}
 	if z := zone.Get(zones.OpenInBrowser); z != nil && z.InBounds(msg) {
 		if m.currentPR != nil {
 			if u := strings.TrimSpace(m.currentPR.URL); u != "" {
@@ -66,6 +63,15 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 			}
 		}
 		return m, nil
+	}
+
+	// Controls panel buttons (highest precedence inside the controls
+	// pane so a click on a row doesn't fall through to a pane-focus
+	// change without firing the action).
+	if !m.controlsHidden {
+		if cmd, handled := m.controlsHandleClick(msg); handled {
+			return m, cmd
+		}
 	}
 
 	// Tree row clicks (zone per row, then viewport body for padded filler rows)
@@ -82,11 +88,88 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 	case zoneInBounds(zones.PaneTree, msg):
 		m.focusedPane = paneTree
 		m.refreshDetailViews()
+	case !m.controlsHidden && zoneInBounds(zones.PaneControls, msg):
+		m.focusedPane = paneControls
+		m.refreshDetailViews()
 	case zoneInBounds(zones.PaneDiff, msg):
 		m.focusedPane = paneDiff
 		m.refreshDetailViews()
 	}
 	return m, nil
+}
+
+// controlsHandleClick fires the action for any "Review controls" zone the
+// click falls inside. Returns (cmd, true) when handled. Strictness rows
+// and toggles are local mutations (no command); profile cycling is also
+// local; agent build buttons + Start Review return tea.Cmds.
+func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
+	switch {
+	case zoneInBounds(zones.ControlsStrictCriticalOnly, msg):
+		m.setStrictness(aiconfig.ReviewCriticalOnly)
+		return nil, true
+	case zoneInBounds(zones.ControlsStrictLenient, msg):
+		m.setStrictness(aiconfig.ReviewLenient)
+		return nil, true
+	case zoneInBounds(zones.ControlsStrictBalanced, msg):
+		m.setStrictness(aiconfig.ReviewBalanced)
+		return nil, true
+	case zoneInBounds(zones.ControlsStrictStrict, msg):
+		m.setStrictness(aiconfig.ReviewStrict)
+		return nil, true
+	case zoneInBounds(zones.ControlsProfilePrev, msg):
+		m.cycleAIProfile(-1)
+		return nil, true
+	case zoneInBounds(zones.ControlsProfileNext, msg):
+		m.cycleAIProfile(+1)
+		return nil, true
+	case zoneInBounds(zones.ControlsProfileEdit, msg):
+		return m.openSettings(settings.StartAI), true
+	case zoneInBounds(zones.ControlsRepoAgents, msg):
+		return m.openRepoAgentsForCurrentPR(true), true
+	case zoneInBounds(zones.ControlsTechAgents, msg):
+		return m.openRepoAgentsForCurrentPR(true), true
+	case zoneInBounds(zones.ControlsLangAgents, msg):
+		return m.openLangAgents(), true
+	case zoneInBounds(zones.ControlsToggleParallel, msg):
+		// Parallel specialists is a repoconfig knob, not a transient
+		// runtime flag. Direct the user to the settings tab where the
+		// persistent toggle lives.
+		return m.openSettings(settings.StartRepoContext), true
+	case zoneInBounds(zones.ControlsToggleDryRun, msg):
+		m.opts.DryRun = !m.opts.DryRun
+		m.refreshDetailViews()
+		return nil, true
+	case zoneInBounds(zones.ControlsTogglePeruse, msg):
+		m.peruseRequested = !m.peruseRequested
+		m.refreshDetailViews()
+		return nil, true
+	case zoneInBounds(zones.ControlsStartReview, msg):
+		peruse := m.peruseRequested
+		m.peruseRequested = false
+		_, cmd := m.startReviewOverlay(peruse)
+		return cmd, true
+	case zoneInBounds(zones.ControlsStartReviewPeruse, msg):
+		m.peruseRequested = false
+		_, cmd := m.startReviewOverlay(true)
+		return cmd, true
+	}
+	return nil, false
+}
+
+func (m *Model) setStrictness(level aiconfig.ReviewStrictness) {
+	if m.opts.AIConfig == nil {
+		m.opts.AIConfig = aiconfig.DefaultConfig()
+	}
+	m.opts.AIConfig.ReviewStrictness = level
+	m.refreshDetailViews()
+}
+
+func (m *Model) cycleAIProfile(delta int) {
+	if m.opts.AIConfig == nil {
+		return
+	}
+	m.opts.AIConfig.CycleActive(delta)
+	m.refreshDetailViews()
 }
 
 func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -113,12 +196,31 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.refreshDetailViews()
 		return m, nil
 	case "r":
-		return m.startReviewOverlay(false)
+		peruse := m.peruseRequested
+		m.peruseRequested = false
+		return m.startReviewOverlay(peruse)
 	case "ctrl+v":
 		// Peruse: same review run, read-only walkthrough. The overlay
 		// disables post/skip actions and lets the user see the final
 		// rendered summary without committing anything to GitHub.
+		m.peruseRequested = false
 		return m.startReviewOverlay(true)
+	case "c":
+		// Toggle the right-hand "Review controls" pane. When the user
+		// hides it explicitly, remember that preference so a window
+		// resize that would otherwise auto-show it stays hidden.
+		m.controlsUserHidden = !m.controlsUserHidden
+		if m.focusedPane == paneControls {
+			m.focusedPane = paneDiff
+		}
+		m.refreshDetailViews()
+		return m, nil
+	case "ctrl+t":
+		// Tech experts share storage with repo agents (sibling json file
+		// in the same per-repo cache dir), so the build path is the
+		// same: open the repo-agents tab focused on the current PR's
+		// repo and let the user pick the Techs section.
+		return m, m.openRepoAgentsForCurrentPR(false)
 	case "a":
 		return m.reopenApprovalIfPossible()
 	case "P":
@@ -181,12 +283,19 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.treeView, cmd = m.treeView.Update(msg)
 		return m, cmd
+	case paneControls:
+		var cmd tea.Cmd
+		m.controlsView, cmd = m.controlsView.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
 
 func (m *Model) cyclePane(dir int) {
-	const count = 2
+	count := paneCount
+	if m.controlsHidden {
+		count = 2
+	}
 	cur := int(m.focusedPane)
 	cur = (cur + dir + count) % count
 	m.focusedPane = pane(cur)
@@ -206,6 +315,12 @@ func (m *Model) detailNavigate(dir int) {
 			m.diffView.ScrollDown(1)
 		} else {
 			m.diffView.ScrollUp(1)
+		}
+	case paneControls:
+		if dir > 0 {
+			m.controlsView.ScrollDown(1)
+		} else {
+			m.controlsView.ScrollUp(1)
 		}
 	}
 }
@@ -301,6 +416,13 @@ func (m *Model) refreshDetailViews() {
 	m.treeScrollLines = util.ViewportLineCount(treeContent)
 	m.treeView.SetContent(treeContent)
 
+	// Controls pane: only repopulate when actually visible — relayout
+	// shrinks the viewport to 1x1 when hidden, so wasted work is small
+	// either way but the zone marks would otherwise leak into a hidden
+	// region and confuse the bubblezone scan.
+	if !m.controlsHidden {
+		m.controlsView.SetContent(m.renderControlsPane(m.controlsView.Width))
+	}
 }
 
 // renderDescriptionBlock renders the PR description as an inline section
@@ -334,8 +456,9 @@ func (m *Model) renderDetailMiniHeader() string {
 		desc = zone.Mark(zones.DescriptionToggle, styles.BoldStyle.Render(" description (g) "))
 	}
 	parts = append(parts, desc)
-	parts = append(parts, zone.Mark(zones.BuildRepoAgents, m.buildRepoAgentsChip()))
-	parts = append(parts, zone.Mark(zones.BuildLangAgents, m.buildLangAgentsChip()))
+	// Repo / lang agent chips moved into the right-hand "Review controls"
+	// pane so the mini-header stays focused on PR meta. The same
+	// freshness state is rendered there with explicit row labels.
 	if strings.TrimSpace(m.currentPR.URL) != "" {
 		parts = append(parts, zone.Mark(zones.OpenInBrowser, styles.DimStyle.Render(" open in browser (O) ")))
 	}
@@ -359,7 +482,12 @@ func (m *Model) renderPRDetailBody(bodyH int) string {
 
 	phs := prDetailPanel.GetHorizontalFrameSize()
 	treeOuter := m.treeView.Width + phs
-	diffOuter := m.width - treeOuter
+
+	var ctlOuter int
+	if !m.controlsHidden {
+		ctlOuter = m.controlsView.Width + phs
+	}
+	diffOuter := m.width - treeOuter - ctlOuter
 
 	tree := m.framePane("Files · "+focusHint(paneTree, m.focusedPane), &m.treeView, treeOuter, paneH, paneFocusFor(paneTree, m.focusedPane), zones.PaneTreeBody)
 	tree = zone.Mark(zones.PaneTree, tree)
@@ -367,8 +495,25 @@ func (m *Model) renderPRDetailBody(bodyH int) string {
 	diff := m.framePane(m.diffPaneTitle(), &m.diffView, diffOuter, paneH, paneFocusFor(paneDiff, m.focusedPane), zones.PaneDiffBody)
 	diff = zone.Mark(zones.PaneDiff, diff)
 
-	row := lipgloss.JoinHorizontal(lipgloss.Top, tree, diff)
+	if m.controlsHidden {
+		row := lipgloss.JoinHorizontal(lipgloss.Top, tree, diff)
+		return lipgloss.JoinVertical(lipgloss.Left, mini, row)
+	}
+
+	controls := m.framePane(controlsPaneTitle(m.focusedPane), &m.controlsView, ctlOuter, paneH, paneFocusFor(paneControls, m.focusedPane), zones.PaneControlsBody)
+	controls = zone.Mark(zones.PaneControls, controls)
+
+	row := lipgloss.JoinHorizontal(lipgloss.Top, tree, diff, controls)
 	return lipgloss.JoinVertical(lipgloss.Left, mini, row)
+}
+
+// controlsPaneTitle is the title text for the right-hand "Review controls"
+// pane. Bolded when focused (mirrors focusHint).
+func controlsPaneTitle(focused pane) string {
+	if focused == paneControls {
+		return "Review · " + focusHint(paneControls, focused)
+	}
+	return "Review · c hide · " + focusHint(paneControls, focused)
 }
 
 func paneFocusFor(p, focused pane) bool { return p == focused }
@@ -411,7 +556,18 @@ func (m *Model) framePane(title string, vp *viewport.Model, outerW, outerH int, 
 		vpStr = zone.Mark(viewportZone, vpStr)
 	}
 	col := lipgloss.JoinVertical(lipgloss.Left, rendered, vpStr)
-	// Height alone can still grow past outerH with borders + title + viewport;
-	// MaxHeight clips so the detail row never exceeds the chrome body budget.
-	return prDetailPanel.Width(outerW).MaxWidth(outerW).Height(outerH).MaxHeight(outerH).Render(col)
+	// IMPORTANT: in lipgloss, Style.Width/Height set INTERIOR content
+	// dimensions (excluding border + padding) while MaxWidth/MaxHeight cap
+	// the TOTAL rendered dimensions. Setting Height(outerH) inflates the
+	// interior to outerH rows so the total becomes outerH + frame; MaxHeight
+	// then clips the bottom 2 rows — which are the bottom padding row and
+	// the bottom border. The bug is invisible on middle panes (the next
+	// pane's left border hides the missing right border in JoinHorizontal)
+	// but obvious on the rightmost pane and on every pane's bottom edge.
+	//
+	// The viewport content is already sized to exactly fill the interior
+	// (title + vp.View() == outerH - vertical frame), so dropping Width /
+	// Height entirely lets lipgloss size from content while MaxWidth /
+	// MaxHeight guard against accidental overflow.
+	return prDetailPanel.MaxWidth(outerW).MaxHeight(outerH).Render(col)
 }

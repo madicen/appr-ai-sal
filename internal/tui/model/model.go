@@ -131,6 +131,17 @@ const (
 // (frame is added on top by the panel border).
 const treePaneWidth = 30
 
+// controlsPaneWidth is the desired width of the right-hand "Review controls"
+// pane content (frame is added on top). Auto-hidden in relayout when the
+// terminal is too narrow to fit all three panes side by side.
+const controlsPaneWidth = 38
+
+// controlsAutoHideMinDiffWidth is the minimum diff outer width below
+// which the controls pane is auto-hidden. Keeps the diff readable on
+// narrow terminals; the user can re-show it with `c` once they have
+// more screen real estate.
+const controlsAutoHideMinDiffWidth = 36
+
 // prItem adapts a gh.PR for the bubbles/list component.
 type Model struct {
 	opts Options
@@ -167,8 +178,21 @@ type Model struct {
 	selectedFilePath string
 	diffOnly         bool
 
-	treeView viewport.Model
-	diffView viewport.Model
+	treeView     viewport.Model
+	diffView     viewport.Model
+	controlsView viewport.Model
+
+	// controlsHidden is true when the right-hand "Review controls" pane
+	// is hidden — either because the terminal is too narrow to host all
+	// three panes (set automatically in relayout) or because the user
+	// pressed `c` to collapse it.
+	controlsHidden     bool
+	controlsUserHidden bool
+
+	// peruseRequested toggles the "Peruse mode" preference for the
+	// next review run kicked from the controls panel. Equivalent to
+	// the ctrl+v keybinding; reset when a review starts.
+	peruseRequested bool
 
 	// treeScrollLines is the line count of tree viewport content after the last
 	// refresh (used for mouse row mapping; must match visible wrapped lines).
@@ -280,7 +304,8 @@ func New(opts Options) *Model {
 
 	tv := viewport.New(0, 0)
 	dv := viewport.New(0, 0)
-	for _, vp := range []*viewport.Model{&tv, &dv} {
+	cv := viewport.New(0, 0)
+	for _, vp := range []*viewport.Model{&tv, &dv, &cv} {
 		vp.SetHorizontalStep(4)
 		// Parent routes wheel events to exactly one pane; disable built-in
 		// viewport mouse handling so wheels never hit two panes at once.
@@ -295,6 +320,7 @@ func New(opts Options) *Model {
 		spinner:            sp,
 		treeView:           tv,
 		diffView:           dv,
+		controlsView:       cv,
 		focusedPane:        paneTree,
 		listDoubleClickWin: 500 * time.Millisecond,
 	}

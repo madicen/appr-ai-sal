@@ -44,17 +44,52 @@ func (m *Model) relayout() {
 			m.diffView.Height = vpH
 			m.treeView.Width = 1
 			m.treeView.Height = 1
+			m.controlsView.Width = 1
+			m.controlsView.Height = 1
 			break
 		}
 		treeW := treePaneWidth + phs
+		controlsOuterW := controlsPaneWidth + phs
+		// Decide whether to host the controls pane this frame. Auto-hide
+		// when the diff would otherwise become unusably narrow; respect
+		// the user's explicit hide preference too.
+		showControls := !m.controlsUserHidden
+		if showControls {
+			diffIfShown := m.width - treeW - controlsOuterW
+			if diffIfShown < controlsAutoHideMinDiffWidth {
+				showControls = false
+			}
+		}
+		m.controlsHidden = !showControls
+		if !showControls && m.focusedPane == paneControls {
+			m.focusedPane = paneDiff
+		}
+
+		// Compute remaining width for the diff and clamp the tree if the
+		// terminal is so narrow it can't host even tree+diff comfortably.
 		diffOuterW := m.width - treeW
+		if showControls {
+			diffOuterW = m.width - treeW - controlsOuterW
+		}
 		if diffOuterW < 12 {
 			treeW = 12
 			diffOuterW = m.width - treeW
+			if showControls {
+				diffOuterW -= controlsOuterW
+			}
 		}
 		m.treeView.Width = max(8, treeW-phs)
 		treeOuter := m.treeView.Width + phs
-		diffOuter := m.width - treeOuter
+
+		var ctlOuter int
+		if showControls {
+			m.controlsView.Width = max(8, controlsOuterW-phs)
+			ctlOuter = m.controlsView.Width + phs
+		} else {
+			m.controlsView.Width = 1
+			ctlOuter = 0
+		}
+		diffOuter := m.width - treeOuter - ctlOuter
 		innerTreeW := max(1, treeOuter-phs)
 		innerDiffW := max(1, diffOuter-phs)
 		treeTitle := "Files · " + focusHint(paneTree, m.focusedPane)
@@ -63,11 +98,20 @@ func (m *Model) relayout() {
 		m.treeView.Height = max(1, outerPaneH-pvs-treeTitleH)
 		m.diffView.Width = max(8, diffOuter-phs)
 		m.diffView.Height = max(1, outerPaneH-pvs-diffTitleH)
+		if showControls {
+			innerCtlW := max(1, ctlOuter-phs)
+			ctlTitleH := measureDetailPaneTitle(innerCtlW, controlsPaneTitle(m.focusedPane), paneFocusFor(paneControls, m.focusedPane))
+			m.controlsView.Height = max(1, outerPaneH-pvs-ctlTitleH)
+		} else {
+			m.controlsView.Height = 1
+		}
 	default:
 		m.treeView.Width = 1
 		m.treeView.Height = 1
 		m.diffView.Width = 1
 		m.diffView.Height = 1
+		m.controlsView.Width = 1
+		m.controlsView.Height = 1
 	}
 
 	m.urlInput.Width = m.width - 6
