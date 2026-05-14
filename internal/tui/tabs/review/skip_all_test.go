@@ -272,3 +272,108 @@ func TestReviewOverlayPostOneSkipRestGoesToSummary(t *testing.T) {
 		t.Fatal("did not expect approveAfterSkipDisagree")
 	}
 }
+
+// TestSummaryPhaseAlwaysOffersApproveOnlyButton locks in the contract that
+// the "Approve only" button is rendered at phaseSummary regardless of how
+// the user got there — including the case where they posted inline
+// comments this session, which the previous gate
+// (summaryPhaseOfferApproveWithoutSummary) treated as disqualifying.
+//
+// The user-facing principle is that the GitHub APPROVE signal always
+// represents the human reviewer's own judgement, so the option to
+// approve must always be reachable from the final review screen.
+func TestSummaryPhaseAlwaysOffersApproveOnlyButton(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil)
+	d := &review.Draft{
+		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
+		Diff: skipAllTestDiff,
+		Specialists: []review.SpecialistResult{
+			{Specialist: review.SpecDocs, Findings: []review.Finding{
+				{Path: "a.go", Line: 1, Side: "RIGHT", Severity: review.SeverityWarning, Comment: "c1"},
+			}},
+			{Specialist: review.SpecSecurity, Findings: []review.Finding{
+				{Path: "b.go", Line: 1, Side: "RIGHT", Severity: review.SeverityWarning, Comment: "c2"},
+			}},
+		},
+		VibeCoach: &review.VibeCoachResult{Verdict: review.VibeVerdictRequestChanges},
+	}
+	ro.AdoptDraft(d)
+	ro.cards[0].state = cardPosted
+	ro.idx = 1
+	out, _ := ro.actSkipCurrent()
+	ro = out.(*Model)
+	if ro.phase != phaseSummary {
+		t.Fatalf("phase %v want phaseSummary", ro.phase)
+	}
+	if ro.summaryPhaseOfferApproveWithoutSummary() {
+		t.Fatal("contextual nudge should still be off after a session post — guards the suggestion text only")
+	}
+	if !ro.summaryPhaseAllowApproveOnly() {
+		t.Fatal("Approve only button must remain available even after posting an inline comment this session")
+	}
+	body := ro.renderSummaryBody()
+	if !strings.Contains(body, "Approve only (a)") {
+		t.Fatalf("rendered summary body should include the Approve only button: %s", body)
+	}
+	help := ro.helpForPhase()
+	if !strings.Contains(help, "approve only") && !strings.Contains(help, "approve without summary") {
+		t.Fatalf("phaseSummary help line should always mention approving: %q", help)
+	}
+}
+
+// TestSummaryPhaseApproveOnlyKeySendsApprove verifies that pressing 'a' at
+// phaseSummary triggers actPostApprove (which queues a GitHub APPROVE)
+// even after the user has posted an inline comment this session — the
+// gate that previously swallowed the keypress in that state has been
+// loosened to summaryPhaseAllowApproveOnly.
+func TestSummaryPhaseApproveOnlyKeySendsApprove(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil)
+	d := &review.Draft{
+		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
+		Diff: skipAllTestDiff,
+		Specialists: []review.SpecialistResult{
+			{Specialist: review.SpecDocs, Findings: []review.Finding{
+				{Path: "a.go", Line: 1, Side: "RIGHT", Severity: review.SeverityWarning, Comment: "c1"},
+			}},
+		},
+		VibeCoach: &review.VibeCoachResult{Verdict: review.VibeVerdictRequestChanges},
+	}
+	ro.AdoptDraft(d)
+	ro.cards[0].state = cardPosted
+	ro.phase = phaseSummary
+	out, cmd := ro.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	ro = out.(*Model)
+	if cmd == nil {
+		t.Fatal("pressing 'a' at phaseSummary after a session post should still trigger an APPROVE command")
+	}
+	if ro.phase != phaseSummary {
+		t.Fatalf("phase should remain phaseSummary until the post completes, got %v", ro.phase)
+	}
+}
+
+// TestSummaryPhaseAllowApproveOnlyDisabledInPeruse keeps peruse mode
+// strictly read-only — even though the button is otherwise always
+// available, peruse must never expose an action that posts to GitHub.
+func TestSummaryPhaseAllowApproveOnlyDisabledInPeruse(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil)
+	ro.peruse = true
+	d := &review.Draft{
+		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
+		Diff: skipAllTestDiff,
+		Specialists: []review.SpecialistResult{
+			{Specialist: review.SpecDocs, Findings: []review.Finding{
+				{Path: "a.go", Line: 1, Side: "RIGHT", Severity: review.SeverityWarning, Comment: "c1"},
+			}},
+		},
+		VibeCoach: &review.VibeCoachResult{Verdict: review.VibeVerdictRequestChanges},
+	}
+	ro.AdoptDraft(d)
+	ro.phase = phaseSummary
+	if ro.summaryPhaseAllowApproveOnly() {
+		t.Fatal("peruse mode must never allow Approve only — read-only walkthrough should not expose post actions")
+	}
+	body := ro.renderSummaryBody()
+	if strings.Contains(body, "Approve only (a)") {
+		t.Fatalf("peruse summary body should not render the Approve only button: %s", body)
+	}
+}

@@ -125,8 +125,16 @@ func (m *Model) renderSummaryBody() string {
 	b.WriteString("\n")
 	yes := zone.Mark(zones.StagedSummaryYes, styles.OkStyle.Render(" Post summary (y) "))
 	no := zone.Mark(zones.StagedSummaryNo, styles.DimStyle.Render(" Skip summary (n) "))
+	// "Approve only" is always offered at phaseSummary (peruse mode aside)
+	// so the human reviewer can submit GitHub APPROVE without publishing
+	// the summary body, regardless of how the AI verdict came out or
+	// whether they already posted inline comments. The contextual hint
+	// paragraph above (gated on summaryPhaseOfferApproveWithoutSummary)
+	// only nudges them toward this path in the specific "you posted no
+	// inline comments" case; the button stays available the rest of the
+	// time too.
 	approveOnly := ""
-	if m.summaryPhaseOfferApproveWithoutSummary() {
+	if m.summaryPhaseAllowApproveOnly() {
 		approveOnly = zone.Mark(zones.StagedSummaryApproveOnly, styles.OkStyle.Render(" Approve only (a) "))
 	}
 	q := zone.Mark(zones.StagedQuit, styles.ErrStyle.Render(" Abort (q) "))
@@ -159,7 +167,8 @@ func (m *Model) renderConfirmApproveBody() string {
 
 	if m.noFindingsApprove {
 		b.WriteString(styles.OkStyle.Render("✓ No issues found by any agent.") + "\n\n")
-		b.WriteString(styles.DimStyle.Render("Every configured specialist reviewed this diff and produced no actionable feedback to leave on the diff or in a written summary.") + "\n\n")
+		b.WriteString(styles.DimStyle.Render("Every configured specialist reviewed this diff and produced no actionable feedback to leave on the diff or in a written summary. It recommends approving this pull request.") + "\n\n")
+		b.WriteString(styles.DimStyle.Render("appr-ai-sal is an assistive tool — your APPROVE signal still represents your own review of this PR, not the AI's.") + "\n\n")
 		b.WriteString(styles.BoldStyle.Render("Submit GitHub APPROVE on this pull request?") + "\n\n")
 		b.WriteString(styles.DimStyle.Render("The review will be submitted with event ") +
 			styles.OkStyle.Render("APPROVE") +
@@ -313,10 +322,14 @@ func (m *Model) helpForPhase() string {
 		if m.peruse {
 			return "↑/↓ scroll preview · R refresh PR · q exit" + peruseSuffix
 		}
+		// "a approve only" is always part of the help line at phaseSummary
+		// because the Approve only button is always rendered there. The
+		// suggestive variant ("approve without summary") is reserved for
+		// the case where we also surface the contextual nudge paragraph.
 		if m.summaryPhaseOfferApproveWithoutSummary() {
 			return "y post summary · a approve without summary · R refresh PR · n skip · q abort · ↑/↓ scroll · wheel"
 		}
-		return "y post summary · R refresh PR · n skip · q abort · ↑/↓ scroll preview · wheel"
+		return "y post summary · a approve only · R refresh PR · n skip · q abort · ↑/↓ scroll preview · wheel"
 	case phaseConfirmApprove:
 		if m.peruse {
 			return "↑/↓ scroll · q exit" + peruseSuffix

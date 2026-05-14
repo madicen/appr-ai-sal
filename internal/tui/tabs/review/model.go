@@ -742,7 +742,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "y", "Y", "enter":
 			return m.actPostSummary()
 		case "a", "A":
-			if m.summaryPhaseOfferApproveWithoutSummary() {
+			if m.summaryPhaseAllowApproveOnly() {
 				return m.actPostApprove()
 			}
 			return m, nil
@@ -849,7 +849,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				m.rebuildBody()
 				return m, nil
 			}
-			if m.summaryPhaseOfferApproveWithoutSummary() {
+			if m.summaryPhaseAllowApproveOnly() {
 				if z := zone.Get(zones.StagedSummaryApproveOnly); z != nil && z.InBounds(msg) {
 					return m.actPostApprove()
 				}
