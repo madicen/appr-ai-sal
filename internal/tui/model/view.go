@@ -110,7 +110,7 @@ func (m *Model) renderStatus() string {
 		// Per-agent state (repo / tech / lang) is owned by the right-hand
 		// "Review controls" pane now; the bottom status bar carries only
 		// the cross-cutting keybindings.
-		hint = "tab pane · j/k nav · r review · c toggle controls · a reopen approval · O browser · g description · d diff-only · P bulk · esc back" + dry
+		hint = "tab pane · j/k nav · space fold · r review · c toggle controls · a reopen approval · O browser · g description · d diff-only · P bulk · esc back" + dry
 	case modeSettings:
 		hint = "[ ] tabs · ctrl+s save · esc · tab fields · ↑/↓ strictness · wheel · o AI · , review · ctrl+g repo tab · ctrl+c quit" + dry
 	case modeRepoAgents:
