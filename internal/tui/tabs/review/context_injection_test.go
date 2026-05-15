@@ -15,7 +15,7 @@ import (
 // starts.
 
 func TestNewReviewOverlayHasContextInjectionRowsAtTopOfPipeline(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	wantOrder := []string{
 		overlayAgentLangBriefs,
 		overlayAgentTechExperts,
@@ -47,7 +47,7 @@ func TestStageGroupOrderListsContextInjectionFirst(t *testing.T) {
 }
 
 func TestMergeProgressLangAgentsInjectedMarksRowDone(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.mergeProgress(review.Progress{Stage: "lang-agents", Detail: "injected go+python"})
 
 	i := ro.agentIndex(overlayAgentLangBriefs)
@@ -67,7 +67,7 @@ func TestMergeProgressLangAgentsInjectedMarksRowDone(t *testing.T) {
 }
 
 func TestMergeProgressTechAgentsInjectedMarksRowDone(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.mergeProgress(review.Progress{Stage: "tech-agents", Detail: "injected Kestra+Terraform"})
 
 	row := ro.agents[ro.agentIndex(overlayAgentTechExperts)]
@@ -80,7 +80,7 @@ func TestMergeProgressTechAgentsInjectedMarksRowDone(t *testing.T) {
 }
 
 func TestMergeProgressRepoAgentsLoadedMarksRowDone(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.mergeProgress(review.Progress{Stage: "repo-agents", Detail: "loaded 3 brief(s)"})
 
 	row := ro.agents[ro.agentIndex(overlayAgentRepoExperts)]
@@ -93,7 +93,7 @@ func TestMergeProgressRepoAgentsLoadedMarksRowDone(t *testing.T) {
 }
 
 func TestMergeProgressNoneMarksRowSkipped(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.mergeProgress(review.Progress{Stage: "tech-agents", Detail: "none"})
 	row := ro.agents[ro.agentIndex(overlayAgentTechExperts)]
 	if row.phase != oaSkipped {
@@ -102,7 +102,7 @@ func TestMergeProgressNoneMarksRowSkipped(t *testing.T) {
 }
 
 func TestMergeProgressDisabledMarksRowSkipped(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.mergeProgress(review.Progress{Stage: "tech-agents", Detail: "disabled"})
 	row := ro.agents[ro.agentIndex(overlayAgentTechExperts)]
 	if row.phase != oaSkipped {
@@ -111,7 +111,7 @@ func TestMergeProgressDisabledMarksRowSkipped(t *testing.T) {
 }
 
 func TestMergeProgressWarningMarksRowError(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.mergeProgress(review.Progress{Stage: "repo-agents", Detail: "warning: file unreadable"})
 	row := ro.agents[ro.agentIndex(overlayAgentRepoExperts)]
 	if row.phase != oaErr {
@@ -123,7 +123,7 @@ func TestMergeProgressWarningMarksRowError(t *testing.T) {
 }
 
 func TestMergeProgressErrFieldOnContextInjectionMarksRowError(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.mergeProgress(review.Progress{Stage: "tech-agents", Err: errors.New("disk full")})
 	row := ro.agents[ro.agentIndex(overlayAgentTechExperts)]
 	if row.phase != oaErr {
@@ -132,7 +132,7 @@ func TestMergeProgressErrFieldOnContextInjectionMarksRowError(t *testing.T) {
 }
 
 func TestRunningBodyRendersContextInjectionGroupHeader(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	body := ro.renderRunningBody()
 	if !strings.Contains(body, "Context injection") {
 		t.Fatalf("running body should render the Context injection group header:\n%s", body)

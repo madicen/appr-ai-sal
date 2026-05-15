@@ -25,7 +25,7 @@ func (m *Model) handleURLInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return data.ErrMsg{Err: err} }
 		}
 		m.urlInput.Blur()
-		return m, data.LoadPRDetailCmd(ref)
+		return m, data.LoadPRDetailCmd(ref, m.opts.Demo)
 	}
 	var cmd tea.Cmd
 	m.urlInput, cmd = m.urlInput.Update(msg)

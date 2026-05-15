@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/demo"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
 )
@@ -39,7 +40,14 @@ type ErrMsg struct{ Err error }
 func (e ErrMsg) Error() string { return e.Err.Error() }
 
 // LoadPRsCmd fetches review-requested PRs, optionally filtered to explicit user requests.
-func LoadPRsCmd(explicitReviewerOnly bool) tea.Cmd {
+//
+// When demoMode is true the gh CLI is bypassed entirely and a canned set
+// of PRs is returned synchronously. This is the path VHS uses to record
+// reproducible README GIFs without touching the user's gh credentials.
+func LoadPRsCmd(explicitReviewerOnly, demoMode bool) tea.Cmd {
+	if demoMode {
+		return func() tea.Msg { return PRListMsg{PRs: demo.DemoPullRequests()} }
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -52,7 +60,22 @@ func LoadPRsCmd(explicitReviewerOnly bool) tea.Cmd {
 }
 
 // LoadPRDetailCmd fetches the PR view + unified diff for the given ref.
-func LoadPRDetailCmd(ref gh.Ref) tea.Cmd {
+//
+// In demo mode the canned PR fixture is looked up by ref; if the user
+// pasted a ref that doesn't match a fixture we fall back to the first
+// canned PR so the URL-paste demo still has something to render.
+func LoadPRDetailCmd(ref gh.Ref, demoMode bool) tea.Cmd {
+	if demoMode {
+		return func() tea.Msg {
+			pr := demo.LookupPR(ref)
+			if pr == nil {
+				fallback := demo.DemoPullRequests()[0]
+				pr = &fallback
+				ref = gh.Ref{Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number}
+			}
+			return PRDetailMsg{PR: pr, Diff: demo.DemoDiff(ref)}
+		}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -71,8 +94,18 @@ func LoadPRDetailCmd(ref gh.Ref) tea.Cmd {
 
 // StartReviewCmd starts a review.Run goroutine and emits ReviewStartedMsg with
 // the progress channel the caller should poll via WaitForProgressCmd.
-func StartReviewCmd(ref gh.Ref, cfg *aiconfig.Config) tea.Cmd {
+//
+// In demo mode the channel comes from demo.SyntheticReviewProgress, which
+// emits a scripted sequence of stages with realistic delays so the
+// review-overlay UI replays a believable run for VHS recording.
+func StartReviewCmd(ref gh.Ref, cfg *aiconfig.Config, demoMode bool) tea.Cmd {
 	snap := cfg.Clone()
+	if demoMode {
+		return func() tea.Msg {
+			ch := demo.SyntheticReviewProgress(context.Background(), ref, snap)
+			return ReviewStartedMsg{Ch: ch}
+		}
+	}
 	return func() tea.Msg {
 		ctx := context.Background()
 		ch, err := review.Run(ctx, ref, snap)
@@ -117,7 +150,21 @@ type ExistingPRCommentsMsg struct {
 
 // FetchExistingPRCommentsCmd fetches inline comments + viewer login for prior-
 // activity detection.
-func FetchExistingPRCommentsCmd(ref gh.Ref) tea.Cmd {
+//
+// In demo mode we return a clean slate (no prior activity) so each
+// recording starts with the same banner state regardless of what the
+// host's gh user happens to look like.
+func FetchExistingPRCommentsCmd(ref gh.Ref, demoMode bool) tea.Cmd {
+	if demoMode {
+		return func() tea.Msg {
+			comments, viewer, prior := demo.DemoExistingComments(ref)
+			return ExistingPRCommentsMsg{
+				Comments: comments,
+				Viewer:   viewer,
+				Prior:    prior,
+			}
+		}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
@@ -140,6 +187,11 @@ func FetchExistingPRCommentsCmd(ref gh.Ref) tea.Cmd {
 
 // PostReviewCmd posts the full draft review when dryRun is false; otherwise
 // emits a preview message.
+//
+// Demo mode forces dry-run behaviour at the CLI seam (see
+// cmd/appr-ai-sal/main.go), so this function takes the same dryRun
+// argument it always did and the demo path naturally falls through to
+// the DryRunPayloadMsg branch below — no demo bool needed here.
 func PostReviewCmd(ref gh.Ref, draft *review.Draft, dryRun bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
@@ -260,14 +312,21 @@ func preflightHeadDrift(ctx context.Context, ref gh.Ref, pr *gh.PR) error {
 // event. If event is empty, uses draft.PostEvent(). When the gh viewer is the
 // PR author, verdict events are downgraded to COMMENT with a full summary body
 // (GitHub rejects APPROVE / REQUEST_CHANGES on your own PR).
-func PostReviewWithVerdictCmd(ref gh.Ref, draft *review.Draft, dryRun bool, event string) tea.Cmd {
+//
+// demoMode skips the gh.ViewerLogin shell-out — the demo binary may run
+// without gh on PATH, and we know the canned PRs aren't authored by the
+// demo viewer, so the self-author downgrade isn't relevant.
+func PostReviewWithVerdictCmd(ref gh.Ref, draft *review.Draft, dryRun, demoMode bool, event string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		if strings.TrimSpace(event) == "" {
 			event = draft.PostEvent()
 		}
-		viewer, _ := gh.ViewerLogin(ctx)
+		var viewer string
+		if !demoMode {
+			viewer, _ = gh.ViewerLogin(ctx)
+		}
 		event, body, intent := review.EffectiveReviewEventAndBody(draft, event, viewer)
 		if dryRun {
 			preview := fmt.Sprintf("POST %s/%s/pulls/%d/reviews (verdict event=%s)\n",
@@ -311,11 +370,14 @@ func PostReviewWithVerdictCmd(ref gh.Ref, draft *review.Draft, dryRun bool, even
 // The self-author downgrade still applies — GitHub rejects APPROVE on your own
 // PR, so the post is coerced to event=COMMENT with just an explanatory note as
 // the body (no full rendered summary, since the reviewer asked for no body).
-func PostApproveBareCmd(ref gh.Ref, draft *review.Draft, dryRun bool) tea.Cmd {
+func PostApproveBareCmd(ref gh.Ref, draft *review.Draft, dryRun, demoMode bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		viewer, _ := gh.ViewerLogin(ctx)
+		var viewer string
+		if !demoMode {
+			viewer, _ = gh.ViewerLogin(ctx)
+		}
 		event, body, intent := review.EffectiveApproveBareEventAndBody(draft, viewer)
 		if dryRun {
 			preview := fmt.Sprintf("POST %s/%s/pulls/%d/reviews (verdict event=%s, approve-only)\n",
@@ -374,7 +436,21 @@ type PRRefreshedMsg struct {
 // diff. Bound to "R" in the persistent review overlay so the user can recover
 // from "PR head moved" or "line could not be resolved" errors without leaving
 // the approval flow.
-func RefreshPRCmd(ref gh.Ref) tea.Cmd {
+//
+// In demo mode the canned PR + diff are returned synchronously so the
+// "R" key still has a visible effect during recordings.
+func RefreshPRCmd(ref gh.Ref, demoMode bool) tea.Cmd {
+	if demoMode {
+		return func() tea.Msg {
+			pr := demo.LookupPR(ref)
+			if pr == nil {
+				fallback := demo.DemoPullRequests()[0]
+				pr = &fallback
+				ref = gh.Ref{Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number}
+			}
+			return PRRefreshedMsg{PR: pr, Diff: demo.DemoDiff(ref)}
+		}
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/madicen/appr-ai-sal/internal/demo"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review"
@@ -68,19 +69,45 @@ func (m *Model) openRepoAgents(focusRepo string, autoRegen bool) tea.Cmd {
 		return review.FormatPathHistoryAggregate(review.AggregatePathHistory(rows)), nil
 	}
 
+	// In demo mode swap the LLM + history fetchers for canned versions
+	// so the recording doesn't shell out to gh / hit a real model. The
+	// fake Complete sleeps briefly so the regen flow's "in progress"
+	// chip is visible on the resulting GIF.
+	complete := repoagentsstore.CompleteFunc(review.Complete)
+	history := repoagentsstore.HistoryFetcher(gh.BuildReviewHistoryDigest)
+	pathHistory := repoagentsstore.PathHistoryFetcher(pathHistoryFetcher)
+	if m.opts.Demo {
+		complete = repoagentsstore.CompleteFunc(demo.FakeComplete)
+		history = repoagentsstore.HistoryFetcher(noopReviewHistory)
+		pathHistory = repoagentsstore.PathHistoryFetcher(noopPathHistory)
+	}
+
 	m.repoAgents = repoagentstui.New(repoagentstui.Opts{
 		AICfg:        m.opts.AIConfig,
 		RC:           rc,
 		Width:        m.width,
 		BodyHeight:   m.chromeBodyHeight(),
-		Complete:     repoagentsstore.CompleteFunc(review.Complete),
-		History:      repoagentsstore.HistoryFetcher(gh.BuildReviewHistoryDigest),
-		PathHistory:  repoagentsstore.PathHistoryFetcher(pathHistoryFetcher),
+		Complete:     complete,
+		History:      history,
+		PathHistory:  pathHistory,
 		InitialRepos: seeds,
 		FocusRepo:    strings.ToLower(strings.TrimSpace(focusRepo)),
 		AutoRegenAll: autoRegen,
 	})
 	return m.repoAgents.Init()
+}
+
+// noopReviewHistory is the demo replacement for gh.BuildReviewHistoryDigest
+// (signature: ctx, owner, repo, prLimit, maxBytes -> digest, err). Returns
+// an empty digest so the repo-agent regen flow runs without touching gh.
+func noopReviewHistory(ctx context.Context, owner, repo string, prLimit, maxBytes int) (string, error) {
+	return "", nil
+}
+
+// noopPathHistory is the demo replacement for the path-history fetcher
+// (signature: ctx, owner, repo -> digest, err). Same shape: empty result.
+func noopPathHistory(ctx context.Context, owner, repo string) (string, error) {
+	return "", nil
 }
 
 // openLangAgents opens the language-experts tab. From detail mode (a
@@ -96,11 +123,15 @@ func (m *Model) openRepoAgents(focusRepo string, autoRegen bool) tea.Cmd {
 func (m *Model) openLangAgents() tea.Cmd {
 	m.langAgentsPrevMode = m.mode
 	m.mode = modeLangAgents
+	complete := langagentsstore.CompleteFunc(review.Complete)
+	if m.opts.Demo {
+		complete = langagentsstore.CompleteFunc(demo.FakeComplete)
+	}
 	opts := langagentstui.Opts{
 		AICfg:      m.opts.AIConfig,
 		Width:      m.width,
 		BodyHeight: m.chromeBodyHeight(),
-		Complete:   langagentsstore.CompleteFunc(review.Complete),
+		Complete:   complete,
 	}
 	if m.langAgentsPrevMode == modeDetail && len(m.parsedDiff) > 0 {
 		// Use a non-nil slice (even when empty) to opt into scoped

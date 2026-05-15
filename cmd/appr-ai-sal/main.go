@@ -11,10 +11,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
@@ -46,9 +49,26 @@ func run() error {
 	aiAPIKey := flag.String("ai-api-key", "", "API key for HTTP providers (prefer env APPR_AI_SAL_AI_API_KEY)")
 	aiTimeout := flag.Int("ai-timeout-sec", -1, "Timeout in seconds for AI HTTP calls and overall review context (default 300)")
 	reviewStrictness := flag.String("review-strictness", "", "Review intensity: critical_only | lenient | balanced | strict (overrides env / config)")
+	demoMode := flag.Bool("demo", false, "run in self-contained demo mode with mock services (for VHS screenshots / GIFs)")
 	flag.Parse()
 	dry := *dryRun
 	if os.Getenv("APPR_AI_SAL_DRY") == "1" {
+		dry = true
+	}
+
+	// Demo mode runs end-to-end against canned data so VHS can record
+	// reproducible GIFs without touching gh / the network / the user's
+	// real config or cache. We isolate config + cache to a fresh temp
+	// directory so the recording can never overwrite the user's real
+	// state, and force lipgloss into TrueColor so colours render even
+	// when VHS reports a colourless TTY.
+	if *demoMode {
+		if err := configureDemoEnv(); err != nil {
+			return fmt.Errorf("demo setup: %w", err)
+		}
+		// In demo mode --dry-run is implied so any synthetic post path
+		// surfaces the inline payload preview rather than (silently)
+		// failing on a missing real gh client.
 		dry = true
 	}
 
@@ -67,9 +87,12 @@ func run() error {
 	}
 
 	// Quick auth sanity check before launching the UI so failures surface
-	// with a readable message rather than an empty list.
-	if err := gh.CheckAuth(); err != nil {
-		return fmt.Errorf("gh auth check failed: %w\n\nRun `gh auth login` and try again.", err)
+	// with a readable message rather than an empty list. Skipped in demo
+	// mode — the demo data layer never invokes the gh CLI.
+	if !*demoMode {
+		if err := gh.CheckAuth(); err != nil {
+			return fmt.Errorf("gh auth check failed: %w\n\nRun `gh auth login` and try again.", err)
+		}
 	}
 
 	defer tui.FlushMouse()
@@ -82,13 +105,49 @@ func run() error {
 	}
 
 	model := tui.New(tui.Options{
-		DryRun:         dry,
-		AIConfig:       aiCfg,
-		DebugMouse:     os.Getenv("APPR_AI_SAL_DEBUG_MOUSE") == "1",
-		MouseYAdjust:   mouseYAdj,
+		DryRun:       dry,
+		AIConfig:     aiCfg,
+		DebugMouse:   os.Getenv("APPR_AI_SAL_DEBUG_MOUSE") == "1",
+		MouseYAdjust: mouseYAdj,
+		Demo:         *demoMode,
 	})
 	prog := tea.NewProgram(model, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// configureDemoEnv pins lipgloss to TrueColor (so VHS captures colour even
+// when its embedded terminal reports no colour support) and redirects the
+// app's config + cache directories to a freshly-created temp directory so
+// the recording session cannot mutate the user's real config or cache.
+//
+// We respect APPR_AI_SAL_DEMO_DIR when set so demo fixture scripts (see
+// scripts/setup-demo-fixtures.sh) can pre-seed the cache with cached
+// repo-agent / lang-agent briefs before the recording starts.
+func configureDemoEnv() error {
+	lipgloss.SetColorProfile(termenv.TrueColor)
+
+	demoRoot := strings.TrimSpace(os.Getenv("APPR_AI_SAL_DEMO_DIR"))
+	if demoRoot == "" {
+		var err error
+		demoRoot, err = os.MkdirTemp("", "appr-ai-sal-demo-")
+		if err != nil {
+			return fmt.Errorf("mkdir demo dir: %w", err)
+		}
+	}
+	cfgDir := filepath.Join(demoRoot, "config")
+	cacheDir := filepath.Join(demoRoot, "cache")
+	for _, d := range []string{cfgDir, cacheDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			return fmt.Errorf("mkdir %s: %w", d, err)
+		}
+	}
+	if err := os.Setenv("APPR_AI_SAL_CONFIG_DIR", cfgDir); err != nil {
+		return err
+	}
+	if err := os.Setenv("APPR_AI_SAL_CACHE_DIR", cacheDir); err != nil {
 		return err
 	}
 	return nil

@@ -414,7 +414,7 @@ func (m *Model) startReviewOverlay(peruse bool) (tea.Model, tea.Cmd) {
 	m.draft = nil
 	m.recomputeTreeRows()
 	parallelSpec, parallelRE := repoParallelExecutionFlags()
-	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig)
+	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
 	ro.SetPeruse(peruse)
 	m.currentReviewOverlay = ro
 	cfg := overlay.DefaultOverlayConfig()
@@ -423,7 +423,7 @@ func (m *Model) startReviewOverlay(peruse bool) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(
 		m.overlayStack.Push(ro, cfg),
 		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
-		data.StartReviewCmd(ref, m.opts.AIConfig),
+		data.StartReviewCmd(ref, m.opts.AIConfig, m.opts.Demo),
 	)
 }
 
@@ -432,7 +432,7 @@ func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	parallelSpec, parallelRE := repoParallelExecutionFlags()
-	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig)
+	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
 	adoptCmd := ro.AdoptDraft(m.draft)
 	m.currentReviewOverlay = ro
 	cfg := overlay.DefaultOverlayConfig()

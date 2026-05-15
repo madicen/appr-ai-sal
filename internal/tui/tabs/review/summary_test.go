@@ -9,7 +9,7 @@ import (
 )
 
 func TestReviewOverlaySummaryPhaseShowsFullMarkdownBody(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	base := &review.Draft{PR: &gh.PR{HeadSHA: "abc"}, Diff: ""}
 	ro.AdoptDraft(base)
 	// Long merge summary so RenderBody() exceeds the old 24-line preview cap.

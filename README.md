@@ -5,6 +5,58 @@ panel of specialist AI reviewers over them, and lets you edit and post the
 review with a keypress. You stay in the loop — nothing goes to GitHub without
 your confirmation.
 
+## Demo
+
+The hero recording walks through opening a PR, firing the specialist
+panel, watching the synthetic pipeline progress through every stage, and
+landing on the rendered summary:
+
+![review run](screenshots/review-run.gif)
+
+<details>
+<summary>PR detail navigation (tree expand / collapse, pane focus, controls toggle)</summary>
+
+![detail navigation](screenshots/detail-nav.gif)
+
+</details>
+
+<details>
+<summary>Repo agents tab — fresh / missing mix, regen flow</summary>
+
+![repo agents](screenshots/repo-agents.gif)
+
+</details>
+
+<details>
+<summary>Language agents tab — scoped to the diff's stack</summary>
+
+![language agents](screenshots/lang-agents.gif)
+
+</details>
+
+<details>
+<summary>Settings — AI provider, strictness chips, repo-context tab</summary>
+
+![settings](screenshots/settings.gif)
+
+</details>
+
+The recordings come from a self-contained `--demo` mode that swaps the
+`gh` CLI, AI providers, and on-disk cache for canned data, so they're
+reproducible offline. To regenerate:
+
+```sh
+brew install vhs   # one-time, https://github.com/charmbracelet/vhs
+make screenshots   # runs every tape under vhs/ and writes screenshots/*.gif
+make gif-review-run  # regen just one tape during iteration
+make demo          # boot the demo binary interactively (no gh / no AI calls)
+```
+
+The tape scripts live in [`vhs/`](vhs/) and the canned data in
+[`internal/demo/`](internal/demo/). Tape timings (sleeps, typing speed)
+are tuned for a 1300×700 capture; tweak the `Set` directives at the top
+of each tape if you need a different size.
+
 The specialists are independent: each one focuses on a single concern
 (formatting, design, testing, docs, security) so their feedback is targeted
 and not muddled. A "vibe coach" specialist reads the combined output and

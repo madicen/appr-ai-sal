@@ -200,7 +200,7 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		ref := gh.Ref{Owner: it.pr.Owner, Repo: it.pr.Repo, Number: it.pr.Number}
-		return m, data.LoadPRDetailCmd(ref)
+		return m, data.LoadPRDetailCmd(ref, m.opts.Demo)
 	}
 	var cmd tea.Cmd
 	m.list, cmd = m.list.Update(msg)
@@ -222,7 +222,7 @@ func (m *Model) updateListTitle() {
 // for the spinner and renderFilterLine flips the chip to "refreshing…".
 func (m *Model) refreshPRListCmd() tea.Cmd {
 	m.prsLoaded = false
-	return data.LoadPRsCmd(m.explicitReviewerOnly)
+	return data.LoadPRsCmd(m.explicitReviewerOnly, m.opts.Demo)
 }
 
 func renderFilterLine(explicit, refreshing bool) string {
