@@ -197,6 +197,12 @@ type Model struct {
 
 	phase  overlayPhase
 	dryRun bool
+	// demoMode mirrors model.Options.Demo. We thread it down to every
+	// data.*Cmd call this overlay makes (RefreshPRCmd,
+	// PostReviewWithVerdictCmd, PostApproveBareCmd,
+	// FetchExistingPRCommentsCmd) so demo recordings stay self-contained
+	// even when the user navigates into the persistent review overlay.
+	demoMode bool
 
 	draft *review.Draft
 	files []review.FileDiff
@@ -279,7 +285,7 @@ func zoneOverlayAgent(i int) string {
 // between approve and summary; pass nil in tests that don't exercise
 // that path (the overlay then skips the LLM re-run and lands directly
 // in phaseSummary with whatever the draft already has).
-func New(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsParallel bool, cfg *aiconfig.Config) *Model {
+func New(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsParallel bool, cfg *aiconfig.Config, demoMode bool) *Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
 	ow := util.Clamp(screenW-4, 60, 140)
@@ -318,6 +324,7 @@ func New(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsPara
 		specialistsParallel: specialistsParallel,
 		repoExpertsParallel: repoExpertsParallel,
 		dryRun:              dryRun,
+		demoMode:            demoMode,
 		runStartedAt:        time.Now(),
 		aiConfig:            cfg,
 	}
@@ -482,7 +489,7 @@ func (m *Model) CmdAfterAdoptIfNeeded() tea.Cmd {
 		return nil
 	}
 	m.existingCommentsLoading = true
-	return data.FetchExistingPRCommentsCmd(m.draft.Ref)
+	return data.FetchExistingPRCommentsCmd(m.draft.Ref, m.demoMode)
 }
 
 func (m *Model) markCardsAlreadyOnGitHub(viewer string, existing []gh.PullReviewComment) tea.Cmd {

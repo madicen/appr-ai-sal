@@ -13,4 +13,10 @@ type Options struct {
 	// APPR_AI_SAL_MOUSE_Y_ADJUST). Use when the terminal reports cell Y offset
 	// from bubblezone line indices (e.g. integrated terminals).
 	MouseYAdjust int
+	// Demo enables a self-contained "VHS recording" mode: the data layer
+	// returns canned PRs / diffs / review-progress streams instead of
+	// shelling out to gh or invoking the AI provider, and the agent tabs
+	// run a fake Complete that mimics inference latency. Wired by the
+	// --demo CLI flag in cmd/appr-ai-sal/main.go.
+	Demo bool
 }

@@ -63,7 +63,7 @@ func newRootRoutingTestModel(t *testing.T) (*Model, *reviewtab.Model) {
 	m := New(Options{AIConfig: aiconfig.DefaultConfig()})
 	m.width = 120
 	m.height = 44
-	ro := reviewtab.New(m.width, m.height, false, false, false, m.opts.AIConfig)
+	ro := reviewtab.New(m.width, m.height, false, false, false, m.opts.AIConfig, false)
 	ro.AdoptDraft(rootRoutingTestDraft())
 	m.overlayStack.Push(ro, overlay.DefaultOverlayConfig())
 	m.currentReviewOverlay = ro

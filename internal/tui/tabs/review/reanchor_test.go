@@ -32,7 +32,7 @@ const reanchorDiff = `diff --git a/x.go b/x.go
 // original in approvalCard.anchorRelocatedFrom, and sets the card's hunk
 // so the inline post path can fire on the next y.
 func TestAdoptDraftReanchorsViaAnchorExcerpt(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	excerpt := "the line the model originally pointed at lived here at line 2"
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
@@ -72,7 +72,7 @@ func TestAdoptDraftReanchorsViaAnchorExcerpt(t *testing.T) {
 // NOT search for excerpt matches — the model nailed it on the first try
 // and a silent move would be unsettling and pointless.
 func TestAdoptDraftSkipsReanchorWhenLineAlreadyAnchors(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: reanchorDiff,
@@ -106,7 +106,7 @@ func TestAdoptDraftSkipsReanchorWhenLineAlreadyAnchors(t *testing.T) {
 // in that case — the card stays unanchored and the file-level fallback /
 // refresh path takes over.
 func TestAdoptDraftDoesNotReanchorWithoutExcerpt(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: reanchorDiff,
@@ -139,7 +139,7 @@ func TestAdoptDraftDoesNotReanchorWithoutExcerpt(t *testing.T) {
 // AnchorExcerpt still matches must be silently moved (with the banner
 // hint) rather than left in cardError.
 func TestApplyPRRefreshReanchorsViaAnchorExcerpt(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	excerpt := "the line the model originally pointed at lived here at line 2"
 	// Start with an OLD diff whose hunk covers line 2 so the card
 	// anchors fine before the refresh. Use a long excerpt at line 2 so
@@ -200,7 +200,7 @@ func TestApplyPRRefreshReanchorsViaAnchorExcerpt(t *testing.T) {
 // "Anchor auto-corrected from N → M" banner so the reviewer can spot-check
 // the new line before pressing y.
 func TestRenderApprovalBodyShowsAnchorBanner(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	excerpt := "the line the model originally pointed at lived here at line 2"
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},

@@ -24,7 +24,7 @@ const filelevelTestDiff = `diff --git a/a.go b/a.go
 // state where the F key applies.
 func newFilelevelOverlayWithErroredCard(t *testing.T) *Model {
 	t.Helper()
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: filelevelTestDiff,
@@ -66,7 +66,7 @@ func TestActPostCurrentFileLevel_FromErrorStateSetsFlagAndReturnsCmd(t *testing.
 // file-level comment, which is worse than the inline post the user
 // presumably came in to make.
 func TestActPostCurrentFileLevel_PendingWithHunkIsNoOp(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: filelevelTestDiff,
@@ -95,7 +95,7 @@ func TestActPostCurrentFileLevel_PendingWithHunkIsNoOp(t *testing.T) {
 // to a data.DryRunPayloadMsg whose Payload mentions subject_type=file so the
 // human reviewing the dry-run can see what the API call will look like.
 func TestActPostCurrentFileLevel_DryRunEmitsDryRunPayload(t *testing.T) {
-	ro := New(120, 44, true /* dryRun */, false, false, nil)
+	ro := New(120, 44, true /* dryRun */, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: filelevelTestDiff,

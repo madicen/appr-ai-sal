@@ -23,7 +23,7 @@ diff --git a/b.go b/b.go
 `
 
 func TestReviewOverlaySkipAllFindingsOpensConfirmApprove(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -60,7 +60,7 @@ func TestReviewOverlaySkipAllFindingsOpensConfirmApprove(t *testing.T) {
 }
 
 func TestReviewOverlaySkipAllWithCommentVerdictOpensConfirmApprove(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -83,7 +83,7 @@ func TestReviewOverlaySkipAllWithCommentVerdictOpensConfirmApprove(t *testing.T)
 }
 
 func TestSummaryPhaseOfferApproveWithoutSummaryNoInlineCards(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -104,7 +104,7 @@ func TestSummaryPhaseOfferApproveWithoutSummaryNoInlineCards(t *testing.T) {
 }
 
 func TestSummaryPhaseOfferApproveWithoutSummaryFalseAfterPostingInline(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -132,7 +132,7 @@ func TestSummaryPhaseOfferApproveWithoutSummaryFalseAfterPostingInline(t *testin
 }
 
 func TestSummaryPhaseOfferApproveWhenAllSkippedOrOnPR(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -152,7 +152,7 @@ func TestSummaryPhaseOfferApproveWhenAllSkippedOrOnPR(t *testing.T) {
 }
 
 func TestReviewOverlayNoFindingsRoutesToConfirmApprove(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -178,7 +178,7 @@ func TestReviewOverlayNoFindingsRoutesToConfirmApprove(t *testing.T) {
 }
 
 func TestReviewOverlayNoFindingsConfirmApproveSwallowsN(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -201,7 +201,7 @@ func TestReviewOverlayNoFindingsConfirmApproveSwallowsN(t *testing.T) {
 // existed the user could only post APPROVE with the AI-authored recap; now
 // they can opt out of publishing any review text alongside the approval.
 func TestNoFindingsConfirmApproveRendersApproveOnlyButton(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -232,7 +232,7 @@ func TestNoFindingsConfirmApproveRendersApproveOnlyButton(t *testing.T) {
 // phaseConfirmApprove until the post completes — matching how 'y' behaves
 // here today.
 func TestNoFindingsConfirmApproveAKeyTriggersBareApprove(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -258,7 +258,7 @@ func TestNoFindingsConfirmApproveAKeyTriggersBareApprove(t *testing.T) {
 // no body, so 'a' would be a redundant alias and the screen deliberately
 // keeps its single-button contract.
 func TestRegularConfirmApproveAKeyIgnored(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -289,7 +289,7 @@ func TestRegularConfirmApproveAKeyIgnored(t *testing.T) {
 }
 
 func TestReviewOverlayNoFindingsHelpHidesCommentOnlyHint(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -308,7 +308,7 @@ func TestReviewOverlaySummaryBannerReflectsReconciledVerdict(t *testing.T) {
 	// vibe-coach said request_changes based on a single warning-severity inline
 	// finding. After the user skips it, no error/critical content remains so
 	// PostEvent reconciles to COMMENT — and the summary banner should match.
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -340,7 +340,7 @@ func TestReviewOverlaySummaryBannerReflectsReconciledVerdict(t *testing.T) {
 }
 
 func TestReviewOverlayPostOneSkipRestGoesToSummary(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -377,7 +377,7 @@ func TestReviewOverlayPostOneSkipRestGoesToSummary(t *testing.T) {
 // represents the human reviewer's own judgement, so the option to
 // approve must always be reachable from the final review screen.
 func TestSummaryPhaseAlwaysOffersApproveOnlyButton(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -421,7 +421,7 @@ func TestSummaryPhaseAlwaysOffersApproveOnlyButton(t *testing.T) {
 // gate that previously swallowed the keypress in that state has been
 // loosened to summaryPhaseAllowApproveOnly.
 func TestSummaryPhaseApproveOnlyKeySendsApprove(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
 		Diff: skipAllTestDiff,
@@ -449,7 +449,7 @@ func TestSummaryPhaseApproveOnlyKeySendsApprove(t *testing.T) {
 // strictly read-only — even though the button is otherwise always
 // available, peruse must never expose an action that posts to GitHub.
 func TestSummaryPhaseAllowApproveOnlyDisabledInPeruse(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.peruse = true
 	d := &review.Draft{
 		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},

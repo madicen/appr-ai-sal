@@ -251,7 +251,7 @@ func (m *Model) actRefreshPR() (tea.Model, tea.Cmd) {
 	m.refreshing = true
 	m.refreshNote = ""
 	m.rebuildBody()
-	return m, data.RefreshPRCmd(m.draft.Ref)
+	return m, data.RefreshPRCmd(m.draft.Ref, m.demoMode)
 }
 
 // applyPRRefresh adopts a freshly fetched PR + diff, re-anchors every pending
@@ -376,7 +376,7 @@ func (m *Model) actPostSummary() (tea.Model, tea.Cmd) {
 	// The summary phase posts a body-only review with the verdict event
 	// (REQUEST_CHANGES or COMMENT). The approve verdict is handled by
 	// actPostApprove which lives in its own phase.
-	return m, data.PostReviewWithVerdictCmd(m.draft.Ref, m.draft, m.dryRun, "")
+	return m, data.PostReviewWithVerdictCmd(m.draft.Ref, m.draft, m.dryRun, m.demoMode, "")
 }
 
 // actPostApprove posts a GitHub review with event=APPROVE and an empty body.
@@ -395,7 +395,7 @@ func (m *Model) actPostApprove() (tea.Model, tea.Cmd) {
 	if m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
-	return m, data.PostReviewWithVerdictCmd(m.draft.Ref, m.draft, m.dryRun, "APPROVE")
+	return m, data.PostReviewWithVerdictCmd(m.draft.Ref, m.draft, m.dryRun, m.demoMode, "APPROVE")
 }
 
 // actPostApproveOnly posts a content-free GitHub APPROVE — event=APPROVE with
@@ -413,7 +413,7 @@ func (m *Model) actPostApproveOnly() (tea.Model, tea.Cmd) {
 	if m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
-	return m, data.PostApproveBareCmd(m.draft.Ref, m.draft, m.dryRun)
+	return m, data.PostApproveBareCmd(m.draft.Ref, m.draft, m.dryRun, m.demoMode)
 }
 
 // flashPeruse records a one-frame help-line hint to surface why an

@@ -49,7 +49,7 @@ func newDeferTestDraft(t *testing.T) *review.Draft {
 // phaseSummary without scheduling an LLM call — this is the path tests
 // exercise today and must keep working.
 func TestEnterSummaryWithoutAIConfigGoesDirectlyToSummary(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.AdoptDraft(newDeferTestDraft(t))
 	if ro.phase != phaseApprove {
 		t.Fatalf("preconditions: phase %v, want phaseApprove", ro.phase)
@@ -68,7 +68,7 @@ func TestEnterSummaryWithoutAIConfigGoesDirectlyToSummary(t *testing.T) {
 // finding set when vibe-coach runs lazily — and what guarantees the
 // rendered body / verdict reconciliation use the same set.
 func TestEnterSummarySyncsSkipsBeforeRouting(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.AdoptDraft(newDeferTestDraft(t))
 	if len(ro.cards) != 1 {
 		t.Fatalf("preconditions: cards %d, want 1", len(ro.cards))
@@ -89,7 +89,7 @@ func TestEnterSummarySyncsSkipsBeforeRouting(t *testing.T) {
 // case: user backs out of summary to look at a card and re-enters
 // without changing anything.
 func TestEnterSummaryReusesCachedVibeCoachOnIdenticalSkipSet(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := newDeferTestDraft(t)
 	ro.AdoptDraft(d)
 	// First entry caches the hash + draft.VibeCoach. With nil aiConfig
@@ -114,7 +114,7 @@ func TestEnterSummaryReusesCachedVibeCoachOnIdenticalSkipSet(t *testing.T) {
 // guard, a slow first call completing after the user has changed skips
 // would overwrite the result of a newer (post-skip) call.
 func TestVibeCoachDoneMsgStaleHashIsIgnored(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := newDeferTestDraft(t)
 	ro.AdoptDraft(d)
 	ro.coachInFlight = true
@@ -142,7 +142,7 @@ func TestVibeCoachDoneMsgStaleHashIsIgnored(t *testing.T) {
 // Non-stale VibeCoachDoneMsg installs the result on the draft, clears
 // coachInFlight, and routes to phaseSummary.
 func TestVibeCoachDoneMsgInstallsFreshResult(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	d := newDeferTestDraft(t)
 	ro.AdoptDraft(d)
 	ro.phase = phaseGeneratingSummary
@@ -168,7 +168,7 @@ func TestVibeCoachDoneMsgInstallsFreshResult(t *testing.T) {
 // Peruse mode: pressing y on a finding card is a no-op. The card state
 // must NOT flip to posted; the help line flashes a hint about peruse.
 func TestPeruseModeBlocksPost(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.peruse = true
 	ro.AdoptDraft(newDeferTestDraft(t))
 	if ro.phase != phaseApprove {
@@ -193,7 +193,7 @@ func TestPeruseModeBlocksPost(t *testing.T) {
 // Peruse mode: pressing s/n on a finding card is a no-op. The card
 // state must NOT flip to skipped; the help line flashes a hint.
 func TestPeruseModeBlocksSkip(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.peruse = true
 	ro.AdoptDraft(newDeferTestDraft(t))
 	out, cmd := ro.actSkipCurrent()
@@ -212,7 +212,7 @@ func TestPeruseModeBlocksSkip(t *testing.T) {
 // Peruse mode: pressing y on the summary phase is a no-op. The user
 // should never accidentally post a peruse-only review.
 func TestPeruseModeBlocksPostSummary(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.peruse = true
 	ro.AdoptDraft(newDeferTestDraft(t))
 	out, cmd := ro.actPostSummary()
@@ -228,7 +228,7 @@ func TestPeruseModeBlocksPostSummary(t *testing.T) {
 // Peruse-mode title carries a "PERUSE" prefix so the user can never
 // mistake which mode they're in.
 func TestPeruseModeTitlePrefix(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.peruse = true
 	for _, p := range []overlayPhase{phaseRunning, phaseApprove, phaseGeneratingSummary, phaseSummary, phasePosted} {
 		ro.phase = p
@@ -241,7 +241,7 @@ func TestPeruseModeTitlePrefix(t *testing.T) {
 // Peruse-mode help text mentions "no posting" so the user knows their
 // keys are intentionally disabled.
 func TestPeruseModeHelpMentionsNoPosting(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.peruse = true
 	for _, p := range []overlayPhase{phaseRunning, phaseApprove, phaseSummary, phaseConfirmApprove} {
 		ro.phase = p
@@ -255,7 +255,7 @@ func TestPeruseModeHelpMentionsNoPosting(t *testing.T) {
 // Generating-summary phase has its own help text so the user knows
 // they're waiting on the LLM, not stuck.
 func TestGeneratingSummaryHelpText(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil)
+	ro := New(120, 44, false, false, false, nil, false)
 	ro.phase = phaseGeneratingSummary
 	h := ro.helpForPhase()
 	if !strings.Contains(h, "refining summary") {

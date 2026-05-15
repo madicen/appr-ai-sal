@@ -344,7 +344,7 @@ func New(opts Options) *Model {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(data.LoadPRsCmd(m.explicitReviewerOnly), m.spinner.Tick)
+	return tea.Batch(data.LoadPRsCmd(m.explicitReviewerOnly, m.opts.Demo), m.spinner.Tick)
 }
 
 // reviewOverlayOnTop returns the active review overlay if it sits at the top
@@ -409,7 +409,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_, c := m.overlayStack.Pop()
 		m.mode = modeList
 		m.draft = nil
-		return m, tea.Batch(c, data.LoadPRsCmd(m.explicitReviewerOnly))
+		return m, tea.Batch(c, data.LoadPRsCmd(m.explicitReviewerOnly, m.opts.Demo))
 
 	case data.DryRunPayloadMsg:
 		// If the persistent review overlay is active, let it absorb the dry-run

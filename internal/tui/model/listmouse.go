@@ -169,5 +169,5 @@ func (m *Model) listLoadDetailAtGlobalIndex(global int) tea.Cmd {
 		return nil
 	}
 	ref := gh.Ref{Owner: it.pr.Owner, Repo: it.pr.Repo, Number: it.pr.Number}
-	return data.LoadPRDetailCmd(ref)
+	return data.LoadPRDetailCmd(ref, m.opts.Demo)
 }
