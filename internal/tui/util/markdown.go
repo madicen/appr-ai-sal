@@ -42,6 +42,34 @@ func RenderMarkdown(body string, width int) string {
 	return strings.Trim(out, "\n")
 }
 
+// IndentLines prefixes every line of body with prefix and (best-effort)
+// keeps the visible width inside maxWidth. It's the small helper we reach
+// for when nesting multi-line text under a header — annotation messages
+// in the Checks pane, comment bodies in the Discussion pane, etc.
+//
+// maxWidth is honoured loosely: lines that already exceed it after the
+// prefix is added are passed through verbatim (they are usually styled
+// chunks where ansi escapes would skew a naive truncation). Pass 0 to
+// skip the bound entirely.
+func IndentLines(body, prefix string, maxWidth int) string {
+	if body == "" {
+		return ""
+	}
+	lines := strings.Split(body, "\n")
+	for i, line := range lines {
+		out := prefix + line
+		if maxWidth > 0 {
+			// We can't reliably truncate lines that contain ANSI; just
+			// pass them through. Glamour-rendered bodies already wrap
+			// to the requested width upstream so this is rarely hit.
+			lines[i] = out
+		} else {
+			lines[i] = out
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // RenderMarkdownIndented renders body and guarantees the visible block
 // fits in totalWidth cells with an additional extraIndent spaces of
 // left padding on top of glamour's built-in 2-cell margin.

@@ -30,29 +30,29 @@ const (
 	// filter strip. Mirrors the keyboard "R" binding so users who don't
 	// read the status bar still have an obvious way to re-fetch the
 	// review queue from GitHub.
-	RefreshList                  = "zone:list:refresh"
-	ConfirmYes                   = "zone:confirm:yes"
-	ConfirmNo                    = "zone:confirm:no"
-	ErrorDismiss                 = "zone:error:dismiss"
-	ErrorCopy                    = "zone:error:copy"
-	DryDismiss                   = "zone:dry:dismiss"
-	StagedPost                   = "zone:staged:post"
-	StagedSkip                   = "zone:staged:skip"
-	StagedQuit                   = "zone:staged:quit"
-	StagedPrev                   = "zone:staged:prev"
-	StagedNext                   = "zone:staged:next"
-	StagedFinish                 = "zone:staged:finish"
-	StagedSummaryYes             = "zone:staged:summary:yes"
-	StagedSummaryNo              = "zone:staged:summary:no"
-	StagedSummaryApproveOnly     = "zone:staged:summary:approve-only"
+	RefreshList              = "zone:list:refresh"
+	ConfirmYes               = "zone:confirm:yes"
+	ConfirmNo                = "zone:confirm:no"
+	ErrorDismiss             = "zone:error:dismiss"
+	ErrorCopy                = "zone:error:copy"
+	DryDismiss               = "zone:dry:dismiss"
+	StagedPost               = "zone:staged:post"
+	StagedSkip               = "zone:staged:skip"
+	StagedQuit               = "zone:staged:quit"
+	StagedPrev               = "zone:staged:prev"
+	StagedNext               = "zone:staged:next"
+	StagedFinish             = "zone:staged:finish"
+	StagedSummaryYes         = "zone:staged:summary:yes"
+	StagedSummaryNo          = "zone:staged:summary:no"
+	StagedSummaryApproveOnly = "zone:staged:summary:approve-only"
 	// StagedRefresh is the clickable "Refresh PR" button rendered
 	// alongside an inline-comment or summary post error so the user can
 	// re-fetch the PR + diff and retry without leaving the overlay.
-	StagedRefresh        = "zone:staged:refresh"
-	PostedOK             = "zone:posted:ok"
-	RepoContextToggle    = "zone:review:repo-context"
-	PaneTree             = "zone:pane:tree"
-	PaneDiff             = "zone:pane:diff"
+	StagedRefresh     = "zone:staged:refresh"
+	PostedOK          = "zone:posted:ok"
+	RepoContextToggle = "zone:review:repo-context"
+	PaneTree          = "zone:pane:tree"
+	PaneDiff          = "zone:pane:diff"
 	// PaneControls is the right-hand "Review controls" pane on the PR
 	// detail view: strictness, profile picker, agent state, toggles,
 	// Start Review button.
@@ -64,7 +64,18 @@ const (
 	PaneDiffBody     = "zone:pane:diff:body"
 	PaneControlsBody = "zone:pane:controls:body"
 	ReopenApproval   = "zone:detail:reopen"
+	// DescriptionToggle is the legacy "g" chip in the mini-header. Kept as
+	// a click target so muscle-memory users can still toggle the
+	// Description view from the header strip; the new home for the action
+	// is the Description row in the PR-overview selector below.
 	DescriptionToggle = "zone:detail:description"
+
+	// OverviewDescription / OverviewChecks / OverviewDiscussion mark the
+	// three rows of the PR-overview selector that sits above the file
+	// tree. Clicking a row swaps the centre pane to that view.
+	OverviewDescription = "zone:detail:overview:description"
+	OverviewChecks      = "zone:detail:overview:checks"
+	OverviewDiscussion  = "zone:detail:overview:discussion"
 	// BuildRepoAgents is the clickable chip in the PR detail mini-header
 	// that opens the repo-agents tab focused on the current PR's repo
 	// and immediately kicks off "Regenerate all" for that repo.
@@ -82,19 +93,19 @@ const (
 
 	// Controls panel zones — clickable rows / buttons inside the
 	// right-hand "Review controls" pane.
-	ControlsStrictCriticalOnly  = "zone:controls:strict:critical_only"
-	ControlsStrictLenient       = "zone:controls:strict:lenient"
-	ControlsStrictBalanced      = "zone:controls:strict:balanced"
-	ControlsStrictStrict        = "zone:controls:strict:strict"
-	ControlsProfilePrev         = "zone:controls:profile:prev"
-	ControlsProfileNext         = "zone:controls:profile:next"
-	ControlsProfileEdit         = "zone:controls:profile:edit"
-	ControlsRepoAgents          = "zone:controls:agents:repo"
-	ControlsTechAgents          = "zone:controls:agents:tech"
-	ControlsLangAgents          = "zone:controls:agents:lang"
-	ControlsToggleParallel      = "zone:controls:toggle:parallel"
-	ControlsToggleDryRun        = "zone:controls:toggle:dry-run"
-	ControlsTogglePeruse        = "zone:controls:toggle:peruse"
-	ControlsStartReview         = "zone:controls:start"
-	ControlsStartReviewPeruse   = "zone:controls:start-peruse"
+	ControlsStrictCriticalOnly = "zone:controls:strict:critical_only"
+	ControlsStrictLenient      = "zone:controls:strict:lenient"
+	ControlsStrictBalanced     = "zone:controls:strict:balanced"
+	ControlsStrictStrict       = "zone:controls:strict:strict"
+	ControlsProfilePrev        = "zone:controls:profile:prev"
+	ControlsProfileNext        = "zone:controls:profile:next"
+	ControlsProfileEdit        = "zone:controls:profile:edit"
+	ControlsRepoAgents         = "zone:controls:agents:repo"
+	ControlsTechAgents         = "zone:controls:agents:tech"
+	ControlsLangAgents         = "zone:controls:agents:lang"
+	ControlsToggleParallel     = "zone:controls:toggle:parallel"
+	ControlsToggleDryRun       = "zone:controls:toggle:dry-run"
+	ControlsTogglePeruse       = "zone:controls:toggle:peruse"
+	ControlsStartReview        = "zone:controls:start"
+	ControlsStartReviewPeruse  = "zone:controls:start-peruse"
 )

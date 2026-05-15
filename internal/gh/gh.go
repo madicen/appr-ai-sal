@@ -33,6 +33,20 @@ type PR struct {
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 
+	// Additions / Deletions / ChangedFiles are aggregate diff stats for the
+	// PR as reported by GitHub (additions and deletions are line counts,
+	// changedFiles is the file count). Populated by ListReviewRequestedPRs
+	// and GetPR when the underlying call returns them; zero when unavailable.
+	Additions    int
+	Deletions    int
+	ChangedFiles int
+
+	// ChecksState is GitHub's status-check rollup for the PR's head commit.
+	// One of "SUCCESS", "FAILURE", "PENDING", "ERROR", "EXPECTED" or empty
+	// when no checks have been configured / reported. Used to render the
+	// queue's check-rollup chip.
+	ChecksState string
+
 	// ReviewState carries the per-PR review summary + viewer-relative flags
 	// (approvals, your-review-still-needed). Populated by
 	// ListReviewRequestedPRs and GetPR; zero-valued when those weren't able
@@ -148,24 +162,27 @@ func GetPR(ctx context.Context, ref Ref) (*PR, error) {
 	args := []string{
 		"pr", "view", strconv.Itoa(ref.Number),
 		"--repo", ref.Owner + "/" + ref.Repo,
-		"--json", "number,title,url,body,author,headRefName,headRefOid,baseRefName,isDraft,createdAt,updatedAt,reviewDecision,latestReviews,reviewRequests",
+		"--json", "number,title,url,body,author,headRefName,headRefOid,baseRefName,isDraft,createdAt,updatedAt,reviewDecision,latestReviews,reviewRequests,additions,deletions,changedFiles,statusCheckRollup",
 	}
 	out, err := runJSON(ctx, args)
 	if err != nil {
 		return nil, err
 	}
 	var raw struct {
-		Number      int       `json:"number"`
-		Title       string    `json:"title"`
-		URL         string    `json:"url"`
-		Body        string    `json:"body"`
-		HeadRefName string    `json:"headRefName"`
-		HeadRefOid  string    `json:"headRefOid"`
-		BaseRefName string    `json:"baseRefName"`
-		IsDraft     bool      `json:"isDraft"`
-		CreatedAt   time.Time `json:"createdAt"`
-		UpdatedAt   time.Time `json:"updatedAt"`
-		Author      struct {
+		Number       int       `json:"number"`
+		Title        string    `json:"title"`
+		URL          string    `json:"url"`
+		Body         string    `json:"body"`
+		HeadRefName  string    `json:"headRefName"`
+		HeadRefOid   string    `json:"headRefOid"`
+		BaseRefName  string    `json:"baseRefName"`
+		IsDraft      bool      `json:"isDraft"`
+		CreatedAt    time.Time `json:"createdAt"`
+		UpdatedAt    time.Time `json:"updatedAt"`
+		Additions    int       `json:"additions"`
+		Deletions    int       `json:"deletions"`
+		ChangedFiles int       `json:"changedFiles"`
+		Author       struct {
 			Login string `json:"login"`
 		} `json:"author"`
 		ReviewDecision string `json:"reviewDecision"`
@@ -180,6 +197,16 @@ func GetPR(ctx context.Context, ref Ref) (*PR, error) {
 			Login    string `json:"login"`
 			Slug     string `json:"slug"`
 		} `json:"reviewRequests"`
+		// gh pr view --json statusCheckRollup returns a flat array of
+		// rollup entries (one per check / commit status) — not a single
+		// rollup object. We collapse it to a single state below using
+		// the same severity ladder GitHub's GraphQL `statusCheckRollup`
+		// uses (FAILURE > ERROR > PENDING > SUCCESS).
+		StatusCheckRollup []struct {
+			State      string `json:"state"`      // commit status format
+			Status     string `json:"status"`     // check run format ("COMPLETED" etc.)
+			Conclusion string `json:"conclusion"` // check run format ("SUCCESS", "FAILURE" …)
+		} `json:"statusCheckRollup"`
 	}
 	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, fmt.Errorf("parse pr view output: %w", err)
@@ -202,22 +229,39 @@ func GetPR(ctx context.Context, ref Ref) (*PR, error) {
 			requests = append(requests, ReviewRequest{TeamSlug: rr.Slug})
 		}
 	}
+	rollupStates := make([]string, 0, len(raw.StatusCheckRollup))
+	for _, r := range raw.StatusCheckRollup {
+		switch {
+		case r.Conclusion != "":
+			rollupStates = append(rollupStates, r.Conclusion)
+		case r.Status != "" && !strings.EqualFold(r.Status, "COMPLETED"):
+			// In-flight check runs report status=QUEUED/IN_PROGRESS with
+			// an empty conclusion. Fold those into PENDING.
+			rollupStates = append(rollupStates, "PENDING")
+		case r.State != "":
+			rollupStates = append(rollupStates, r.State)
+		}
+	}
 	return &PR{
-		Number:      raw.Number,
-		Title:       raw.Title,
-		URL:         raw.URL,
-		Body:        raw.Body,
-		Repository:  ref.Owner + "/" + ref.Repo,
-		Owner:       ref.Owner,
-		Repo:        ref.Repo,
-		Author:      raw.Author.Login,
-		BaseRef:     raw.BaseRefName,
-		HeadRef:     raw.HeadRefName,
-		HeadSHA:     raw.HeadRefOid,
-		IsDraft:     raw.IsDraft,
-		CreatedAt:   raw.CreatedAt,
-		UpdatedAt:   raw.UpdatedAt,
-		ReviewState: DeriveReviewState(viewer, raw.ReviewDecision, latest, requests),
+		Number:       raw.Number,
+		Title:        raw.Title,
+		URL:          raw.URL,
+		Body:         raw.Body,
+		Repository:   ref.Owner + "/" + ref.Repo,
+		Owner:        ref.Owner,
+		Repo:         ref.Repo,
+		Author:       raw.Author.Login,
+		BaseRef:      raw.BaseRefName,
+		HeadRef:      raw.HeadRefName,
+		HeadSHA:      raw.HeadRefOid,
+		IsDraft:      raw.IsDraft,
+		CreatedAt:    raw.CreatedAt,
+		UpdatedAt:    raw.UpdatedAt,
+		Additions:    raw.Additions,
+		Deletions:    raw.Deletions,
+		ChangedFiles: raw.ChangedFiles,
+		ChecksState:  CollapseChecksRollup(rollupStates),
+		ReviewState:  DeriveReviewState(viewer, raw.ReviewDecision, latest, requests),
 	}, nil
 }
 

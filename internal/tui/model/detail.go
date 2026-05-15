@@ -53,9 +53,35 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 		return m.reopenApprovalIfPossible()
 	}
 	if z := zone.Get(zones.DescriptionToggle); z != nil && z.InBounds(msg) {
-		m.descriptionOpen = !m.descriptionOpen
+		// Toggle Description ↔ Diff so the chip stays a one-click affordance
+		// — clicking it again from the Description view jumps back to the
+		// last diff selection.
+		if m.centerView == centerDescription {
+			m.centerView = centerDiff
+		} else {
+			m.centerView = centerDescription
+		}
+		m.focusedPane = paneDiff
 		m.refreshDetailViews()
-		return m, nil
+		return m, m.ensureCenterDataLoaded()
+	}
+	if z := zone.Get(zones.OverviewDescription); z != nil && z.InBounds(msg) {
+		m.centerView = centerDescription
+		m.focusedPane = paneTree
+		m.refreshDetailViews()
+		return m, m.ensureCenterDataLoaded()
+	}
+	if z := zone.Get(zones.OverviewChecks); z != nil && z.InBounds(msg) {
+		m.centerView = centerChecks
+		m.focusedPane = paneTree
+		m.refreshDetailViews()
+		return m, m.ensureCenterDataLoaded()
+	}
+	if z := zone.Get(zones.OverviewDiscussion); z != nil && z.InBounds(msg) {
+		m.centerView = centerDiscussion
+		m.focusedPane = paneTree
+		m.refreshDetailViews()
+		return m, m.ensureCenterDataLoaded()
 	}
 	if z := zone.Get(zones.OpenInBrowser); z != nil && z.InBounds(msg) {
 		if m.currentPR != nil {
@@ -77,10 +103,14 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 
 	// Tree row clicks (zone per row, then viewport body for padded filler rows).
 	// File rows update selection + reset diff scroll; folder rows toggle
-	// collapsed state for that subtree.
+	// collapsed state for that subtree. A tree-row click also flips the
+	// centre pane back to the diff view if the user was on an overview
+	// pane (Description / Checks / Discussion) — clicking a file is the
+	// "go look at this file's diff" intent.
 	if hit, ok := m.treeRowFromMouse(msg); ok {
 		m.focusedPane = paneTree
 		m.treeIdx = hit.viewLine
+		m.centerView = centerDiff
 		if hit.isFolder {
 			m.toggleFolderCollapse(m.treeViewRows[hit.viewLine].fullPath)
 			return m, nil
@@ -224,14 +254,21 @@ func (m *Model) toggleParallelSpecialists() error {
 func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
-		m.descriptionOpen = false
+		m.centerView = centerDiff
 		m.diffOnly = false
 		m.mode = modeList
 		return m, nil
 	case "g":
-		m.descriptionOpen = !m.descriptionOpen
+		// Description is now an overview row, but `g` keeps its old job
+		// as a one-key shortcut — toggle Description ↔ Diff so muscle
+		// memory carries over.
+		if m.centerView == centerDescription {
+			m.centerView = centerDiff
+		} else {
+			m.centerView = centerDescription
+		}
 		m.refreshDetailViews()
-		return m, nil
+		return m, m.ensureCenterDataLoaded()
 	case "tab":
 		m.cyclePane(+1)
 		m.refreshDetailViews()
@@ -285,11 +322,11 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "j", "down":
 		m.detailNavigate(+1)
 		m.refreshDetailViews()
-		return m, nil
+		return m, m.ensureCenterDataLoaded()
 	case "k", "up":
 		m.detailNavigate(-1)
 		m.refreshDetailViews()
-		return m, nil
+		return m, m.ensureCenterDataLoaded()
 	case " ":
 		// Space on a folder row toggles its collapsed state; on a file
 		// row it's consumed (no-op) so it doesn't accidentally page-scroll
@@ -377,20 +414,7 @@ func (m *Model) cyclePane(dir int) {
 func (m *Model) detailNavigate(dir int) {
 	switch m.focusedPane {
 	case paneTree:
-		if len(m.treeViewRows) == 0 {
-			return
-		}
-		m.treeIdx = clampInt(m.treeIdx+dir, 0, len(m.treeViewRows)-1)
-		// Update selectedFilePath only when the cursor lands on a file
-		// row — folder rows leave the diff pane sticky on the previously
-		// selected file so navigating through folder headers doesn't
-		// blank the diff.
-		vr := m.treeViewRows[m.treeIdx]
-		if vr.isFile && vr.fileIndex >= 0 && vr.fileIndex < len(m.treeRows) {
-			m.selectedFilePath = m.treeRows[vr.fileIndex].Path
-			m.diffView.SetYOffset(0)
-		}
-		m.scrollToSelectedFile = true
+		m.detailNavigateLeftColumn(dir)
 	case paneDiff:
 		if dir > 0 {
 			m.diffView.ScrollDown(1)
@@ -404,6 +428,61 @@ func (m *Model) detailNavigate(dir int) {
 			m.controlsView.ScrollUp(1)
 		}
 	}
+}
+
+// detailNavigateLeftColumn walks the unified left-column row list:
+//
+//	[Description, Checks, Discussion, <tree row 0>, <tree row 1>, …]
+//
+// The first three rows correspond to the overview selector at the top of
+// the pane and drive m.centerView; the remaining rows are tree rows and
+// drive m.treeIdx + m.selectedFilePath. j/k crosses the boundary so the
+// cursor naturally transitions from "browsing PR overview" to "browsing
+// the diff for a specific file".
+func (m *Model) detailNavigateLeftColumn(dir int) {
+	idx := leftColumnIndexFor(m.centerView, m.treeIdx)
+	total := overviewItemCount + len(m.treeViewRows)
+	if total == 0 {
+		return
+	}
+	idx = clampInt(idx+dir, 0, total-1)
+	m.applyLeftColumnIndex(idx)
+}
+
+// leftColumnIndexFor returns the unified-list cursor implied by the current
+// (centerView, treeIdx). When the user is on an overview pane the cursor is
+// 0/1/2; otherwise it is overviewItemCount + treeIdx.
+func leftColumnIndexFor(v centerView, treeIdx int) int {
+	if k, ok := centerToOverviewKind(v); ok {
+		return int(k)
+	}
+	if treeIdx < 0 {
+		return overviewItemCount
+	}
+	return overviewItemCount + treeIdx
+}
+
+// applyLeftColumnIndex commits a unified-list cursor index back to
+// centerView / treeIdx / selectedFilePath. If the new index points at a
+// tree file row, selectedFilePath is updated so the centre pane re-renders
+// against the right diff.
+func (m *Model) applyLeftColumnIndex(idx int) {
+	if idx < overviewItemCount {
+		m.centerView = overviewKindToCenter(overviewItemKind(idx))
+		return
+	}
+	m.centerView = centerDiff
+	if len(m.treeViewRows) == 0 {
+		m.treeIdx = 0
+		return
+	}
+	m.treeIdx = clampInt(idx-overviewItemCount, 0, len(m.treeViewRows)-1)
+	vr := m.treeViewRows[m.treeIdx]
+	if vr.isFile && vr.fileIndex >= 0 && vr.fileIndex < len(m.treeRows) {
+		m.selectedFilePath = m.treeRows[vr.fileIndex].Path
+		m.diffView.SetYOffset(0)
+	}
+	m.scrollToSelectedFile = true
 }
 
 func (m *Model) startReviewOverlay(peruse bool) (tea.Model, tea.Cmd) {
@@ -449,6 +528,46 @@ func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
 		cmds = append(cmds, fetch)
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// ensureCenterDataLoaded fires the gh fetch for the currently selected
+// overview pane the first time the user lands on it. Subsequent visits
+// short-circuit on the cached report / timeline so navigation between
+// overview rows feels instant. Returns nil when no fetch is needed (e.g.
+// for centerDiff or centerDescription, both of which use data already
+// resident on the model).
+func (m *Model) ensureCenterDataLoaded() tea.Cmd {
+	if m.currentPR == nil {
+		return nil
+	}
+	ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
+	switch m.centerView {
+	case centerChecks:
+		if m.checks != nil || m.checksLoading || m.checksErr != nil {
+			return nil
+		}
+		m.checksLoading = true
+		return data.LoadChecksCmd(ref, m.opts.Demo)
+	case centerDiscussion:
+		if m.discussion != nil || m.discussionLoading || m.discussionErr != nil {
+			return nil
+		}
+		m.discussionLoading = true
+		return data.LoadDiscussionCmd(ref, m.opts.Demo)
+	}
+	return nil
+}
+
+// resetOverviewData clears the cached checks / discussion data so the next
+// PR-detail open re-fetches against the new ref. Called from the
+// PRDetailMsg handler in the root model.
+func (m *Model) resetOverviewData() {
+	m.checks = nil
+	m.checksLoading = false
+	m.checksErr = nil
+	m.discussion = nil
+	m.discussionLoading = false
+	m.discussionErr = nil
 }
 
 func (m *Model) applyProgress(p review.Progress) {
@@ -572,21 +691,34 @@ func (m *Model) refreshDetailViews() {
 		return
 	}
 
-	// Diff pane content
-	var selFile *review.FileDiff
-	if m.selectedFilePath != "" {
-		selFile = review.FindFile(m.parsedDiff, m.selectedFilePath)
+	// Centre pane content — switches on centerView. While diffOnly is
+	// active we render the diff regardless of centerView so the
+	// full-width diff stays consistent.
+	view := m.centerView
+	if m.diffOnly {
+		view = centerDiff
 	}
-	diffContent := renderDiffPane(selFile, m.draft, m.focusedPane == paneDiff, m.diffView.Width)
-	if m.descriptionOpen && strings.TrimSpace(m.currentPR.Body) != "" {
-		diffContent = renderDescriptionBlock(m.currentPR.Body, m.diffView.Width) + "\n\n" + diffContent
+	var centerContent string
+	switch view {
+	case centerDescription:
+		centerContent = renderDescriptionPane(m.currentPR.Body, m.diffView.Width)
+	case centerChecks:
+		centerContent = renderChecksPane(m.checks, m.checksLoading, m.checksErr, m.diffView.Width)
+	case centerDiscussion:
+		centerContent = renderDiscussionPane(m.discussion, m.discussionLoading, m.discussionErr, m.diffView.Width)
+	default:
+		var selFile *review.FileDiff
+		if m.selectedFilePath != "" {
+			selFile = review.FindFile(m.parsedDiff, m.selectedFilePath)
+		}
+		centerContent = renderDiffPane(selFile, m.draft, m.focusedPane == paneDiff, m.diffView.Width)
 	}
-	m.diffView.SetContent(util.WrapForViewport(diffContent, m.diffView.Width))
+	m.diffView.SetContent(util.WrapForViewport(centerContent, m.diffView.Width))
 
 	// Tree pane: do not run util.WrapForViewport here — renderTreePane already fits
 	// each row to contentCols; wrapping would split bubblezone row markers across
 	// lines and break mouse hit-testing.
-	treeContent := renderTreePane(m.treeViewRows, m.treeRows, m.collapsedFolders, m.treeIdx, m.treeView.Width, m.focusedPane == paneTree)
+	treeContent := renderTreePane(m.treeViewRows, m.treeRows, m.collapsedFolders, m.treeIdx, m.treeView.Width, m.focusedPane == paneTree && m.centerView == centerDiff)
 	m.treeScrollLines = util.ViewportLineCount(treeContent)
 	m.treeView.SetContent(treeContent)
 	m.applyScrollToSelectedFile()
@@ -600,10 +732,12 @@ func (m *Model) refreshDetailViews() {
 	}
 }
 
-// renderDescriptionBlock renders the PR description as an inline section
-// above the diff. The body is treated as markdown — GitHub PR descriptions
-// always are — and run through glamour so headings, lists, code fences,
-// and links render with proper styling instead of as raw `# foo` text.
+// renderDetailMiniHeader paints the strip above the three-pane PR detail
+// body. It carries PR-wide stats (file count, +/-, review badges) and the
+// global action chips (open-in-browser, reopen-approval, view indicator).
+// The view indicator shows which centre-pane view is active so users with
+// keyboards-only workflows always know where they are even when the
+// overview selector is offscreen.
 func (m *Model) renderDetailMiniHeader() string {
 	if m.currentPR == nil {
 		return ""
@@ -626,11 +760,7 @@ func (m *Model) renderDetailMiniHeader() string {
 	if hint := viewerActionBadge(m.currentPR.ReviewState); hint != "" {
 		parts = append(parts, hint)
 	}
-	desc := zone.Mark(zones.DescriptionToggle, styles.DimStyle.Render(" description (g) "))
-	if m.descriptionOpen {
-		desc = zone.Mark(zones.DescriptionToggle, styles.BoldStyle.Render(" description (g) "))
-	}
-	parts = append(parts, desc)
+	parts = append(parts, m.renderCenterViewChip())
 	// Repo / lang agent chips moved into the right-hand "Review controls"
 	// pane so the mini-header stays focused on PR meta. The same
 	// freshness state is rendered there with explicit row labels.
@@ -642,6 +772,55 @@ func (m *Model) renderDetailMiniHeader() string {
 	}
 	line := strings.Join(parts, "  ·  ")
 	return styles.AppPadding.Render(line)
+}
+
+// renderLeftColumnOverviewLeader builds the overview-selector strip that
+// sits between the left column's title bar and the file tree viewport.
+// outerW matches the tree pane's outer width (panel border + padding +
+// viewport content); we strip the panel chrome to get the inner width
+// the rows are sized to.
+func (m *Model) renderLeftColumnOverviewLeader(outerW int) string {
+	innerW := max(1, outerW-prDetailPanel.GetHorizontalFrameSize())
+	if innerW < 8 {
+		return ""
+	}
+	badges := m.overviewBadgesForModel()
+	selKind, active := centerToOverviewKind(m.centerView)
+	focused := m.focusedPane == paneTree && active
+	out := renderOverviewBox(&badges, selKind, active, focused, innerW)
+	return strings.TrimRight(out, "\n")
+}
+
+// leftColumnOverviewLeaderHeight reports the visible height of the
+// overview selector strip for the given outer column width. relayout()
+// uses this to size the tree viewport so the overview rows aren't eaten
+// by the bottom of the pane.
+func (m *Model) leftColumnOverviewLeaderHeight(outerW int) int {
+	leader := m.renderLeftColumnOverviewLeader(outerW)
+	if leader == "" {
+		return 0
+	}
+	return lipgloss.Height(leader)
+}
+
+// renderCenterViewChip renders the "view: …" indicator. It doubles as the
+// click target for the legacy DescriptionToggle zone so muscle-memory
+// users can flip Description ↔ Diff from the mini-header.
+func (m *Model) renderCenterViewChip() string {
+	label := "view: Diff"
+	switch m.centerView {
+	case centerDescription:
+		label = "view: Description (g)"
+	case centerChecks:
+		label = "view: Checks"
+	case centerDiscussion:
+		label = "view: Discussion"
+	}
+	style := styles.DimStyle
+	if m.centerView != centerDiff {
+		style = styles.BoldStyle
+	}
+	return zone.Mark(zones.DescriptionToggle, style.Render(" "+label+" "))
 }
 
 func (m *Model) renderPRDetailBody(bodyH int) string {
@@ -664,7 +843,9 @@ func (m *Model) renderPRDetailBody(bodyH int) string {
 	}
 	diffOuter := m.width - treeOuter - ctlOuter
 
-	tree := m.framePane("Files · "+focusHint(paneTree, m.focusedPane), &m.treeView, treeOuter, paneH, paneFocusFor(paneTree, m.focusedPane), zones.PaneTreeBody)
+	overview := m.renderLeftColumnOverviewLeader(treeOuter)
+	leftTitle := leftPaneTitle(m.focusedPane)
+	tree := m.framePaneWithLeader(leftTitle, overview, &m.treeView, treeOuter, paneH, paneFocusFor(paneTree, m.focusedPane), zones.PaneTreeBody)
 	tree = zone.Mark(zones.PaneTree, tree)
 
 	diff := m.framePane(m.diffPaneTitle(), &m.diffView, diffOuter, paneH, paneFocusFor(paneDiff, m.focusedPane), zones.PaneDiffBody)
@@ -680,6 +861,13 @@ func (m *Model) renderPRDetailBody(bodyH int) string {
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, tree, diff, controls)
 	return lipgloss.JoinVertical(lipgloss.Left, mini, row)
+}
+
+// leftPaneTitle is the title text for the left-hand pane that hosts the
+// PR-overview selector and the file tree. Mirrors controlsPaneTitle's
+// focus-hint pattern so all three panes have a consistent header look.
+func leftPaneTitle(focused pane) string {
+	return "PR · Files · " + focusHint(paneTree, focused)
 }
 
 // controlsPaneTitle is the title text for the right-hand "Review controls"
@@ -720,6 +908,16 @@ func measureDetailPaneTitle(innerW int, title string, focused bool) int {
 }
 
 func (m *Model) framePane(title string, vp *viewport.Model, outerW, outerH int, focused bool, viewportZone string) string {
+	return m.framePaneWithLeader(title, "", vp, outerW, outerH, focused, viewportZone)
+}
+
+// framePaneWithLeader is framePane plus an optional `leader` string drawn
+// between the title strip and the scrollable viewport. The leader is for
+// inline pane chrome that doesn't scroll (e.g. the PR-overview selector
+// above the file tree). leader is treated as already sized to innerW;
+// callers are expected to pre-truncate / pad it. An empty leader behaves
+// exactly like framePane.
+func (m *Model) framePaneWithLeader(title, leader string, vp *viewport.Model, outerW, outerH int, focused bool, viewportZone string) string {
 	innerW := max(1, outerW-prDetailPanel.GetHorizontalFrameSize())
 	titleOneLine := ansi.Truncate(title, innerW, "…")
 	rendered := styles.DetailPaneTitleStyle.Width(innerW).Render(titleOneLine)
@@ -730,7 +928,12 @@ func (m *Model) framePane(title string, vp *viewport.Model, outerW, outerH int, 
 	if viewportZone != "" {
 		vpStr = zone.Mark(viewportZone, vpStr)
 	}
-	col := lipgloss.JoinVertical(lipgloss.Left, rendered, vpStr)
+	var col string
+	if strings.TrimSpace(leader) != "" {
+		col = lipgloss.JoinVertical(lipgloss.Left, rendered, leader, vpStr)
+	} else {
+		col = lipgloss.JoinVertical(lipgloss.Left, rendered, vpStr)
+	}
 	// IMPORTANT: in lipgloss, Style.Width/Height set INTERIOR content
 	// dimensions (excluding border + padding) while MaxWidth/MaxHeight cap
 	// the TOTAL rendered dimensions. Setting Height(outerH) inflates the

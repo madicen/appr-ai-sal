@@ -1,7 +1,8 @@
-# detail-nav.tape — PR detail navigation: tree expand/collapse, pane
-# cycling, description toggle, controls toggle. No review run — that's
-# the hero tape's job. This one shows the static layout the user moves
-# through before deciding to fire a review.
+# detail-nav.tape — PR detail navigation: PR-overview selector
+# (Description / Checks / Discussion above the file tree), tree
+# expand/collapse, pane cycling, controls toggle. No review run —
+# that's the hero tape's job. This one shows the static layout the
+# user moves through before deciding to fire a review.
 #
 # Regen with: vhs vhs/detail-nav.tape
 # Output:     screenshots/detail-nav.gif
@@ -22,41 +23,40 @@ Enter
 Sleep 1.5s
 Show
 
-# PR list lands.
-Sleep 1.5s
+# PR list lands. The new chips on each row show +N/-M, file count,
+# and the CI rollup state — give the viewer a beat to read them.
+Sleep 2s
 
-# Drill into the hero PR (#742, top of the list).
+# Drill into PR #318 (top row — has a failing CI run wired up so
+# the Checks tab below has something dramatic to render).
 Enter
 Sleep 2s
 
-# Cycle focus through the three panes (Files → Diff → Controls →
-# back to Files) so the viewer sees how each one indicates focus.
+# The PR-overview selector sits above the file tree. Description is
+# the top row; press `g` to land on it (kept as a muscle-memory key).
 Type "g"
+Sleep 2.5s
+
+# Move down to Checks. Up-arrow walks the unified left-column cursor
+# from the file tree back into the overview rows; pressing j from
+# Description steps through Checks → Discussion → first tree row.
+Type "j"
+Sleep 2.5s
+
+# Down again to Discussion.
+Type "j"
+Sleep 2.5s
+
+# Step into the file tree — the cursor crosses the boundary into the
+# first file row and the centre pane snaps back to that file's diff.
+Type "j"
 Sleep 1.5s
-Type "g"
-Sleep 1s
 
-# Cycle pane focus.
-Tab
-Sleep 1.2s
-Tab
-Sleep 1.2s
-Tab
-Sleep 1s
-
-# Move down through the tree (j/k navigates rows; space folds folders).
+# Walk a couple more file rows so the gutter / hunk colors land.
 Type "j"
-Sleep 600ms
-Type "j"
-Sleep 600ms
+Sleep 800ms
 Type "j"
 Sleep 1s
-
-# Toggle one folder collapsed.
-Space
-Sleep 1.2s
-Space
-Sleep 1.2s
 
 # Toggle the Review controls pane off then on so the viewer sees the
 # 2-pane vs 3-pane layout switch.

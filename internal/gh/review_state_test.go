@@ -210,3 +210,63 @@ func TestParseReviewSearchResponse_GraphQLErrors(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 }
+
+// TestParseReviewSearchResponseRichFields covers the new diff-stats and
+// rollup-state fields the queue rows learned to render. It uses a minimal
+// payload so the field-by-field assertions stay readable.
+func TestParseReviewSearchResponseRichFields(t *testing.T) {
+	const body = `{
+  "data": {
+    "viewer": { "login": "madicen" },
+    "search": {
+      "nodes": [
+        {
+          "number": 200, "title": "rich", "url": "https://github.com/o/r/pull/200",
+          "body": "", "isDraft": false,
+          "createdAt": "2026-05-10T10:00:00Z", "updatedAt": "2026-05-10T10:00:00Z",
+          "additions": 142, "deletions": 37, "changedFiles": 6,
+          "author": { "login": "alice" },
+          "repository": { "nameWithOwner": "o/r" },
+          "reviewDecision": "REVIEW_REQUIRED",
+          "commits": {
+            "nodes": [
+              { "commit": { "statusCheckRollup": { "state": "FAILURE" } } }
+            ]
+          },
+          "latestReviews": { "nodes": [] },
+          "reviewRequests": { "nodes": [] }
+        },
+        {
+          "number": 201, "title": "no rollup", "url": "https://github.com/o/r/pull/201",
+          "body": "", "isDraft": false,
+          "createdAt": "2026-05-10T10:00:00Z", "updatedAt": "2026-05-10T10:00:00Z",
+          "additions": 0, "deletions": 0, "changedFiles": 0,
+          "author": { "login": "alice" },
+          "repository": { "nameWithOwner": "o/r" },
+          "reviewDecision": "REVIEW_REQUIRED",
+          "commits": { "nodes": [] },
+          "latestReviews": { "nodes": [] },
+          "reviewRequests": { "nodes": [] }
+        }
+      ]
+    }
+  }
+}`
+	prs, _, err := parseReviewSearchResponse([]byte(body))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(prs) != 2 {
+		t.Fatalf("len(prs) = %d, want 2", len(prs))
+	}
+	if prs[0].Additions != 142 || prs[0].Deletions != 37 || prs[0].ChangedFiles != 6 {
+		t.Fatalf("rich PR diff stats: got +%d/-%d %d files, want +142/-37 6 files",
+			prs[0].Additions, prs[0].Deletions, prs[0].ChangedFiles)
+	}
+	if prs[0].ChecksState != "FAILURE" {
+		t.Fatalf("rich PR ChecksState = %q, want FAILURE", prs[0].ChecksState)
+	}
+	if prs[1].ChecksState != "" {
+		t.Fatalf("PR with empty commits.nodes should have empty ChecksState; got %q", prs[1].ChecksState)
+	}
+}

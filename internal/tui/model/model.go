@@ -213,8 +213,26 @@ type Model struct {
 	// refresh (used for mouse row mapping; must match visible wrapped lines).
 	treeScrollLines int
 
-	// PR description overlay state (g key to open).
-	descriptionOpen bool
+	// centerView selects which content the centre pane shows. centerDiff
+	// (the default) restores the historical "tree-driven diff" behaviour;
+	// centerDescription / centerChecks / centerDiscussion replace the diff
+	// with the corresponding overview content. Driven by clicks on the new
+	// PR-overview selector at the top of the left column and by the `g`
+	// shortcut. While diffOnly is active centerView is overridden to
+	// centerDiff so the full-width diff pane stays consistent.
+	centerView centerView
+
+	// checks / discussion are populated lazily when the user first lands on
+	// their respective overview rows. Loading flips while the gh fetch is
+	// in flight; *Err sticks until the user retries so the renderer can
+	// show a retry chip. Cleared whenever a fresh PR is loaded so we don't
+	// leak the previous PR's data into the new context.
+	checks            *gh.ChecksReport
+	checksLoading     bool
+	checksErr         error
+	discussion        []gh.DiscussionEvent
+	discussionLoading bool
+	discussionErr     error
 
 	urlInput textinput.Model
 
@@ -479,6 +497,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.treeRows = buildTreeRows(m.parsedDiff, m.draft)
 		m.treeIdx = 0
 		m.diffOnly = false
+		m.centerView = centerDiff
+		m.resetOverviewData()
 		m.focusedPane = paneTree
 		m.selectedFilePath = ""
 		if len(m.parsedDiff) > 0 {
@@ -487,6 +507,37 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recomputeTreeView()
 		m.scrollToSelectedFile = true
 		m.mode = modeDetail
+		m.refreshDetailViews()
+		return m, nil
+
+	case data.ChecksMsg:
+		// Stale ref guard: ignore the result if the user has since opened
+		// a different PR.
+		if m.currentPR == nil || msg.Ref.Owner != m.currentPR.Owner ||
+			msg.Ref.Repo != m.currentPR.Repo || msg.Ref.Number != m.currentPR.Number {
+			return m, nil
+		}
+		m.checksLoading = false
+		m.checksErr = msg.Err
+		if msg.Err == nil {
+			m.checks = msg.Report
+		}
+		m.refreshDetailViews()
+		return m, nil
+
+	case data.DiscussionMsg:
+		if m.currentPR == nil || msg.Ref.Owner != m.currentPR.Owner ||
+			msg.Ref.Repo != m.currentPR.Repo || msg.Ref.Number != m.currentPR.Number {
+			return m, nil
+		}
+		m.discussionLoading = false
+		m.discussionErr = msg.Err
+		if msg.Err == nil {
+			m.discussion = msg.Timeline
+			if m.discussion == nil {
+				m.discussion = []gh.DiscussionEvent{}
+			}
+		}
 		m.refreshDetailViews()
 		return m, nil
 

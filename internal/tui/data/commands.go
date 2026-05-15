@@ -432,6 +432,64 @@ type PRRefreshedMsg struct {
 	Diff string
 }
 
+// ChecksMsg delivers the result of LoadChecksCmd: the head commit's check
+// rollup + per-run detail. Err is set when GitHub rejected the request /
+// the gh CLI failed; the renderer surfaces a retry chip in that case.
+type ChecksMsg struct {
+	Ref    gh.Ref
+	Report *gh.ChecksReport
+	Err    error
+}
+
+// LoadChecksCmd fetches the PR's status-check rollup with per-run detail.
+// Fired lazily the first time the user lands on the Checks overview row;
+// the root model caches the resulting report so subsequent visits are
+// instant.
+func LoadChecksCmd(ref gh.Ref, demoMode bool) tea.Cmd {
+	if demoMode {
+		return func() tea.Msg {
+			return ChecksMsg{Ref: ref, Report: demo.DemoChecks(ref)}
+		}
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		report, err := gh.GetChecks(ctx, ref)
+		if err != nil {
+			return ChecksMsg{Ref: ref, Err: err}
+		}
+		return ChecksMsg{Ref: ref, Report: report}
+	}
+}
+
+// DiscussionMsg delivers the result of LoadDiscussionCmd: the merged issue
+// comments + review-summary bodies for the PR's Conversation tab equivalent.
+type DiscussionMsg struct {
+	Ref      gh.Ref
+	Timeline []gh.DiscussionEvent
+	Err      error
+}
+
+// LoadDiscussionCmd fetches the PR's conversation timeline. Like
+// LoadChecksCmd it is fired lazily on first visit and cached on the root
+// model; the demo path returns the canned timeline synchronously.
+func LoadDiscussionCmd(ref gh.Ref, demoMode bool) tea.Cmd {
+	if demoMode {
+		return func() tea.Msg {
+			return DiscussionMsg{Ref: ref, Timeline: demo.DemoDiscussion(ref)}
+		}
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		timeline, err := gh.GetDiscussion(ctx, ref)
+		if err != nil {
+			return DiscussionMsg{Ref: ref, Err: err}
+		}
+		return DiscussionMsg{Ref: ref, Timeline: timeline}
+	}
+}
+
 // RefreshPRCmd re-fetches the PR view (head SHA in particular) and the unified
 // diff. Bound to "R" in the persistent review overlay so the user can recover
 // from "PR head moved" or "line could not be resolved" errors without leaving

@@ -92,10 +92,14 @@ func (m *Model) relayout() {
 		diffOuter := m.width - treeOuter - ctlOuter
 		innerTreeW := max(1, treeOuter-phs)
 		innerDiffW := max(1, diffOuter-phs)
-		treeTitle := "Files · " + focusHint(paneTree, m.focusedPane)
+		treeTitle := leftPaneTitle(m.focusedPane)
 		treeTitleH := measureDetailPaneTitle(innerTreeW, treeTitle, paneFocusFor(paneTree, m.focusedPane))
 		diffTitleH := measureDetailPaneTitle(innerDiffW, m.diffPaneTitle(), paneFocusFor(paneDiff, m.focusedPane))
-		m.treeView.Height = max(1, outerPaneH-pvs-treeTitleH)
+		// Reserve space for the PR-overview selector that lives above
+		// the file tree viewport. measure under the same outer width so
+		// we get the same wrapped heights renderPRDetailBody will see.
+		overviewH := m.leftColumnOverviewLeaderHeight(treeOuter)
+		m.treeView.Height = max(1, outerPaneH-pvs-treeTitleH-overviewH)
 		m.diffView.Width = max(8, diffOuter-phs)
 		m.diffView.Height = max(1, outerPaneH-pvs-diffTitleH)
 		if showControls {
