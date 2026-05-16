@@ -29,6 +29,62 @@ const (
 // paneCount is the number of cyclable panes on the PR detail view.
 const paneCount = 3
 
+// centerView selects what the centre pane renders. centerDiff is the historic
+// behaviour (the diff for whichever file the tree cursor selects); the other
+// values swap that out for a full-pane render of the PR's description, the
+// status-check rollup detail, or the conversation timeline.
+type centerView int
+
+const (
+	centerDiff centerView = iota
+	centerDescription
+	centerChecks
+	centerDiscussion
+)
+
+// overviewItemKind is the semantic tag for one row in the PR-overview
+// selector that sits above the file tree. Same set as centerView minus the
+// diff entry — the file tree below is the "Files" selector.
+type overviewItemKind int
+
+const (
+	overviewDescription overviewItemKind = iota
+	overviewChecks
+	overviewDiscussion
+)
+
+// overviewItemCount is how many rows the overview selector renders.
+const overviewItemCount = 3
+
+// overviewKindToCenter maps an overview row to the centre view it activates.
+func overviewKindToCenter(k overviewItemKind) centerView {
+	switch k {
+	case overviewDescription:
+		return centerDescription
+	case overviewChecks:
+		return centerChecks
+	case overviewDiscussion:
+		return centerDiscussion
+	}
+	return centerDiff
+}
+
+// centerToOverviewKind is the inverse of overviewKindToCenter; it reports
+// (kind, true) for centerView values that correspond to an overview row,
+// or (_, false) for centerDiff. The boolean lets the renderer skip
+// highlighting any overview row when the user is browsing the tree.
+func centerToOverviewKind(v centerView) (overviewItemKind, bool) {
+	switch v {
+	case centerDescription:
+		return overviewDescription, true
+	case centerChecks:
+		return overviewChecks, true
+	case centerDiscussion:
+		return overviewDiscussion, true
+	}
+	return 0, false
+}
+
 // prDetailPanel is the outer frame for each pane of the PR detail body.
 var prDetailPanel = styles.LeftPanel
 
@@ -221,6 +277,167 @@ func elevateSeverity(cur, candidate string) string {
 	return cur
 }
 
+// renderOverviewBox renders the small selector that sits at the top of
+// the left column above the file tree. Three rows — Description, Checks,
+// Discussion — each padded to contentCols and zone-marked so a click
+// flips the centre pane. The caller-supplied selectedKind is highlighted
+// when active is true; otherwise no row carries the selection marker
+// (the user is browsing the file tree below).
+//
+// The renderer mirrors the truncation pattern from renderTreeViewRow:
+// names are pre-truncated to fit the available width before styling, so
+// long labels never wrap onto a phantom blank line.
+func renderOverviewBox(
+	pr *ghPRSubset,
+	selectedKind overviewItemKind,
+	active bool,
+	focused bool,
+	contentCols int,
+) string {
+	contentCols = max(8, contentCols)
+	rows := []struct {
+		kind  overviewItemKind
+		label string
+		zone  string
+		badge string
+	}{
+		{
+			kind:  overviewDescription,
+			label: "Description",
+			zone:  zones.OverviewDescription,
+			badge: pr.descriptionBadge,
+		},
+		{
+			kind:  overviewChecks,
+			label: "Checks",
+			zone:  zones.OverviewChecks,
+			badge: pr.checksBadge,
+		},
+		{
+			kind:  overviewDiscussion,
+			label: "Discussion",
+			zone:  zones.OverviewDiscussion,
+			badge: pr.discussionBadge,
+		},
+	}
+	var b strings.Builder
+	b.WriteString(styles.DimStyle.Render("PR overview") + "\n")
+	for _, r := range rows {
+		selected := active && r.kind == selectedKind
+		row := renderOverviewRow(r.label, r.badge, selected, focused, contentCols)
+		b.WriteString(zone.Mark(r.zone, row) + "\n")
+	}
+	// Horizontal divider so the overview block reads as a distinct
+	// section from the file tree below. We use a styled rule rather than
+	// padding so the eye lands on the boundary even when both halves
+	// are dim. The width matches the inner content cols (so the line
+	// extends the full pane interior, like the title strip above).
+	b.WriteString(styles.DimStyle.Render(strings.Repeat("─", contentCols)))
+	return b.String()
+}
+
+// ghPRSubset bundles the per-PR text we want to surface as overview row
+// badges. Kept tight so renderOverviewBox doesn't need to know about the
+// full Model.
+type ghPRSubset struct {
+	descriptionBadge string
+	checksBadge      string
+	discussionBadge  string
+}
+
+// overviewBadgesForModel computes the right-hand badges for each overview
+// row based on the model's current state. The Description badge counts
+// non-blank body lines; Checks reflects the rollup state if known; the
+// Discussion badge shows a pending count when we have one.
+func (m *Model) overviewBadgesForModel() ghPRSubset {
+	out := ghPRSubset{}
+	if m.currentPR != nil {
+		body := strings.TrimSpace(m.currentPR.Body)
+		if body == "" {
+			out.descriptionBadge = styles.DimStyle.Render("(empty)")
+		} else {
+			lines := 0
+			for _, ln := range strings.Split(body, "\n") {
+				if strings.TrimSpace(ln) != "" {
+					lines++
+				}
+			}
+			out.descriptionBadge = styles.DimStyle.Render(fmt.Sprintf("%d ln", lines))
+		}
+		if c := checksRollupChip(m.currentPR.ChecksState); c != "" {
+			out.checksBadge = c
+		} else {
+			out.checksBadge = styles.DimStyle.Render("--")
+		}
+	}
+	switch {
+	case m.checksLoading:
+		out.checksBadge = styles.DimStyle.Render("loading…")
+	case m.checksErr != nil:
+		out.checksBadge = styles.ErrStyle.Render("error")
+	case m.checks != nil:
+		out.checksBadge = checksRollupChip(m.checks.RollupState)
+		if out.checksBadge == "" {
+			out.checksBadge = styles.DimStyle.Render("no checks")
+		}
+	}
+	switch {
+	case m.discussionLoading:
+		out.discussionBadge = styles.DimStyle.Render("loading…")
+	case m.discussionErr != nil:
+		out.discussionBadge = styles.ErrStyle.Render("error")
+	case m.discussion != nil:
+		if len(m.discussion) == 0 {
+			out.discussionBadge = styles.DimStyle.Render("0")
+		} else {
+			out.discussionBadge = styles.DimStyle.Render(fmt.Sprintf("%d", len(m.discussion)))
+		}
+	default:
+		out.discussionBadge = styles.DimStyle.Render("…")
+	}
+	return out
+}
+
+// renderOverviewRow renders one row of the overview selector. Layout
+// mirrors a tree file row: marker + label on the left, badge right-
+// aligned. selected rows get a "> " marker and a soft highlight bg so
+// the cursor position is obvious without stealing focus styling from the
+// tree below.
+func renderOverviewRow(label, badge string, selected, focused bool, contentCols int) string {
+	marker := "  "
+	if selected {
+		if focused {
+			marker = styles.BoldStyle.Render("> ")
+		} else {
+			marker = "> "
+		}
+	}
+	badgeW := ansi.StringWidth(badge)
+	labelW := contentCols - 2 - badgeW - 1
+	if labelW < 4 {
+		labelW = 4
+	}
+	labelTrunc := truncWidth(label, labelW)
+	rendered := labelTrunc
+	if selected {
+		highlight := styles.DimStyle.Background(lipgloss.Color("#3d4f5f")).Foreground(lipgloss.Color("#ffffff"))
+		if focused {
+			highlight = highlight.Bold(true)
+		}
+		rendered = highlight.Render(labelTrunc)
+	}
+	row := marker + rendered
+	gap := contentCols - ansi.StringWidth(row) - badgeW
+	if gap < 1 {
+		gap = 1
+	}
+	row += strings.Repeat(" ", gap) + badge
+	if ansi.StringWidth(row) > contentCols {
+		row = ansi.Truncate(row, contentCols, "")
+	}
+	return padCellVisual(row, contentCols)
+}
+
 // renderTreePane renders the hierarchical file-tree pane content (without
 // the surrounding border — the caller frames it with prDetailPanel and adds
 // the "Files · …" title bar).
@@ -261,7 +478,16 @@ func renderTreeViewRow(vr treeViewRow, fileRows []treeRow, collapsed map[string]
 		if collapsed[vr.fullPath] {
 			marker = styles.DimStyle.Render("\u25b6 ") // ▶
 		}
-		name := vr.name + "/"
+		// Reserve space for indent + marker (visual width), then truncate
+		// the folder name so the rendered row never exceeds contentCols.
+		// Without this, lipgloss's Width() wraps overflow onto a second
+		// padded line and the tree gains phantom blank rows.
+		head := indent + marker
+		nameW := contentCols - ansi.StringWidth(head)
+		if nameW < 2 {
+			nameW = 2
+		}
+		name := truncWidth(vr.name+"/", nameW)
 		nameStyled := styles.DimStyle.Render(name)
 		if selected {
 			selStyle := styles.DimStyle.Background(lipgloss.Color("#3d4f5f")).Foreground(lipgloss.Color("#ffffff"))
@@ -270,8 +496,7 @@ func renderTreeViewRow(vr treeViewRow, fileRows []treeRow, collapsed map[string]
 			}
 			nameStyled = selStyle.Render(name)
 		}
-		row := indent + marker + nameStyled
-		row = lipgloss.NewStyle().Width(contentCols).Align(lipgloss.Left).Render(row)
+		row := head + nameStyled
 		if ansi.StringWidth(row) > contentCols {
 			row = ansi.Truncate(row, contentCols, "")
 		}

@@ -33,6 +33,12 @@ func (i prItem) Description() string {
 	if i.pr.IsDraft {
 		parts = append(parts, styles.DimStyle.Render("draft"))
 	}
+	if stats := diffStatsChip(i.pr); stats != "" {
+		parts = append(parts, stats)
+	}
+	if checks := checksRollupChip(i.pr.ChecksState); checks != "" {
+		parts = append(parts, checks)
+	}
 	if badge := reviewStateBadge(i.pr.ReviewState); badge != "" {
 		parts = append(parts, badge)
 	}
@@ -40,6 +46,41 @@ func (i prItem) Description() string {
 		parts = append(parts, hint)
 	}
 	return strings.Join(parts, " · ")
+}
+
+// diffStatsChip renders the queue's "+N/-M · K files" segment. Returns "" when
+// every counter is zero — typically because the GraphQL endpoint declined to
+// fill them in for some PRs (older self-hosted GitHub installs) — so the row
+// stays neutral instead of advertising a phantom "+0/-0 · 0 files".
+func diffStatsChip(pr gh.PR) string {
+	if pr.Additions == 0 && pr.Deletions == 0 && pr.ChangedFiles == 0 {
+		return ""
+	}
+	add := styles.OkStyle.Render(fmt.Sprintf("+%d", pr.Additions))
+	del := styles.ErrStyle.Render(fmt.Sprintf("-%d", pr.Deletions))
+	files := styles.DimStyle.Render(fmt.Sprintf("%d files", pr.ChangedFiles))
+	if pr.ChangedFiles == 1 {
+		files = styles.DimStyle.Render("1 file")
+	}
+	return add + "/" + del + " · " + files
+}
+
+// checksRollupChip renders the queue's CI summary chip. The four states map
+// to the tokens GitHub's status-check rollup uses (post CollapseChecksRollup);
+// "" / no rollup data renders nothing rather than misleading "passing".
+func checksRollupChip(state string) string {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case "SUCCESS":
+		return styles.OkStyle.Render("checks pass")
+	case "FAILURE":
+		return styles.ErrStyle.Render("checks fail")
+	case "ERROR":
+		return styles.ErrStyle.Render("checks error")
+	case "PENDING":
+		return styles.WarnStyle.Render("checks pending")
+	default:
+		return ""
+	}
 }
 
 // reviewStateBadge returns the PR-wide approval-state chip ("approved",

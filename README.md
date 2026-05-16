@@ -14,9 +14,16 @@ landing on the rendered summary:
 ![review run](screenshots/review-run.gif)
 
 <details>
-<summary>PR detail navigation (tree expand / collapse, pane focus, controls toggle)</summary>
+<summary>PR detail navigation (overview selector for Description / Checks / Discussion, file tree, pane focus)</summary>
 
 ![detail navigation](screenshots/detail-nav.gif)
+
+A small selector above the file tree lets you swap the centre pane between
+the rendered PR description, the status-check rollup (with failing-run
+output and annotation excerpts inline), and the Conversation timeline
+(issue comments + review-summary bodies, time-sorted). Press `g` to jump
+to the description, `j`/`k` to walk the unified left-column cursor across
+the overview rows and into the file tree, or click any row.
 
 </details>
 

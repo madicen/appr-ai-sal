@@ -143,9 +143,19 @@ const graphqlReviewQuery = `query($q: String!) {
         isDraft
         createdAt
         updatedAt
+        additions
+        deletions
+        changedFiles
         author { login }
         repository { nameWithOwner }
         reviewDecision
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup { state }
+            }
+          }
+        }
         latestReviews(first: 50) {
           nodes {
             author { login }
@@ -183,21 +193,37 @@ type graphqlReviewResponse struct {
 }
 
 type graphqlPRNode struct {
-	Number     int    `json:"number"`
-	Title      string `json:"title"`
-	URL        string `json:"url"`
-	Body       string `json:"body"`
-	IsDraft    bool   `json:"isDraft"`
-	CreatedAt  string `json:"createdAt"`
-	UpdatedAt  string `json:"updatedAt"`
-	Author     struct {
+	Number       int    `json:"number"`
+	Title        string `json:"title"`
+	URL          string `json:"url"`
+	Body         string `json:"body"`
+	IsDraft      bool   `json:"isDraft"`
+	CreatedAt    string `json:"createdAt"`
+	UpdatedAt    string `json:"updatedAt"`
+	Additions    int    `json:"additions"`
+	Deletions    int    `json:"deletions"`
+	ChangedFiles int    `json:"changedFiles"`
+	Author       struct {
 		Login string `json:"login"`
 	} `json:"author"`
 	Repository struct {
 		NameWithOwner string `json:"nameWithOwner"`
 	} `json:"repository"`
 	ReviewDecision string `json:"reviewDecision"`
-	LatestReviews  struct {
+	// Commits exposes the head commit's statusCheckRollup. We ask for the
+	// last commit only — the rollup on the head is what GitHub uses for
+	// the merge gate. An empty `commits.nodes` (e.g. on a freshly opened
+	// PR before the first push lands) is benign: we drop to ChecksState="".
+	Commits struct {
+		Nodes []struct {
+			Commit struct {
+				StatusCheckRollup *struct {
+					State string `json:"state"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"commits"`
+	LatestReviews struct {
 		Nodes []struct {
 			Author struct {
 				Login string `json:"login"`
@@ -214,6 +240,51 @@ type graphqlPRNode struct {
 			} `json:"requestedReviewer"`
 		} `json:"nodes"`
 	} `json:"reviewRequests"`
+}
+
+// CollapseChecksRollup reduces a list of per-check states / conclusions to a
+// single PR-wide rollup state, using the same severity ladder GitHub does:
+// any FAILURE wins; otherwise any ERROR / TIMED_OUT / CANCELLED / ACTION_REQUIRED;
+// otherwise PENDING / IN_PROGRESS / QUEUED / EXPECTED; otherwise SUCCESS or
+// NEUTRAL / SKIPPED if every entry was a no-op. Returns "" when the input
+// is empty so callers can render "no checks".
+func CollapseChecksRollup(states []string) string {
+	if len(states) == 0 {
+		return ""
+	}
+	var sawSuccess, sawNeutral, sawPending, sawError, sawFailure bool
+	for _, s := range states {
+		switch strings.ToUpper(strings.TrimSpace(s)) {
+		case "":
+			continue
+		case "SUCCESS":
+			sawSuccess = true
+		case "NEUTRAL", "SKIPPED":
+			sawNeutral = true
+		case "PENDING", "QUEUED", "IN_PROGRESS", "EXPECTED", "WAITING", "REQUESTED":
+			sawPending = true
+		case "ERROR", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STALE":
+			sawError = true
+		case "FAILURE":
+			sawFailure = true
+		default:
+			// Unknown state — don't pretend it's a pass.
+			sawPending = true
+		}
+	}
+	switch {
+	case sawFailure:
+		return "FAILURE"
+	case sawError:
+		return "ERROR"
+	case sawPending:
+		return "PENDING"
+	case sawSuccess:
+		return "SUCCESS"
+	case sawNeutral:
+		return "SUCCESS"
+	}
+	return ""
 }
 
 // parseReviewSearchResponse turns the GraphQL payload into the PR list plus
@@ -254,19 +325,30 @@ func parseReviewSearchResponse(raw []byte) ([]PR, string, error) {
 				reqs = append(reqs, ReviewRequest{TeamSlug: rr.RequestedReviewer.Slug})
 			}
 		}
+		var checksState string
+		if len(n.Commits.Nodes) > 0 {
+			r := n.Commits.Nodes[len(n.Commits.Nodes)-1].Commit.StatusCheckRollup
+			if r != nil {
+				checksState = CollapseChecksRollup([]string{r.State})
+			}
+		}
 		pr := PR{
-			Number:      n.Number,
-			Title:       n.Title,
-			URL:         n.URL,
-			Body:        n.Body,
-			Repository:  n.Repository.NameWithOwner,
-			Owner:       owner,
-			Repo:        repoName,
-			Author:      n.Author.Login,
-			IsDraft:     n.IsDraft,
-			CreatedAt:   createdAt,
-			UpdatedAt:   updatedAt,
-			ReviewState: DeriveReviewState(viewer, n.ReviewDecision, latest, reqs),
+			Number:       n.Number,
+			Title:        n.Title,
+			URL:          n.URL,
+			Body:         n.Body,
+			Repository:   n.Repository.NameWithOwner,
+			Owner:        owner,
+			Repo:         repoName,
+			Author:       n.Author.Login,
+			IsDraft:      n.IsDraft,
+			CreatedAt:    createdAt,
+			UpdatedAt:    updatedAt,
+			Additions:    n.Additions,
+			Deletions:    n.Deletions,
+			ChangedFiles: n.ChangedFiles,
+			ChecksState:  checksState,
+			ReviewState:  DeriveReviewState(viewer, n.ReviewDecision, latest, reqs),
 		}
 		prs = append(prs, pr)
 	}

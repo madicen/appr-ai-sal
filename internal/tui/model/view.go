@@ -14,12 +14,23 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
-func renderDescriptionBlock(body string, width int) string {
+// renderDescriptionPane renders the PR description as the centre pane's
+// full content. Body is treated as markdown — GitHub PR descriptions
+// always are — and run through glamour so headings, lists, code fences,
+// and links render with proper styling instead of as raw `# foo` text.
+// An empty body falls back to a dim hint so the user knows the PR has no
+// description rather than thinking the pane failed to load.
+func renderDescriptionPane(body string, width int) string {
 	width = max(8, width)
 	var b strings.Builder
 	b.WriteString(styles.BoldStyle.Render("Description") + "  " +
-		zone.Mark(zones.DescriptionToggle, styles.DimStyle.Render(" hide (g) ")) + "\n")
-	b.WriteString(util.RenderMarkdownIndented(strings.TrimSpace(body), width, 0) + "\n")
+		zone.Mark(zones.DescriptionToggle, styles.DimStyle.Render(" hide (g) ")) + "\n\n")
+	body = strings.TrimSpace(body)
+	if body == "" {
+		b.WriteString(styles.DimStyle.Render("(this PR has no description)"))
+		return b.String()
+	}
+	b.WriteString(util.RenderMarkdownIndented(body, width, 0))
 	return b.String()
 }
 
