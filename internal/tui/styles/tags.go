@@ -6,16 +6,84 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/theme"
 )
 
-// TagStyle returns a row-tag style (filled background pill, white text)
-// for the given hex background. Tag colours come from the runtime theme,
-// so styles are rebuilt on every RenderTag call rather than baked into
-// package globals at import time.
+// TagStyle returns a row-tag style (filled background pill) for the given
+// hex background. The foreground is picked automatically — black on light
+// pills and white on dark ones — so that themable colours like the pastel
+// context-injection rows stay readable without each slot having to declare
+// its own foreground. Styles are rebuilt on every RenderTag call rather
+// than baked into package globals so live theme changes show up
+// immediately.
 func TagStyle(hex string) lipgloss.Style {
 	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFFFFF")).
+		Foreground(lipgloss.Color(tagForeground(hex))).
 		Background(lipgloss.Color(hex)).
 		Padding(0, 1).
 		Bold(true)
+}
+
+// tagForeground returns "#000000" or "#FFFFFF" depending on which has
+// better contrast against the supplied background hex. We use the
+// well-known YIQ luma threshold (≈ 128/255) rather than full WCAG
+// relative luminance — terminals render the difference between the two
+// methods imperceptibly, and the YIQ form keeps the helper allocation
+// free. Hex strings that fail to parse fall back to white so the
+// behaviour matches the historical hard-coded value.
+func tagForeground(hex string) string {
+	r, g, b, ok := parseHex(hex)
+	if !ok {
+		return "#FFFFFF"
+	}
+	// YIQ luma in the 0..255 range; ≥128 ⇒ light background ⇒ dark text.
+	if (int(r)*299+int(g)*587+int(b)*114)/1000 >= 128 {
+		return "#000000"
+	}
+	return "#FFFFFF"
+}
+
+// parseHex accepts "#rgb" and "#rrggbb" forms. Theme values are
+// normalised to the 7-char form on write, but TagStyle is exported so
+// we tolerate both shapes here.
+func parseHex(s string) (r, g, b byte, ok bool) {
+	if len(s) == 4 && s[0] == '#' {
+		r, ok1 := hexNibble(s[1])
+		g, ok2 := hexNibble(s[2])
+		b, ok3 := hexNibble(s[3])
+		if !(ok1 && ok2 && ok3) {
+			return 0, 0, 0, false
+		}
+		return r*17, g*17, b*17, true
+	}
+	if len(s) == 7 && s[0] == '#' {
+		rh, ok1 := hexByte(s[1], s[2])
+		gh, ok2 := hexByte(s[3], s[4])
+		bh, ok3 := hexByte(s[5], s[6])
+		if !(ok1 && ok2 && ok3) {
+			return 0, 0, 0, false
+		}
+		return rh, gh, bh, true
+	}
+	return 0, 0, 0, false
+}
+
+func hexByte(hi, lo byte) (byte, bool) {
+	h, ok1 := hexNibble(hi)
+	l, ok2 := hexNibble(lo)
+	if !(ok1 && ok2) {
+		return 0, false
+	}
+	return h<<4 | l, true
+}
+
+func hexNibble(c byte) (byte, bool) {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0', true
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10, true
+	case c >= 'A' && c <= 'F':
+		return c - 'A' + 10, true
+	}
+	return 0, false
 }
 
 // SevStyle returns the foreground style for a severity slot, optionally
