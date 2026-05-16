@@ -60,6 +60,52 @@ func TestRenderSeverityHonoursThemeOverride(t *testing.T) {
 	}
 }
 
+func TestTagForegroundPicksContrastingText(t *testing.T) {
+	cases := []struct {
+		name string
+		bg   string
+		want string
+	}{
+		{"dark navy gets white text", "#1a1b26", "#FFFFFF"},
+		{"pure black gets white text", "#000000", "#FFFFFF"},
+		{"pastel teal gets black text", "#7BC5CC", "#000000"},
+		{"pastel peach gets black text", "#ECB088", "#000000"},
+		{"pastel lavender gets black text", "#A8B5DC", "#000000"},
+		{"pure white gets black text", "#FFFFFF", "#000000"},
+		{"short form #fff gets black text", "#fff", "#000000"},
+		{"short form #000 gets white text", "#000", "#FFFFFF"},
+		{"unparseable hex falls back to white", "not-a-hex", "#FFFFFF"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tagForeground(tc.bg); got != tc.want {
+				t.Errorf("tagForeground(%q) = %q, want %q", tc.bg, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRenderTagEmitsContrastingForeground(t *testing.T) {
+	forceTrueColor(t)
+	original := theme.Current()
+	defer theme.Apply(original)
+
+	// Force the language-briefs pill to a very light background; the
+	// rendered escape sequence should contain the foreground RGB for
+	// black (0;0;0) and not the historical 255;255;255.
+	custom := theme.Default()
+	custom.Set(theme.KeyTagLangBriefs, "#eeeeee")
+	theme.Apply(custom)
+
+	got := RenderTag("language-briefs")
+	if !strings.Contains(got, "38;2;0;0;0") {
+		t.Errorf("expected black foreground escape (38;2;0;0;0) for light pill; got %q", got)
+	}
+	if strings.Contains(got, "38;2;255;255;255") {
+		t.Errorf("light pill should not render white foreground; got %q", got)
+	}
+}
+
 func TestRenderTagFallsBackToDefaultsOnReset(t *testing.T) {
 	forceTrueColor(t)
 	original := theme.Current()
