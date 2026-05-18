@@ -128,6 +128,20 @@ func (m *Model) renderStatus() string {
 	case modeLangAgents:
 		hint = "↑/↓ select · g/r generate or regenerate · d delete cached · esc close · ctrl+c quit" + dry
 	}
+	// Pre-wrap the hint at the StatusBar's content width (m.width minus
+	// horizontal padding) so its rendered height matches what the
+	// terminal will actually display.
+	//
+	// Without this, a hint longer than the terminal would lipgloss out
+	// to a single logical line that the terminal then visually wraps
+	// to a second row at write time. chromeBodyHeight reads
+	// lipgloss.Height(renderStatus()) and would budget only 1 row,
+	// pushing the View() output one row past m.height. The standard
+	// renderer's auto-wrap then scrolls the screen up by 1, dropping
+	// the header and shifting every row above the status by 1 — but
+	// bubblezone's recorded zone bounds still point at the unscrolled
+	// View() rows, so panel clicks land 1 row below their visible
+	// content. Wrapping here keeps the rendered height honest.
 	return styles.StatusBar.Width(m.width).Render(hint)
 }
 
