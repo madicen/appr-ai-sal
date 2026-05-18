@@ -10,8 +10,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleListKey(msg)
 	case modeDetail:
 		return m.handleDetailKey(msg)
-	case modeURLInput:
-		return m.handleURLInputKey(msg)
 	}
 	return m, nil
 }

@@ -27,8 +27,16 @@ func (m *Model) relayout() {
 	bodyH := m.chromeBodyHeight()
 	headerLine := lipgloss.Height(m.renderDetailMiniHeader())
 
-	filterH := lipgloss.Height(renderFilterLine(m.explicitReviewerOnly, !m.prsLoaded))
-	m.list.SetSize(m.width-2, max(3, bodyH-filterH))
+	// Size the panel inputs first so the panel height we measure below
+	// reflects whatever the inputs will actually render at this width.
+	// listPanelInputWidth splits the panel's inner horizontal budget
+	// evenly between the two fields after subtracting gutters.
+	per := m.listPanelInputWidth()
+	m.searchInput.Width = per
+	m.urlInput.Width = per
+
+	panelH := m.listPanelHeight()
+	m.list.SetSize(m.width-2, max(3, bodyH-panelH))
 
 	switch m.mode {
 	case modeDetail:
@@ -117,8 +125,6 @@ func (m *Model) relayout() {
 		m.controlsView.Width = 1
 		m.controlsView.Height = 1
 	}
-
-	m.urlInput.Width = m.width - 6
 }
 
 func (m *Model) chromeBodyHeight() int {

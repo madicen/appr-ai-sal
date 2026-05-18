@@ -121,10 +121,53 @@ type mode int
 const (
 	modeList mode = iota
 	modeDetail
-	modeURLInput
 	modeSettings
 	modeRepoAgents
 	modeLangAgents
+)
+
+// filterMode names the PR-list filter chip the user has selected. The
+// values are also the cycle order for the `f` keybinding (and the chip
+// rendering order on screen).
+type filterMode int
+
+const (
+	// filterReviewTeams ("teams+you") is the default landing filter —
+	// PRs where you're the requested reviewer either directly or via
+	// a team request.
+	filterReviewTeams filterMode = iota
+	// filterReviewExplicit narrows filterReviewTeams to PRs where your
+	// login is the direct requestee (drops team-only requests).
+	filterReviewExplicit
+	// filterAuthored returns PRs you authored (author:@me) — the "my
+	// PRs" chip on the top panel.
+	filterAuthored
+)
+
+// nextFilterMode is the cycle order for the `f` keybinding and the
+// rotating filter chip click handler. Sweeps through every filterMode
+// value exactly once and wraps around.
+func nextFilterMode(f filterMode) filterMode {
+	switch f {
+	case filterReviewTeams:
+		return filterReviewExplicit
+	case filterReviewExplicit:
+		return filterAuthored
+	default:
+		return filterReviewTeams
+	}
+}
+
+// listFocus tracks which inline panel widget is receiving keystrokes
+// while the user is in modeList. focusList means the bubbles/list
+// itself; focusSearch / focusURL route keys into the matching text
+// input until the user blurs (esc, tab away, or enter on URL submit).
+type listFocus int
+
+const (
+	focusList listFocus = iota
+	focusSearch
+	focusURL
 )
 
 // defaultTreePaneWidth is the initial width allocated to the file-tree
@@ -199,7 +242,27 @@ type Model struct {
 	overlayStack overlay.OverlayStack
 	overlayFocus overlay.FocusTrap
 
-	explicitReviewerOnly bool
+	// filter is the active top-panel chip; drives the GitHub query
+	// LoadPRsCmd runs and which chip renders highlighted.
+	filter filterMode
+
+	// prsAll caches the most recent ordered PR slice from data.PRListMsg.
+	// The bubbles list's visible items are derived from this slice plus
+	// searchQuery so we can re-filter on every keystroke without
+	// re-fetching from GitHub.
+	prsAll []gh.PR
+
+	// searchQuery is the live text in the inline search input. Used to
+	// filter prsAll into the bubbles list (title / repo / author match).
+	searchQuery string
+
+	// searchInput is the always-visible search text input in the list
+	// top panel. Focused / blurred via listFocus + the `/` keybinding.
+	searchInput textinput.Model
+
+	// listFocus selects which widget on the list screen consumes
+	// keystrokes (the list itself, the search input, or the URL input).
+	listFocus listFocus
 
 	currentPR *gh.PR
 	diff      string
@@ -369,13 +432,27 @@ func New(opts Options) *Model {
 	l.SetShowStatusBar(true)
 	l.SetShowPagination(false)
 	l.SetShowHelp(false)
-	l.SetFilteringEnabled(true)
+	// Filtering is owned by the top panel's inline search input now; the
+	// bubbles built-in `/` overlay would fight with it.
+	l.SetFilteringEnabled(false)
 	l.DisableQuitKeybindings()
 
+	// The panel draws its own "▎ " gutter glyph beside each input, so
+	// clear the textinput defaults to avoid a double-prompt ("▎ > …").
+	// Leaving Prompt set also widens the rendered View() output by two
+	// cells past Width, which used to push the panel's right border
+	// off-screen.
 	ti := textinput.New()
+	ti.Prompt = ""
 	ti.Placeholder = "https://github.com/owner/repo/pull/123  or  owner/repo#123"
 	ti.CharLimit = 200
 	ti.Width = 80
+
+	si := textinput.New()
+	si.Prompt = ""
+	si.Placeholder = "filter by title, repo, or author"
+	si.CharLimit = 200
+	si.Width = 40
 
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
@@ -399,6 +476,7 @@ func New(opts Options) *Model {
 		mode:               modeList,
 		list:               l,
 		urlInput:           ti,
+		searchInput:        si,
 		spinner:            sp,
 		treeView:           tv,
 		diffView:           dv,
@@ -413,7 +491,21 @@ func New(opts Options) *Model {
 }
 
 func (m *Model) Init() tea.Cmd {
-	return tea.Batch(data.LoadPRsCmd(m.explicitReviewerOnly, m.opts.Demo), m.spinner.Tick)
+	return tea.Batch(data.LoadPRsCmd(m.listMode(), m.opts.Demo), m.spinner.Tick)
+}
+
+// listMode maps the active filter chip onto the gh.ListMode the data
+// loader runs. Kept beside Init so the LoadPRsCmd call sites and the
+// chip rendering can share a single mapping.
+func (m *Model) listMode() gh.ListMode {
+	switch m.filter {
+	case filterReviewExplicit:
+		return gh.ListModeReviewExplicit
+	case filterAuthored:
+		return gh.ListModeAuthored
+	default:
+		return gh.ListModeReviewTeams
+	}
 }
 
 // reviewOverlayOnTop returns the active review overlay if it sits at the top
@@ -478,7 +570,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_, c := m.overlayStack.Pop()
 		m.mode = modeList
 		m.draft = nil
-		return m, tea.Batch(c, data.LoadPRsCmd(m.explicitReviewerOnly, m.opts.Demo))
+		return m, tea.Batch(c, data.LoadPRsCmd(m.listMode(), m.opts.Demo))
 
 	case data.DryRunPayloadMsg:
 		// If the persistent review overlay is active, let it absorb the dry-run
@@ -525,12 +617,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case data.PRListMsg:
 		m.prsLoaded = true
-		ordered := sortPRsByActionability(msg.PRs)
-		items := make([]list.Item, 0, len(ordered))
-		for _, p := range ordered {
-			items = append(items, prItem{pr: p})
-		}
-		m.list.SetItems(items)
+		m.prsAll = sortPRsByActionability(msg.PRs)
+		m.applySearchFilter()
 		m.updateListTitle()
 		m.resetListClickTracking()
 		return m, nil
@@ -797,15 +885,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modeLangAgents:
 		return m, nil
 	case modeList:
-		var cmd tea.Cmd
-		m.list, cmd = m.list.Update(msg)
-		return m, cmd
+		// In modeList we may have any of three focused widgets — the
+		// list itself, the inline search input, or the inline URL
+		// input. Async messages (cursor blink, etc.) are forwarded to
+		// the matching widget so its caret keeps animating; keystrokes
+		// went through handleListKey above.
+		switch m.listFocus {
+		case focusSearch:
+			var cmd tea.Cmd
+			m.searchInput, cmd = m.searchInput.Update(msg)
+			return m, cmd
+		case focusURL:
+			var cmd tea.Cmd
+			m.urlInput, cmd = m.urlInput.Update(msg)
+			return m, cmd
+		default:
+			var cmd tea.Cmd
+			m.list, cmd = m.list.Update(msg)
+			return m, cmd
+		}
 	case modeDetail:
 		return m, nil
-	case modeURLInput:
-		var cmd tea.Cmd
-		m.urlInput, cmd = m.urlInput.Update(msg)
-		return m, cmd
 	}
 
 	return m, nil

@@ -121,18 +121,35 @@ func IsUserExplicitlyRequested(ctx context.Context, pr PR, login string) (bool, 
 	return false, nil
 }
 
-// ListReviewRequestedPRs returns open PRs where the authenticated user has
-// been requested as a reviewer (including via team membership in GitHub search).
-// When explicitReviewerOnly is true, results are restricted to PRs where the
-// viewer's login appears directly in reviewRequests (not only via a team).
+// ListMode selects which slice of PRs ListPRs returns. The TUI's top-panel
+// filter chips map one-to-one onto these values; expanding the set means
+// adding a chip + a query-string branch below.
+type ListMode int
+
+const (
+	// ListModeReviewTeams returns the legacy "review-requested:@me" set
+	// (the user is requested directly or via a team). Same GitHub query
+	// as the explicit variant; just no client-side narrowing.
+	ListModeReviewTeams ListMode = iota
+	// ListModeReviewExplicit narrows ListModeReviewTeams to PRs where
+	// the viewer's login appears directly in reviewRequests (drops the
+	// team-only requests).
+	ListModeReviewExplicit
+	// ListModeAuthored returns PRs the viewer has authored
+	// (author:@me). Lets the user pivot from "PRs I need to review" to
+	// "my own PRs" without leaving the queue.
+	ListModeAuthored
+)
+
+// ListPRs returns the set of PRs matching mode. All branches share the
+// same parseReviewSearchResponse path so the resulting PRs carry the
+// usual ReviewState / ChecksState the TUI's row delegate renders.
 //
-// In addition to the basic PR metadata, each returned PR carries a populated
-// ReviewState (overall reviewDecision, approval counts, and viewer-relative
-// flags) used by the TUI to render badges and sort by actionability.
-func ListReviewRequestedPRs(ctx context.Context, explicitReviewerOnly bool) ([]PR, error) {
-	out, err := runGraphQL(ctx, graphqlReviewQuery, map[string]string{
-		"q": "is:pr is:open review-requested:@me archived:false",
-	})
+// New filter modes plug in here: add a const above, a switch arm below,
+// and (optionally) a client-side narrow.
+func ListPRs(ctx context.Context, mode ListMode) ([]PR, error) {
+	q := listModeQuery(mode)
+	out, err := runGraphQL(ctx, graphqlReviewQuery, map[string]string{"q": q})
 	if err != nil {
 		return nil, err
 	}
@@ -140,16 +157,39 @@ func ListReviewRequestedPRs(ctx context.Context, explicitReviewerOnly bool) ([]P
 	if err != nil {
 		return nil, err
 	}
-	if !explicitReviewerOnly {
-		return prs, nil
-	}
-	filtered := make([]PR, 0, len(prs))
-	for _, pr := range prs {
-		if pr.ReviewState.ViewerStillRequested {
-			filtered = append(filtered, pr)
+	if mode == ListModeReviewExplicit {
+		filtered := make([]PR, 0, len(prs))
+		for _, pr := range prs {
+			if pr.ReviewState.ViewerStillRequested {
+				filtered = append(filtered, pr)
+			}
 		}
+		return filtered, nil
 	}
-	return filtered, nil
+	return prs, nil
+}
+
+// listModeQuery is the GitHub search query string for each mode. Kept
+// in its own function so tests can assert the wire-level query without
+// touching the gh CLI.
+func listModeQuery(mode ListMode) string {
+	switch mode {
+	case ListModeAuthored:
+		return "is:pr is:open author:@me archived:false"
+	default:
+		return "is:pr is:open review-requested:@me archived:false"
+	}
+}
+
+// ListReviewRequestedPRs is the legacy entry point retained for any
+// external consumer; new code should call ListPRs directly. The
+// boolean maps onto the two review-requested branches of ListMode.
+func ListReviewRequestedPRs(ctx context.Context, explicitReviewerOnly bool) ([]PR, error) {
+	mode := ListModeReviewTeams
+	if explicitReviewerOnly {
+		mode = ListModeReviewExplicit
+	}
+	return ListPRs(ctx, mode)
 }
 
 // GetPR fetches a richer PR view (head SHA, base/head refs, review state)
