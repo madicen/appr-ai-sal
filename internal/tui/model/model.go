@@ -570,6 +570,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_, c := m.overlayStack.Pop()
 		m.mode = modeList
 		m.draft = nil
+		// Same reasoning as the detail.go esc/q branch: re-sync the
+		// bubbles list height now that we're back in list mode so
+		// the panel's bubblezone bounds stay aligned with their
+		// visible rows even when the post flow lengthened the
+		// status hint.
+		m.relayout()
 		return m, tea.Batch(c, data.LoadPRsCmd(m.listMode(), m.opts.Demo))
 
 	case data.DryRunPayloadMsg:

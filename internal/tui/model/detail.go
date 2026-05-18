@@ -290,6 +290,20 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.centerView = centerDiff
 		m.diffOnly = false
 		m.mode = modeList
+		// Re-sync the bubbles list height to the current chrome
+		// budget. Opening the PR populated m.prLanguages, which
+		// flips the selected list row's lang-agents freshness from
+		// Unknown to Missing/Stale and lengthens the status hint.
+		// The hint then wraps to one extra row in renderStatus, so
+		// chromeBodyHeight shrinks by one — but the list was sized
+		// before the round-trip and would otherwise produce one row
+		// too many, overflowing m.height. The renderer would then
+		// drop the header line, every visible row would shift up by
+		// one, and bubblezone's recorded zone Y values would point
+		// one row below the visible search / URL inputs (the click
+		// would land in the panel's bottom border instead). See
+		// TestPanelZonesRemainAlignedAfterDetailRoundTrip.
+		m.relayout()
 		return m, nil
 	case "g":
 		// Description is now an overview row, but `g` keeps its old job
