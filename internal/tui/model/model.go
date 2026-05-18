@@ -127,20 +127,55 @@ const (
 	modeLangAgents
 )
 
-// treePaneWidth is the fixed width allocated to the file-tree pane content
-// (frame is added on top by the panel border).
-const treePaneWidth = 30
+// defaultTreePaneWidth is the initial width allocated to the file-tree
+// pane content (frame is added on top by the panel border). Stored on
+// Model.treePaneWidth so the user can drag the tree/diff seam to resize.
+const defaultTreePaneWidth = 30
 
-// controlsPaneWidth is the desired width of the right-hand "Review controls"
-// pane content (frame is added on top). Auto-hidden in relayout when the
-// terminal is too narrow to fit all three panes side by side.
-const controlsPaneWidth = 38
+// defaultControlsPaneWidth is the initial width of the right-hand
+// "Review controls" pane content (frame is added on top). Stored on
+// Model.controlsPaneWidth so the user can drag the diff/controls seam
+// to resize. Auto-hidden in relayout when the terminal is too narrow
+// to fit all three panes side by side.
+const defaultControlsPaneWidth = 38
+
+// minTreePaneWidth / minControlsPaneWidth bound how narrow the user
+// can drag each pane. Below these the pane is too narrow to host its
+// title strip and content meaningfully; the seam clamps instead of
+// silently auto-hiding.
+const (
+	minTreePaneWidth     = 12
+	minControlsPaneWidth = 16
+)
 
 // controlsAutoHideMinDiffWidth is the minimum diff outer width below
 // which the controls pane is auto-hidden. Keeps the diff readable on
 // narrow terminals; the user can re-show it with `c` once they have
-// more screen real estate.
+// more screen real estate. Drags that would starve the diff below
+// this threshold are clamped at the seam.
 const controlsAutoHideMinDiffWidth = 36
+
+// dividerTarget identifies which pane seam an active mouse drag is
+// resizing. dividerNone means no drag is in flight.
+type dividerTarget int
+
+const (
+	dividerNone dividerTarget = iota
+	dividerTreeDiff
+	dividerDiffControls
+)
+
+// paneDrag tracks an in-flight drag on one of the pane seams. Anchored
+// at press time so motion events can compute the absolute width from
+// the original (originX, originTreeW, originControlsW) rather than
+// accumulating per-event deltas (which would amplify rounding error
+// on terminals that batch motion reports).
+type paneDrag struct {
+	target          dividerTarget
+	originX         int
+	originTreeW     int
+	originControlsW int
+}
 
 // prItem adapts a gh.PR for the bubbles/list component.
 type Model struct {
@@ -196,6 +231,20 @@ type Model struct {
 	treeView     viewport.Model
 	diffView     viewport.Model
 	controlsView viewport.Model
+
+	// treePaneWidth / controlsPaneWidth are the user-adjustable inner
+	// widths for the left and right panes of the PR detail body. Seeded
+	// from defaultTreePaneWidth / defaultControlsPaneWidth in New() and
+	// mutated by the drag-resize handler in detail_resize.go. The diff
+	// pane absorbs whatever's left over inside relayout().
+	treePaneWidth     int
+	controlsPaneWidth int
+
+	// paneDrag carries the state of an in-flight seam drag. Zero value
+	// (dividerNone) means no drag is active; press inside a seam arms
+	// it, motion updates the corresponding pane width, release clears
+	// it. See detail_resize.go.
+	paneDrag paneDrag
 
 	// controlsHidden is true when the right-hand "Review controls" pane
 	// is hidden — either because the terminal is too narrow to host all
@@ -356,6 +405,8 @@ func New(opts Options) *Model {
 		controlsView:       cv,
 		focusedPane:        paneTree,
 		listDoubleClickWin: 500 * time.Millisecond,
+		treePaneWidth:      defaultTreePaneWidth,
+		controlsPaneWidth:  defaultControlsPaneWidth,
 	}
 	m.overlayFocus.Stack = &m.overlayStack
 	return m

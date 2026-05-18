@@ -9,12 +9,15 @@ import (
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	wheel := tea.MouseEvent(msg).IsWheel()
-	if !wheel && msg.Action != tea.MouseActionPress {
-		return m, nil
-	}
 
 	switch m.mode {
 	case modeList:
+		// List mode has no drag affordances; non-press, non-wheel events
+		// are dropped here so the list view doesn't re-render on every
+		// motion event the terminal emits while a button is held.
+		if !wheel && msg.Action != tea.MouseActionPress {
+			return m, nil
+		}
 		listTop := m.listBodyOriginY()
 		if wheel && !m.list.SettingFilter() && msg.Y >= listTop && msg.Y < listTop+m.list.Height() {
 			switch msg.Button {
@@ -47,6 +50,10 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		m.list, lcmd = m.list.Update(msg)
 		return m, lcmd
 	case modeDetail:
+		// Detail mode routes ALL mouse events (press, motion, release,
+		// wheel) into detailHandleMouse so it can drive the seam-drag
+		// state machine. Filtering for press-only here would drop the
+		// motion + release events the resize handler depends on.
 		return m.detailHandleMouse(msg, wheel)
 	}
 	return m, nil

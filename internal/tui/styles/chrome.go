@@ -28,11 +28,25 @@ var (
 	// contrast on both light and dark backgrounds to read as a real box.
 	PanelBorder = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#9A9A9A"}
 
+	// PanelBorderAccent highlights the panes flanking an in-flight pane
+	// seam drag. Picked to read as "active" against PanelBorder without
+	// turning purple — keeps the pane chrome visually consistent with
+	// the rest of the app while signalling which seam is being grabbed.
+	PanelBorderAccent = lipgloss.AdaptiveColor{Light: "#1F6FEB", Dark: "#58A6FF"}
+
 	// LeftPanel frames a column with a rounded border tinted by
 	// PanelBorder.
 	LeftPanel = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(PanelBorder).
+			Padding(0, 1)
+
+	// LeftPanelAccent is LeftPanel with the accent border colour applied
+	// — used by the drag-resize handler to highlight the panes flanking
+	// the seam currently being dragged.
+	LeftPanelAccent = lipgloss.NewStyle().
+			Border(lipgloss.RoundedBorder()).
+			BorderForeground(PanelBorderAccent).
 			Padding(0, 1)
 
 	// DetailPaneTitleStyle is the one-line strip drawn above each scroll

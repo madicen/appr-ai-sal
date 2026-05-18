@@ -41,7 +41,40 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 		return m, nil
 	}
 
+	// Drag state machine: once a seam drag is armed, every motion
+	// updates the pane width and a release ends the drag. We consume
+	// the event so it never falls through to the normal click logic
+	// (which would otherwise interpret a drag-release on a tree row as
+	// a row click).
+	if m.paneDragActive() {
+		switch msg.Action {
+		case tea.MouseActionMotion:
+			if m.updatePaneDrag(msg) {
+				m.refreshDetailViews()
+			}
+			return m, nil
+		case tea.MouseActionRelease:
+			m.endPaneDrag()
+			m.refreshDetailViews()
+			return m, nil
+		}
+		// Other events while a drag is pending (e.g. a stray press
+		// without a matching release) — drop them so we don't double-
+		// arm or fire a click underneath the divider.
+		return m, nil
+	}
+
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return m, nil
+	}
+
+	// Seam press takes precedence over every other press hit-test:
+	// boundary columns are 1-cell wide, so a click that lands on the
+	// border between (say) the tree pane and the diff pane should arm
+	// a drag rather than fall through to the tree row beneath it.
+	if target := m.seamAtPoint(msg.X, msg.Y); target != dividerNone {
+		m.startPaneDrag(msg, target)
+		m.refreshDetailViews()
 		return m, nil
 	}
 
@@ -829,7 +862,7 @@ func (m *Model) renderPRDetailBody(bodyH int) string {
 	paneH := bodyH - miniH
 
 	if m.diffOnly {
-		framed := m.framePane("Diff (full width — d to restore)", &m.diffView, m.width, paneH, paneFocusFor(paneDiff, m.focusedPane), zones.PaneDiffBody)
+		framed := m.framePane("Diff (full width — d to restore)", &m.diffView, m.width, paneH, paneFocusFor(paneDiff, m.focusedPane), false, zones.PaneDiffBody)
 		framed = zone.Mark(zones.PaneDiff, framed)
 		return lipgloss.JoinVertical(lipgloss.Left, mini, framed)
 	}
@@ -843,12 +876,19 @@ func (m *Model) renderPRDetailBody(bodyH int) string {
 	}
 	diffOuter := m.width - treeOuter - ctlOuter
 
+	// Accent the panes flanking the active drag seam so the user can
+	// see which boundary they grabbed. Drag-inactive renders fall back
+	// to the standard PanelBorder colour for every pane.
+	treeAccent := m.paneDrag.target == dividerTreeDiff
+	diffAccent := m.paneDrag.target == dividerTreeDiff || m.paneDrag.target == dividerDiffControls
+	ctlAccent := m.paneDrag.target == dividerDiffControls
+
 	overview := m.renderLeftColumnOverviewLeader(treeOuter)
 	leftTitle := leftPaneTitle(m.focusedPane)
-	tree := m.framePaneWithLeader(leftTitle, overview, &m.treeView, treeOuter, paneH, paneFocusFor(paneTree, m.focusedPane), zones.PaneTreeBody)
+	tree := m.framePaneWithLeader(leftTitle, overview, &m.treeView, treeOuter, paneH, paneFocusFor(paneTree, m.focusedPane), treeAccent, zones.PaneTreeBody)
 	tree = zone.Mark(zones.PaneTree, tree)
 
-	diff := m.framePane(m.diffPaneTitle(), &m.diffView, diffOuter, paneH, paneFocusFor(paneDiff, m.focusedPane), zones.PaneDiffBody)
+	diff := m.framePane(m.diffPaneTitle(), &m.diffView, diffOuter, paneH, paneFocusFor(paneDiff, m.focusedPane), diffAccent, zones.PaneDiffBody)
 	diff = zone.Mark(zones.PaneDiff, diff)
 
 	if m.controlsHidden {
@@ -856,7 +896,7 @@ func (m *Model) renderPRDetailBody(bodyH int) string {
 		return lipgloss.JoinVertical(lipgloss.Left, mini, row)
 	}
 
-	controls := m.framePane(controlsPaneTitle(m.focusedPane), &m.controlsView, ctlOuter, paneH, paneFocusFor(paneControls, m.focusedPane), zones.PaneControlsBody)
+	controls := m.framePane(controlsPaneTitle(m.focusedPane), &m.controlsView, ctlOuter, paneH, paneFocusFor(paneControls, m.focusedPane), ctlAccent, zones.PaneControlsBody)
 	controls = zone.Mark(zones.PaneControls, controls)
 
 	row := lipgloss.JoinHorizontal(lipgloss.Top, tree, diff, controls)
@@ -907,8 +947,8 @@ func measureDetailPaneTitle(innerW int, title string, focused bool) int {
 	return lipgloss.Height(rendered)
 }
 
-func (m *Model) framePane(title string, vp *viewport.Model, outerW, outerH int, focused bool, viewportZone string) string {
-	return m.framePaneWithLeader(title, "", vp, outerW, outerH, focused, viewportZone)
+func (m *Model) framePane(title string, vp *viewport.Model, outerW, outerH int, focused, accent bool, viewportZone string) string {
+	return m.framePaneWithLeader(title, "", vp, outerW, outerH, focused, accent, viewportZone)
 }
 
 // framePaneWithLeader is framePane plus an optional `leader` string drawn
@@ -917,8 +957,16 @@ func (m *Model) framePane(title string, vp *viewport.Model, outerW, outerH int, 
 // above the file tree). leader is treated as already sized to innerW;
 // callers are expected to pre-truncate / pad it. An empty leader behaves
 // exactly like framePane.
-func (m *Model) framePaneWithLeader(title, leader string, vp *viewport.Model, outerW, outerH int, focused bool, viewportZone string) string {
-	innerW := max(1, outerW-prDetailPanel.GetHorizontalFrameSize())
+//
+// accent=true swaps in styles.LeftPanelAccent so the pane reads as
+// "active" — used by the drag-resize handler to highlight the panes
+// flanking the seam currently being dragged.
+func (m *Model) framePaneWithLeader(title, leader string, vp *viewport.Model, outerW, outerH int, focused, accent bool, viewportZone string) string {
+	frame := prDetailPanel
+	if accent {
+		frame = styles.LeftPanelAccent
+	}
+	innerW := max(1, outerW-frame.GetHorizontalFrameSize())
 	titleOneLine := ansi.Truncate(title, innerW, "…")
 	rendered := styles.DetailPaneTitleStyle.Width(innerW).Render(titleOneLine)
 	if focused {
@@ -947,5 +995,5 @@ func (m *Model) framePaneWithLeader(title, leader string, vp *viewport.Model, ou
 	// (title + vp.View() == outerH - vertical frame), so dropping Width /
 	// Height entirely lets lipgloss size from content while MaxWidth /
 	// MaxHeight guard against accidental overflow.
-	return prDetailPanel.MaxWidth(outerW).MaxHeight(outerH).Render(col)
+	return frame.MaxWidth(outerW).MaxHeight(outerH).Render(col)
 }
