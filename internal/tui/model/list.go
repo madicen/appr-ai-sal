@@ -6,10 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
-	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	langagentsstore "github.com/madicen/appr-ai-sal/internal/review/langagents"
@@ -17,7 +16,6 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	"github.com/madicen/appr-ai-sal/internal/tui/tabs/settings"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
-	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
 type prItem struct{ pr gh.PR }
@@ -194,19 +192,29 @@ func (m *Model) listHandleItemClick(gi int) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.resetListClickTracking()
-	switch msg.String() {
+	key := msg.String()
+
+	// Field-focused arms — keys that route directly into the inline
+	// search / URL inputs are handled first so the bubbles list never
+	// sees a slash a user typed into the URL bar.
+	if m.listFocus == focusSearch || m.listFocus == focusURL {
+		return m.handlePanelInputKey(msg)
+	}
+
+	switch key {
 	case "q":
 		util.FlushMouse()
 		return m, tea.Quit
 	case "f":
-		m.explicitReviewerOnly = !m.explicitReviewerOnly
-		m.updateListTitle()
-		return m, m.refreshPRListCmd()
+		return m, m.cycleFilterCmd()
+	case "/":
+		return m, m.focusSearchInput()
 	case "u":
-		m.mode = modeURLInput
-		m.urlInput.Reset()
-		m.urlInput.Focus()
-		return m, textinput.Blink
+		return m, m.focusURLInput()
+	case "tab":
+		return m, m.cyclePanelFocusForward()
+	case "shift+tab":
+		return m, m.cyclePanelFocusBackward()
 	case "R":
 		return m, m.refreshPRListCmd()
 	case "o":
@@ -248,36 +256,201 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// handlePanelInputKey routes a keystroke into the focused inline input
+// (search or URL). esc blurs the input and returns focus to the list;
+// enter on the URL field parses + loads the PR detail (the legacy
+// modeURLInput submit flow); tab cycles focus. Any other key is
+// forwarded to the textinput and (for the search field) re-derives the
+// visible list items via applySearchFilter.
+func (m *Model) handlePanelInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		// If the search field has text, the first esc clears it and
+		// keeps focus; a second esc (now-empty search) drops focus
+		// back to the list. URL field always blurs on esc.
+		if m.listFocus == focusSearch && strings.TrimSpace(m.searchInput.Value()) != "" {
+			m.searchInput.SetValue("")
+			m.searchQuery = ""
+			m.applySearchFilter()
+			return m, nil
+		}
+		m.blurPanelInputs()
+		return m, nil
+	case "tab":
+		return m, m.cyclePanelFocusForward()
+	case "shift+tab":
+		return m, m.cyclePanelFocusBackward()
+	case "enter":
+		if m.listFocus == focusURL {
+			return m.submitURLInput()
+		}
+		// Enter in the search field just drops focus back to the list
+		// so the user can press it again to open the highlighted PR.
+		m.blurPanelInputs()
+		return m, nil
+	}
+
+	if m.listFocus == focusSearch {
+		var cmd tea.Cmd
+		m.searchInput, cmd = m.searchInput.Update(msg)
+		m.searchQuery = m.searchInput.Value()
+		m.applySearchFilter()
+		return m, cmd
+	}
+	var cmd tea.Cmd
+	m.urlInput, cmd = m.urlInput.Update(msg)
+	return m, cmd
+}
+
+// submitURLInput is the URL-bar enter-press handler. Empty input is a
+// no-op (so the user can dismiss the field without errors); a parse
+// failure surfaces through the standard ErrMsg overlay; success blurs
+// the field and kicks off the PR detail loader — same effect the old
+// dedicated modeURLInput screen had.
+func (m *Model) submitURLInput() (tea.Model, tea.Cmd) {
+	v := strings.TrimSpace(m.urlInput.Value())
+	if v == "" {
+		return m, nil
+	}
+	ref, err := gh.ParsePRURL(v)
+	if err != nil {
+		return m, func() tea.Msg { return data.ErrMsg{Err: err} }
+	}
+	m.urlInput.Reset()
+	m.blurPanelInputs()
+	return m, data.LoadPRDetailCmd(ref, m.opts.Demo)
+}
+
+// focusSearchInput / focusURLInput move keyboard focus into the named
+// inline input. Both blur the other field so the caret only blinks in
+// the active widget.
+func (m *Model) focusSearchInput() tea.Cmd {
+	if m.listFocus == focusSearch {
+		return nil
+	}
+	m.urlInput.Blur()
+	m.listFocus = focusSearch
+	return m.searchInput.Focus()
+}
+
+func (m *Model) focusURLInput() tea.Cmd {
+	if m.listFocus == focusURL {
+		return nil
+	}
+	m.searchInput.Blur()
+	m.listFocus = focusURL
+	return m.urlInput.Focus()
+}
+
+// blurPanelInputs returns focus to the bubbles list. Cursors stop
+// blinking so the user can tell the inputs are idle.
+func (m *Model) blurPanelInputs() {
+	m.searchInput.Blur()
+	m.urlInput.Blur()
+	m.listFocus = focusList
+}
+
+// cyclePanelFocusForward / Backward cycles list → search → url → list.
+func (m *Model) cyclePanelFocusForward() tea.Cmd {
+	switch m.listFocus {
+	case focusList:
+		return m.focusSearchInput()
+	case focusSearch:
+		return m.focusURLInput()
+	default:
+		m.blurPanelInputs()
+		return nil
+	}
+}
+
+func (m *Model) cyclePanelFocusBackward() tea.Cmd {
+	switch m.listFocus {
+	case focusList:
+		return m.focusURLInput()
+	case focusURL:
+		return m.focusSearchInput()
+	default:
+		m.blurPanelInputs()
+		return nil
+	}
+}
+
+// cycleFilterCmd advances the filter chip to the next mode and kicks
+// off a fresh fetch. Shared by the `f` keybinding and the per-chip
+// click handler so the resulting list state is identical regardless
+// of how the change was triggered.
+func (m *Model) cycleFilterCmd() tea.Cmd {
+	m.filter = nextFilterMode(m.filter)
+	m.updateListTitle()
+	return m.refreshPRListCmd()
+}
+
+// setFilterCmd jumps directly to mode (used by chip clicks). A click
+// on the active chip is a no-op rather than a wasted refresh.
+func (m *Model) setFilterCmd(mode filterMode) tea.Cmd {
+	if m.filter == mode {
+		return nil
+	}
+	m.filter = mode
+	m.updateListTitle()
+	return m.refreshPRListCmd()
+}
+
 func (m *Model) updateListTitle() {
-	if m.explicitReviewerOnly {
+	switch m.filter {
+	case filterReviewExplicit:
 		m.list.Title = "PRs · you are explicitly requested"
-	} else {
+	case filterAuthored:
+		m.list.Title = "PRs · authored by you"
+	default:
 		m.list.Title = "PRs · review requested (@me, incl. teams)"
 	}
 }
 
-// refreshPRListCmd flips the list back into its loading state and returns the
-// fetch command. Centralised so the keyboard binding (R), the filter toggle
-// (f / chip click), and the refresh chip click all behave identically — in
-// particular, all three flip prsLoaded=false so renderBody swaps the list out
-// for the spinner and renderFilterLine flips the chip to "refreshing…".
-func (m *Model) refreshPRListCmd() tea.Cmd {
-	m.prsLoaded = false
-	return data.LoadPRsCmd(m.explicitReviewerOnly, m.opts.Demo)
+// applySearchFilter rebuilds the bubbles/list items from prsAll
+// filtered by searchQuery. Matched fields are the same set the panel
+// advertises (title, repo, author) plus the bare PR number so users
+// can type "#123" to jump to a PR they remember by number.
+func (m *Model) applySearchFilter() {
+	q := strings.TrimSpace(strings.ToLower(m.searchQuery))
+	out := make([]list.Item, 0, len(m.prsAll))
+	for _, p := range m.prsAll {
+		if q == "" || prMatchesQuery(p, q) {
+			out = append(out, prItem{pr: p})
+		}
+	}
+	m.list.SetItems(out)
 }
 
-func renderFilterLine(explicit, refreshing bool) string {
-	label := "filter: teams+you"
-	if explicit {
-		label = "filter: explicit reviewer only"
+// prMatchesQuery reports whether the substring q appears in any of the
+// PR's display-relevant fields. Case is normalised by the caller.
+func prMatchesQuery(p gh.PR, q string) bool {
+	if q == "" {
+		return true
 	}
-	filterChip := zone.Mark(zones.FilterToggle, styles.BoldStyle.Render("  "+label+"  (click or f)  "))
-	refreshLabel := "  refresh (click or R)  "
-	if refreshing {
-		refreshLabel = "  refreshing…  "
+	if strings.Contains(strings.ToLower(p.Title), q) {
+		return true
 	}
-	refreshChip := zone.Mark(zones.RefreshList, styles.DimStyle.Render(refreshLabel))
-	return styles.AppPadding.Render(filterChip + " " + refreshChip)
+	if strings.Contains(strings.ToLower(p.Repository), q) {
+		return true
+	}
+	if strings.Contains(strings.ToLower(p.Author), q) {
+		return true
+	}
+	if strings.Contains(fmt.Sprintf("#%d", p.Number), q) {
+		return true
+	}
+	return false
+}
+
+// refreshPRListCmd flips the list back into its loading state and returns the
+// fetch command. Centralised so the keyboard binding (R), the filter chips
+// (f / chip click), and the refresh chip click all behave identically — in
+// particular, all three flip prsLoaded=false so renderBody swaps the list out
+// for the spinner and the refresh chip flips to "refreshing…".
+func (m *Model) refreshPRListCmd() tea.Cmd {
+	m.prsLoaded = false
+	return data.LoadPRsCmd(m.listMode(), m.opts.Demo)
 }
 
 func (m *Model) repoAgentsFreshnessForListSelection() (owner, repo string) {

@@ -39,23 +39,53 @@ type ErrMsg struct{ Err error }
 // Error satisfies the error interface so callers can treat ErrMsg uniformly.
 func (e ErrMsg) Error() string { return e.Err.Error() }
 
-// LoadPRsCmd fetches review-requested PRs, optionally filtered to explicit user requests.
+// LoadPRsCmd fetches the PR set for the requested ListMode (review
+// queue, explicit-reviewer narrow, or authored-by-me).
 //
-// When demoMode is true the gh CLI is bypassed entirely and a canned set
-// of PRs is returned synchronously. This is the path VHS uses to record
-// reproducible README GIFs without touching the user's gh credentials.
-func LoadPRsCmd(explicitReviewerOnly, demoMode bool) tea.Cmd {
+// When demoMode is true the gh CLI is bypassed entirely and a canned
+// set of PRs is returned synchronously. The demo fixture is a fixed
+// list, so authored-mode just filters that fixture by the viewer's
+// canonical "madicen" login — keeping the recording reproducible
+// regardless of the host's gh user.
+func LoadPRsCmd(mode gh.ListMode, demoMode bool) tea.Cmd {
 	if demoMode {
-		return func() tea.Msg { return PRListMsg{PRs: demo.DemoPullRequests()} }
+		return func() tea.Msg { return PRListMsg{PRs: demoPRsForMode(mode)} }
 	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		prs, err := gh.ListReviewRequestedPRs(ctx, explicitReviewerOnly)
+		prs, err := gh.ListPRs(ctx, mode)
 		if err != nil {
 			return ErrMsg{err}
 		}
 		return PRListMsg{PRs: prs}
+	}
+}
+
+// demoPRsForMode returns the canned PR fixture filtered to match the
+// requested mode. The demo viewer is "madicen", so authored-mode
+// returns only PRs with Author == "madicen".
+func demoPRsForMode(mode gh.ListMode) []gh.PR {
+	all := demo.DemoPullRequests()
+	switch mode {
+	case gh.ListModeAuthored:
+		out := make([]gh.PR, 0, len(all))
+		for _, pr := range all {
+			if pr.Author == "madicen" {
+				out = append(out, pr)
+			}
+		}
+		return out
+	case gh.ListModeReviewExplicit:
+		out := make([]gh.PR, 0, len(all))
+		for _, pr := range all {
+			if pr.ReviewState.ViewerStillRequested {
+				out = append(out, pr)
+			}
+		}
+		return out
+	default:
+		return all
 	}
 }
 

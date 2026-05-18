@@ -19,7 +19,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		listTop := m.listBodyOriginY()
-		if wheel && !m.list.SettingFilter() && msg.Y >= listTop && msg.Y < listTop+m.list.Height() {
+		// Wheel scroll is only meaningful for the list pane and only
+		// when no inline input is focused — otherwise the search /
+		// URL field would silently lose its caret position whenever
+		// the user spun the wheel over the list.
+		if wheel && m.listFocus == focusList && msg.Y >= listTop && msg.Y < listTop+m.list.Height() {
 			switch msg.Button {
 			case tea.MouseButtonWheelDown:
 				m.resetListClickTracking()
@@ -32,17 +36,29 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			if z := zone.Get(zones.FilterToggle); z != nil && z.InBounds(msg) {
+			for _, chip := range filterChips {
+				if zoneInBounds(chip.zone, msg) {
+					m.resetListClickTracking()
+					return m, m.setFilterCmd(chip.mode)
+				}
+			}
+			if zoneInBounds(zones.RefreshList, msg) {
 				m.resetListClickTracking()
-				m.explicitReviewerOnly = !m.explicitReviewerOnly
-				m.updateListTitle()
 				return m, m.refreshPRListCmd()
 			}
-			if z := zone.Get(zones.RefreshList); z != nil && z.InBounds(msg) {
+			if zoneInBounds(zones.SearchField, msg) {
 				m.resetListClickTracking()
-				return m, m.refreshPRListCmd()
+				return m, m.focusSearchInput()
+			}
+			if zoneInBounds(zones.URLField, msg) {
+				m.resetListClickTracking()
+				return m, m.focusURLInput()
 			}
 			if gi, ok := m.listGlobalIndexAtClick(msg); ok {
+				// A click in the list body also drops keyboard focus
+				// back to the list so subsequent ↑/↓/enter actually
+				// hit the bubbles list and not a still-focused input.
+				m.blurPanelInputs()
 				return m.listHandleItemClick(gi)
 			}
 		}

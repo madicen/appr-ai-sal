@@ -57,8 +57,6 @@ func (m *Model) renderHeader() string {
 			t = fmt.Sprintf("appr-ai-sal · %s#%d  %s", m.currentPR.Repository, m.currentPR.Number, m.currentPR.Title)
 		}
 		return styles.HeaderBar.Width(m.width).Render(ansi.Truncate(t, m.width-2, "…"))
-	case modeURLInput:
-		return styles.HeaderBar.Width(m.width).Render("appr-ai-sal · paste a PR URL")
 	case modeSettings:
 		return styles.HeaderBar.Width(m.width).Render("appr-ai-sal · settings")
 	case modeRepoAgents:
@@ -75,11 +73,14 @@ func (m *Model) renderBody() string {
 	bodyH := m.chromeBodyHeight()
 	switch m.mode {
 	case modeList:
+		panel := renderListPanel(m)
 		if !m.prsLoaded {
-			return styles.AppPadding.Render(m.spinner.View() + " loading PRs from GitHub…")
+			return lipgloss.JoinVertical(lipgloss.Left,
+				panel,
+				styles.AppPadding.Render(m.spinner.View()+" loading PRs from GitHub…"),
+			)
 		}
-		filterLine := renderFilterLine(m.explicitReviewerOnly, !m.prsLoaded)
-		return lipgloss.JoinVertical(lipgloss.Left, filterLine, styles.AppPadding.Render(m.list.View()))
+		return lipgloss.JoinVertical(lipgloss.Left, panel, styles.AppPadding.Render(m.list.View()))
 	case modeDetail:
 		return m.renderPRDetailBody(bodyH)
 	case modeSettings:
@@ -97,8 +98,6 @@ func (m *Model) renderBody() string {
 			return styles.AppPadding.Render("language experts unavailable")
 		}
 		return m.langAgents.View()
-	case modeURLInput:
-		return styles.AppPadding.Render("\n  Enter PR URL or owner/repo#N:\n\n  " + m.urlInput.View() + "\n\n  " + styles.DimStyle.Render("(esc to cancel)"))
 	}
 	return ""
 }
@@ -113,10 +112,10 @@ func (m *Model) renderStatus() string {
 	case modeList:
 		owner, repo := m.repoAgentsFreshnessForListSelection()
 		lOwner, lRepo, lNum := m.listSelectionForLangFreshness()
-		hint = "↑/↓ · click · double-click open · enter · u URL · O browser · o/, settings · ctrl+g repo ctx · ctrl+r repo agents · " +
+		hint = "↑/↓ · click · double-click open · enter · tab fields · / search · u URL · esc clear · f filter · O browser · o/, settings · ctrl+g repo ctx · ctrl+r repo agents · " +
 			m.renderBuildLangAgentsHint(lOwner, lRepo, lNum) +
 			" · " + m.renderBuildAgentsHint(owner, repo) +
-			" · / search · f filter · R refresh · q quit" + dry
+			" · R refresh · q quit" + dry
 	case modeDetail:
 		// Per-agent state (repo / tech / lang) is owned by the right-hand
 		// "Review controls" pane now; the bottom status bar carries only
@@ -128,9 +127,21 @@ func (m *Model) renderStatus() string {
 		hint = "←/→ repo · a add repo · A regen all · click chips · esc close · ctrl+s save edit · ctrl+c quit" + dry
 	case modeLangAgents:
 		hint = "↑/↓ select · g/r generate or regenerate · d delete cached · esc close · ctrl+c quit" + dry
-	case modeURLInput:
-		hint = "enter submit · esc cancel" + dry
 	}
+	// Pre-wrap the hint at the StatusBar's content width (m.width minus
+	// horizontal padding) so its rendered height matches what the
+	// terminal will actually display.
+	//
+	// Without this, a hint longer than the terminal would lipgloss out
+	// to a single logical line that the terminal then visually wraps
+	// to a second row at write time. chromeBodyHeight reads
+	// lipgloss.Height(renderStatus()) and would budget only 1 row,
+	// pushing the View() output one row past m.height. The standard
+	// renderer's auto-wrap then scrolls the screen up by 1, dropping
+	// the header and shifting every row above the status by 1 — but
+	// bubblezone's recorded zone bounds still point at the unscrolled
+	// View() rows, so panel clicks land 1 row below their visible
+	// content. Wrapping here keeps the rendered height honest.
 	return styles.StatusBar.Width(m.width).Render(hint)
 }
 

@@ -25,9 +25,22 @@ func TreeFolder(i int) string {
 
 // bubblezone IDs for clickable regions.
 const (
-	FilterToggle = "zone:filter:explicit"
+	// FilterTeams / FilterExplicit / FilterAuthored mark each filter
+	// chip on the PR list top panel. Clicking a chip switches the
+	// active filter (and re-runs LoadPRsCmd with the matching gh
+	// query); pressing `f` cycles through them in this order. The
+	// "explicit" zone id is preserved from when there was a single
+	// FilterToggle chip so existing muscle-memory tests still match.
+	FilterTeams    = "zone:list:filter:teams"
+	FilterExplicit = "zone:list:filter:explicit"
+	FilterAuthored = "zone:list:filter:authored"
+	// SearchField / URLField mark the inline text inputs on the top
+	// panel. Clicking inside a field focuses it (same as pressing `/`
+	// for search or `u` for URL).
+	SearchField = "zone:list:search"
+	URLField    = "zone:list:url"
 	// RefreshList is the clickable "refresh" chip on the list view's
-	// filter strip. Mirrors the keyboard "R" binding so users who don't
+	// top panel. Mirrors the keyboard "R" binding so users who don't
 	// read the status bar still have an obvious way to re-fetch the
 	// review queue from GitHub.
 	RefreshList              = "zone:list:refresh"

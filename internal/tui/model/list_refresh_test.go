@@ -50,18 +50,20 @@ func TestRefreshChipRendersAndIsClickable(t *testing.T) {
 // prsLoaded is false the chip label flips to "refreshing…" so a user who
 // clicked it (or pressed R) sees confirmation that something is happening.
 // In practice the spinner overlay also shows during this window but the
-// chip itself stays consistent with the rest of the filter strip when sized
-// for measurement (renderFilterLine is also called by listBodyOriginY).
+// chip itself stays consistent with the rest of the top panel.
 func TestRefreshChipShowsLoadingLabelWhileFetching(t *testing.T) {
-	steady := renderFilterLine(false, false)
-	if !strings.Contains(steady, "refresh (click or R)") {
-		t.Fatalf("steady-state filter line missing refresh chip:\n%s", steady)
+	m := listRefreshFixtureModel(t)
+	m.prsLoaded = true
+	steady := renderListPanel(m)
+	if !strings.Contains(steady, "refresh (R)") {
+		t.Fatalf("steady-state panel missing refresh chip:\n%s", steady)
 	}
 	if strings.Contains(steady, "refreshing") {
-		t.Fatalf("steady-state filter line should not say 'refreshing':\n%s", steady)
+		t.Fatalf("steady-state panel should not say 'refreshing':\n%s", steady)
 	}
-	loading := renderFilterLine(false, true)
+	m.prsLoaded = false
+	loading := renderListPanel(m)
 	if !strings.Contains(loading, "refreshing") {
-		t.Fatalf("loading filter line should show 'refreshing…':\n%s", loading)
+		t.Fatalf("loading panel should show 'refreshing…':\n%s", loading)
 	}
 }
