@@ -48,8 +48,8 @@ func (m *Model) relayout() {
 			m.controlsView.Height = 1
 			break
 		}
-		treeW := treePaneWidth + phs
-		controlsOuterW := controlsPaneWidth + phs
+		treeW := m.treePaneWidth + phs
+		controlsOuterW := m.controlsPaneWidth + phs
 		// Decide whether to host the controls pane this frame. Auto-hide
 		// when the diff would otherwise become unusably narrow; respect
 		// the user's explicit hide preference too.

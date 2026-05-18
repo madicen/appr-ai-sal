@@ -25,6 +25,11 @@ output and annotation excerpts inline), and the Conversation timeline
 to the description, `j`/`k` to walk the unified left-column cursor across
 the overview rows and into the file tree, or click any row.
 
+Drag the vertical seam between any two panes to resize them — the border
+columns where the panes meet are a 2-cell-wide hit zone. Min widths
+keep each pane (and the diff) usable; the resized layout resets to the
+defaults on the next app restart.
+
 </details>
 
 <details>
