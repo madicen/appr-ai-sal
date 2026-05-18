@@ -463,20 +463,33 @@ func composeTechSection(pr *gh.PR, rc *repoconfig.Config, out chan<- Progress) s
 	keys := ta.SortedTechs()
 	var b strings.Builder
 	labels := make([]string, 0, len(keys))
+	bodies := make([]string, 0, len(keys))
 	for _, k := range keys {
 		body := ta.ContextFor(k)
 		if body == "" {
 			continue
 		}
 		label := ta.LabelFor(k)
-		fmt.Fprintf(&b, "## Technology context: %s\n\n", label)
-		b.WriteString(body)
-		b.WriteString("\n\n")
+		bodies = append(bodies, fmt.Sprintf("## Technology context: %s\n\n%s", label, body))
 		labels = append(labels, label)
 	}
 	if len(labels) == 0 {
 		out <- Progress{Stage: "tech-agents", Detail: "none"}
 		return ""
+	}
+	// Prepend an authoritative-framing preamble that rides with the per-tech
+	// blocks. Mirrors langagents/brief.go:124-126: the briefs are not just
+	// "context" — specialists must not file findings that contradict them.
+	b.WriteString("## Technology conventions\n\n")
+	b.WriteString("The brief(s) below describe how each technology is conventionally used in this repo. ")
+	b.WriteString("Treat them as authoritative for tech-specific conventions: do not file findings that contradict the conventions stated here, and use them to calibrate the severity of borderline findings. ")
+	b.WriteString("The unified diff remains the authority for what changed in this PR.\n\n")
+	for i, blk := range bodies {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString(blk)
+		b.WriteString("\n\n")
 	}
 	out <- Progress{Stage: "tech-agents", Detail: "injected " + strings.Join(labels, "+")}
 	return strings.TrimRight(b.String(), "\n")

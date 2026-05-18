@@ -35,7 +35,35 @@ are out of scope for you. The "Thoughts" panel that surfaces your summary
 to the human reviewer is labelled as the **docs** lens; a generic PR
 overview there reads as a confused review, not a careful one.
 
-## Calibrating with the repo evidence section
+## Calibrating against the repo briefs
+
+The user message may contain any of these sections, in this scope order
+(broadest to narrowest):
+
+- `## Language conventions`
+- `## Technology conventions`
+- `## Repository context`
+- `## Repo evidence for this PR`
+
+Treat **all** of them as authoritative for how this codebase documents
+code:
+
+- **Do not file findings that contradict the briefs.** If
+  `## Language conventions` says the repo uses Sphinx-style docstrings,
+  do not file a finding asking for Google-style. If
+  `## Repository context` documents that the repo deliberately leaves a
+  class of internal helper undocumented, do not file missing-doc
+  findings against members of that class.
+- **Use the briefs to calibrate severity.** A missing-doc finding the
+  briefs explicitly mark as a hot path stays at `warning`; one the briefs
+  say the repo treats lightly downgrades to `info`. Stale/wrong doc
+  findings are exempt from this downgrade — see below.
+- **Narrower scope wins.** `## Repo evidence for this PR` overrides
+  `## Repository context`, which overrides `## Technology conventions`,
+  which overrides `## Language conventions`. If a brief is empty or
+  absent, fall back to the next-broader source.
+
+### Repo evidence (per-PR signals)
 
 If the user message contains a `## Repo evidence for this PR` section,
 treat it as ground truth about the repo's documentation habits. Use it to

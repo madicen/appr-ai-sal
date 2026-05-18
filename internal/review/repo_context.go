@@ -17,13 +17,21 @@ import (
 
 const repoContextUserHeading = "## Repository context (auto-generated, do not quote verbatim in findings unless relevant)"
 
+// repoContextAuthorityPreamble rides with every non-empty repo context block
+// and tells the model how to treat it: authoritative for what's idiomatic in
+// this specific repo, calibrating for severity, and never to be contradicted
+// in a finding. Mirrors the language brief's framing in
+// langagents/brief.go:124-126 so the same "do not file findings that
+// contradict this" rule applies across language, technology, and repo briefs.
+const repoContextAuthorityPreamble = "The brief below is a per-(repo, specialist) summary of how this repository writes the kind of code your specialty cares about. Treat it as authoritative for repo-specific conventions: do not file findings that contradict the conventions stated here, and let it calibrate the severity of borderline findings. The unified diff remains the authority for what changed in this PR."
+
 // FormatRepoContextSection wraps a pre-built repository context blob for injection into user prompts.
 func FormatRepoContextSection(block string) string {
 	block = strings.TrimSpace(block)
 	if block == "" {
 		return ""
 	}
-	return fmt.Sprintf("\n\n%s\n\n%s\n\n", repoContextUserHeading, block)
+	return fmt.Sprintf("\n\n%s\n\n%s\n\n%s\n\n", repoContextUserHeading, repoContextAuthorityPreamble, block)
 }
 
 // ComposeRepositoryContextBlock gathers capped convention text from disk and optional merged-PR digest.

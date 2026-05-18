@@ -247,7 +247,41 @@ func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictn
 	b.WriteString("```diff\n")
 	b.WriteString(diff)
 	b.WriteString("\n```\n\n")
+	if hasContext {
+		b.WriteString(briefsReReadReminder(repoContext, evidence, langSection, techSection))
+	}
 	b.WriteString(reviewOutputContract)
+	return b.String()
+}
+
+// briefsReReadReminder is a short stanza appended after the diff and before
+// the JSON output contract. The diff dominates attention when the model
+// emits findings; this reminder names the brief sections that are actually
+// present in this message and tells the model to re-check them before
+// finalising each finding, so a brief that endorses the diff's pattern can
+// actually neutralise a false-positive prior. Mirrors the authority framing
+// in repo_context.go / langagents/brief.go / runner.go's tech section.
+func briefsReReadReminder(repoContext, evidence, langSection, techSection string) string {
+	var names []string
+	if strings.TrimSpace(langSection) != "" {
+		names = append(names, "`## Language conventions`")
+	}
+	if strings.TrimSpace(techSection) != "" {
+		names = append(names, "`## Technology conventions`")
+	}
+	if strings.TrimSpace(repoContext) != "" {
+		names = append(names, "`## Repository context`")
+	}
+	if strings.TrimSpace(evidence) != "" {
+		names = append(names, "`## Repo evidence for this PR`")
+	}
+	if len(names) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Before emitting findings — re-check the brief section(s) above (")
+	b.WriteString(strings.Join(names, ", "))
+	b.WriteString("). They are authoritative for repo-specific conventions: drop any draft finding that the briefs explicitly endorse as the local pattern, and calibrate severity for the rest. The diff is the authority for what changed; the briefs are the authority for whether that change is conventional here.\n\n")
 	return b.String()
 }
 
