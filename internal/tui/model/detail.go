@@ -543,14 +543,82 @@ func (m *Model) startReviewOverlay(peruse bool) (tea.Model, tea.Cmd) {
 	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
 	ro.SetPeruse(peruse)
 	m.currentReviewOverlay = ro
-	cfg := overlay.DefaultOverlayConfig()
-	cfg.CloseOnEscape = false
-	cfg.CloseOnClickOutside = false
+	cfg := reviewWindowConfig()
 	return m, tea.Batch(
 		m.overlayStack.Push(ro, cfg),
 		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
 		data.StartReviewCmd(ref, m.opts.AIConfig, m.opts.Demo),
 	)
+}
+
+// reviewWindowConfig builds the bubble-overlay config for the review
+// modal with every WindowChrome feature the library exposes turned on:
+//
+//   - Draggable tab title (drag the tab to reposition the modal).
+//   - ShowCloseButton ([x] in the tab dismisses via Pop, which fires
+//     reviewtab.Model.OnOverlayClose → CloseMsg so the root model's
+//     CloseMsg handler runs the same cleanup as keyboard dismissal).
+//   - AutoWrap (the library wraps our naked body with the tab + box
+//     border each frame; we don't draw the modal frame ourselves).
+//   - Resizable (drag the right / bottom edges and bottom-right corner
+//     to resize the modal). The chrome remembers the user's preferred
+//     dims in its LayerState across re-renders and fires
+//     OverlayResizedMsg back to the review model so its viewport
+//     reflows live as the user drags.
+//   - Keyboard (Alt+arrow moves the modal, Alt+Shift+arrow resizes it).
+//     KeyStep=2 makes a single keypress move/grow by 2 cells so the
+//     keyboard path keeps up with the trackpad without feeling sluggish.
+//   - MinWidth / MinHeight clamp the user-driven resize so they can't
+//     shrink the modal below something readable.
+//
+// We deliberately leave CenterContent / ContentPadTop off because the
+// review body owns its own padding (reviewBodyStyle's Padding(1, 2)) —
+// asking the chrome to also center or pad would leave a double-pad row
+// at the top and squash one row off the bottom.
+//
+// We also deliberately keep CloseOnEscape and CloseOnClickOutside
+// disabled: the review model owns its own keymap (esc, q, abort
+// prompts) and clicking outside the modal must NOT dismiss in-flight
+// work.
+//
+// The library's DefaultChromeMaskRune is U+E000 (start of the Unicode
+// Private Use Area), which can't appear in normal text — we accept
+// that default rather than setting our own. The static Title here is
+// only the fallback: reviewtab.Model implements OverlayTitler so the
+// stack reads a phase-aware title (e.g. "appr-ai-sal · review · running")
+// off the model each frame.
+//
+// We considered the bubble-overlay Window helper (pane.go) here but
+// it's optimised for state-machine-driven single modals — our review
+// flow lives in the stack so it can coexist with the posted-overlay
+// stack entry and any future overlays.
+func reviewWindowConfig() overlay.OverlayConfig {
+	cfg := overlay.DefaultOverlayConfig()
+	cfg.CloseOnEscape = false
+	cfg.CloseOnClickOutside = false
+	// DimOpacity is intentionally 0 (the library default of 0.35 dims the
+	// background to signal "this isn't interactive"). The review modal
+	// now lets the user click on the PR detail view underneath while the
+	// AI review runs — gated via shouldPassMouseToBackground on the root
+	// model. A dimmed background would make that pass-through feel like
+	// a bug; keeping it bright is the visual cue that "yes, you can
+	// still click here." The chrome's tab strip and box border still
+	// give the modal enough visual weight that the user can find it.
+	cfg.DimOpacity = 0
+	cfg.WindowChrome = overlay.EnableWindowChrome(reviewtab.ChromeTitleFallback)
+	cfg.WindowChrome.Resizable = true
+	cfg.WindowChrome.Keyboard = true
+	cfg.WindowChrome.KeyStep = 2
+	cfg.WindowChrome.MinWidth = 60
+	cfg.WindowChrome.MinHeight = 14
+	// ShowMinimizeButton renders a [-] toggle in the tab strip. While the
+	// review runs in the background it's nice to be able to "tuck the
+	// modal away" to just its title bar and keep the file tree / diff
+	// fully visible. The review model returns a phase-aware title (with
+	// a spinner glyph while running) via OverlayTitler, so the user can
+	// still see at a glance whether the review is in flight or done.
+	cfg.WindowChrome.ShowMinimizeButton = true
+	return cfg
 }
 
 func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
@@ -561,9 +629,7 @@ func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
 	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
 	adoptCmd := ro.AdoptDraft(m.draft)
 	m.currentReviewOverlay = ro
-	cfg := overlay.DefaultOverlayConfig()
-	cfg.CloseOnEscape = false
-	cfg.CloseOnClickOutside = false
+	cfg := reviewWindowConfig()
 	cmds := []tea.Cmd{
 		m.overlayStack.Push(ro, cfg),
 		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },

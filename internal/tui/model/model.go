@@ -519,6 +519,37 @@ func (m *Model) reviewOverlayOnTop() *reviewtab.Model {
 	return nil
 }
 
+// shouldPassMouseToBackground decides whether a mouse event should be
+// forwarded to handleMouse (the PR detail / list dispatcher) instead of
+// the overlay stack while a review modal is open.
+//
+// Returns true only when ALL of:
+//
+//   - The user is on the PR detail page. We don't want clicks to leak
+//     into the PR list while a review is mid-flight there — starting
+//     a second review behind the first would be a mess. The detail
+//     page is where it actually helps: the user can read the diff
+//     while waiting for the AI to finish.
+//   - The top overlay is the review modal. Other overlays (errors,
+//     confirms, bulk-post prompts) are short-lived and demand the
+//     user's full attention; passing clicks through them would defeat
+//     their purpose.
+//   - bubble-overlay's MouseTargetsTop says the coordinates land
+//     outside the modal rect AND no chrome gesture (drag, resize) is
+//     in progress. Clicks inside the modal — including the chrome's
+//     tab strip, [x] button, and resize handles — keep routing
+//     through the stack so every overlay-internal control still
+//     works.
+func (m *Model) shouldPassMouseToBackground(msg tea.MouseMsg) bool {
+	if m.mode != modeDetail {
+		return false
+	}
+	if m.reviewOverlayOnTop() == nil {
+		return false
+	}
+	return !m.overlayStack.MouseTargetsTop(msg, m.width, m.height)
+}
+
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -845,6 +876,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 		if !m.overlayFocus.InteractiveToBase(msg) {
+			// Pass-through: while the review overlay is open over the
+			// PR detail page, mouse events that land outside the modal
+			// are forwarded to handleMouse so the user can keep
+			// browsing the file tree, scrolling diffs, etc. while the
+			// AI review runs in the background. The chrome (drag tab,
+			// resize handles, close button) and the modal body still
+			// receive their own clicks via MouseTargetsTop returning
+			// true. Keyboard input is intentionally NOT split — the
+			// overlay still owns its keymap so esc / q / action keys
+			// keep working exactly as today.
+			if mm, ok := msg.(tea.MouseMsg); ok && m.shouldPassMouseToBackground(mm) {
+				return m.handleMouse(mm)
+			}
 			return m, m.overlayStack.Update(msg)
 		}
 	}

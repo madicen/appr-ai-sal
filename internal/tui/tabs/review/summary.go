@@ -9,7 +9,6 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
-	"github.com/madicen/appr-ai-sal/internal/tui/overlays"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
@@ -268,11 +267,31 @@ func (m *Model) tallyCardKinds() (onPR, posted, skipped int) {
 	return onPR, posted, skipped
 }
 
+// reviewBodyStyle is the inner padding for the review modal body. The
+// rounded purple border is now drawn by the bubble-overlay WindowChrome
+// (which also owns the draggable tab and resize handles), so this style
+// only adds the breathing room between that chrome's box border and the
+// title / viewport / help lines.
+//
+// Width and Height are deliberately set per-render so the body always
+// fills the chrome's expected content rect — the chrome locks
+// layer.ContentWidth/Height at Push time from the first View(), and any
+// later size mismatch shows up as truncation or trailing space.
+var reviewBodyStyle = lipgloss.NewStyle().Padding(1, 2)
+
 func (m *Model) View() string {
 	title := styles.BoldStyle.Render(m.titleForPhase()) + "  " + m.spinnerForPhase()
 	help := styles.DimStyle.Render(m.helpForPhase())
 	body := lipgloss.JoinVertical(lipgloss.Left, title, "", m.vp.View(), "", help)
-	return overlays.ModalChrome.Width(m.outerW).Render(body)
+	// Render at the chrome's expected content dims (outerW-2 × outerH-4 —
+	// box border + chrome rows). Setting an explicit Height pads the body
+	// to fill the area when the running phase has few rows so the modal's
+	// initial size matches its steady-state size and the user doesn't see
+	// the chrome shrink-then-grow as agents complete.
+	return reviewBodyStyle.
+		Width(max(8, m.outerW-2)).
+		Height(max(4, m.outerH-4)).
+		Render(body)
 }
 
 func (m *Model) titleForPhase() string {
@@ -484,6 +503,19 @@ func (m *Model) CoachInFlight() bool { return m.coachInFlight }
 // CardCount returns the number of approval cards. Tests use this to verify
 // adoption converted a draft's flat findings into per-card state correctly.
 func (m *Model) CardCount() int { return len(m.cards) }
+
+// AgentCursor returns the currently focused agent row index in the running
+// phase. Test-only accessor used to observe whether mouse clicks delivered
+// through the chrome overlay actually reach handleMouse — clicking on
+// agent N's bubblezone region should make AgentCursor() return N.
+func (m *Model) AgentCursor() int { return m.cursor }
+
+// AgentZoneName returns the bubblezone marker name for agent row i so
+// tests can correlate zone.Get lookups with the row indices used inside
+// the package. The underlying helper (zoneOverlayAgent) is unexported
+// because it's the only producer of these names; this is its read-only
+// cross-package mirror.
+func AgentZoneName(i int) string { return zoneOverlayAgent(i) }
 
 // SetCardState mutates the i-th approval card's state. Test-only helper for
 // arranging a specific approve-card scenario without exercising the public
