@@ -10,7 +10,9 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.1-0.20250404203927-76690c660834
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/lrstanley/bubblezone v1.0.0
-	github.com/madicen/bubble-overlay v0.0.0-20260501223332-738f3c5bb323
+	github.com/madicen/bubble-color-picker v0.1.1
+	github.com/madicen/bubble-overlay v0.0.0-20260519170516-f5f558a16d13
+	github.com/muesli/termenv v0.16.0
 )
 
 require (
@@ -27,22 +29,26 @@ require (
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/gorilla/css v1.0.1 // indirect
 	github.com/lucasb-eyer/go-colorful v1.4.0 // indirect
-	github.com/madicen/bubble-color-picker v0.1.1 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.22 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/muesli/ansi v0.0.0-20230316100256-276c6243b2f6 // indirect
 	github.com/muesli/cancelreader v0.2.2 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
-	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/sahilm/fuzzy v0.1.1 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/yuin/goldmark v1.7.13 // indirect
 	github.com/yuin/goldmark-emoji v1.0.6 // indirect
 	golang.org/x/net v0.38.0 // indirect
-	golang.org/x/sys v0.43.0 // indirect
+	golang.org/x/sys v0.44.0 // indirect
 	golang.org/x/term v0.36.0 // indirect
-	golang.org/x/text v0.30.0 // indirect
+	golang.org/x/text v0.37.0 // indirect
 )
+
+// Point at the local bubble-overlay checkout that carries the
+// mouse-pass-through branch (madicen/bubble-overlay#17, adds
+// OverlayStack.MouseTargetsTop). Drop this replace and bump the require
+// line above to the merged SHA once the PR lands on main.
+replace github.com/madicen/bubble-overlay => ../bubble-overlay

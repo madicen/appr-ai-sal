@@ -11,7 +11,6 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
-	"github.com/madicen/appr-ai-sal/internal/tui/overlays"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 
@@ -183,9 +182,15 @@ type Model struct {
 	outerH int
 	vp     viewport.Model
 	sp     spinner.Model
-	agents []overlayAgentRow
-	log    []string
-	cursor int
+	// chromeMinimized mirrors bubble-overlay's LayerState.Minimized so
+	// OverlayTitle() can shape the tab string for the current visual
+	// state. The lib pushes this in via OnOverlayMinimize when the user
+	// clicks the [-]/[+] toggle; we don't try to read it back out of
+	// the stack because the model has no handle on its own LayerState.
+	chromeMinimized bool
+	agents          []overlayAgentRow
+	log             []string
+	cursor          int
 	// specialistsParallel / repoExpertsParallel mirror repo-context.json (+ env overrides)
 	// so the running header matches how the runner dispatches API calls.
 	specialistsParallel bool
@@ -288,11 +293,12 @@ func zoneOverlayAgent(i int) string {
 func New(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsParallel bool, cfg *aiconfig.Config, demoMode bool) *Model {
 	sp := spinner.New()
 	sp.Spinner = spinner.Dot
-	ow := util.Clamp(screenW-4, 60, 140)
-	oh := util.Clamp(screenH-6, 16, 60)
-	innerW := max(12, ow-overlays.ModalChrome.GetHorizontalFrameSize()-4)
-	innerH := max(6, oh-overlays.ModalChrome.GetVerticalFrameSize()-6)
-	vp := viewport.New(innerW, innerH)
+	// Start with a 1×1 viewport that resizeFromScreen replaces below —
+	// keeping the actual size math in one place (setOuterDims) means
+	// New, tea.WindowSizeMsg, and OnOverlayResize all agree on inner
+	// dims without three separate copies of the chrome-overhead
+	// arithmetic.
+	vp := viewport.New(1, 1)
 	vp.MouseWheelEnabled = true
 	// Build the agent rows in pipeline order. The running view groups them by
 	// stage (context injection → specialists → arbiter → vibe). Each row
@@ -313,9 +319,7 @@ func New(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsPara
 		overlayAgentRow{name: overlayAgentRepoArbiter, stage: stageGroupArbiter, phase: oaPending},
 		overlayAgentRow{name: review.SpecVibeCoach, stage: stageGroupVibe, phase: oaPending},
 	)
-	return &Model{
-		outerW:              ow,
-		outerH:              oh,
+	m := &Model{
 		vp:                  vp,
 		sp:                  sp,
 		agents:              ag,
@@ -328,6 +332,8 @@ func New(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsPara
 		runStartedAt:        time.Now(),
 		aiConfig:            cfg,
 	}
+	m.resizeFromScreen(screenW, screenH)
+	return m
 }
 
 func (m *Model) specialistsStageNote() string {
@@ -348,11 +354,63 @@ func (m *Model) Init() tea.Cmd {
 	return m.sp.Tick
 }
 
+// Chrome / body overhead cells.
+//
+// reviewChromeFrameW / reviewChromeFrameH are what the bubble-overlay
+// WindowChrome paints around our body when Resizable=true:
+//
+//	width:  2 (left + right box border)
+//	height: 4 (1 TabOffsetTop mask row + 1 tab cap row + 1 tab-on-border row
+//	           which is also the box top + 1 box bottom row)
+//
+// reviewBodyPadW / reviewBodyPadH are the cells reviewBodyStyle's
+// Padding(1, 2) adds inside that frame.
+//
+// reviewBodySepH counts the four non-viewport rows of the body's
+// JoinVertical layout: title, blank, blank, help.
+const (
+	reviewChromeFrameW = 2
+	reviewChromeFrameH = 4
+	reviewBodyPadW     = 4
+	reviewBodyPadH     = 2
+	reviewBodySepH     = 4
+)
+
+// resizeFromScreen sizes the modal from a raw screen budget (full
+// terminal width / height, as delivered via tea.WindowSizeMsg). This is
+// the "first paint" path — before the user has dragged the chrome
+// anywhere — so we apply the same 60..140 / 16..60 clamp the modal
+// has always used.
+//
+// Chrome-driven resizes (OnOverlayResize) take the direct content-rect
+// path through ResizeContent below; they have already been clamped by
+// WindowChrome.MinWidth / MinHeight independently.
 func (m *Model) resizeFromScreen(sw, sh int) {
-	m.outerW = util.Clamp(sw-4, 60, 140)
-	m.outerH = util.Clamp(sh-6, 16, 60)
-	innerW := max(12, m.outerW-overlays.ModalChrome.GetHorizontalFrameSize()-4)
-	innerH := max(6, m.outerH-overlays.ModalChrome.GetVerticalFrameSize()-6)
+	outerW := util.Clamp(sw-4, 60, 140)
+	outerH := util.Clamp(sh-6, 16, 60)
+	m.setOuterDims(outerW, outerH)
+}
+
+// ResizeContent applies a content rect reported by bubble-overlay's
+// WindowChrome (the rectangle inside the chrome's box border, excluding
+// the tab). The library reports this after every resize gesture; we
+// recover outerW / outerH by adding the chrome's own frame cells back
+// in so the body keeps filling the chrome exactly.
+//
+// Exposed so the package-level OverlayResizer implementation in
+// progress.go can call it without touching the unexported overhead
+// constants.
+func (m *Model) ResizeContent(contentW, contentH int) {
+	outerW := contentW + reviewChromeFrameW
+	outerH := contentH + reviewChromeFrameH
+	m.setOuterDims(outerW, outerH)
+}
+
+func (m *Model) setOuterDims(outerW, outerH int) {
+	m.outerW = outerW
+	m.outerH = outerH
+	innerW := max(12, m.outerW-reviewChromeFrameW-reviewBodyPadW)
+	innerH := max(6, m.outerH-reviewChromeFrameH-reviewBodyPadH-reviewBodySepH)
 	m.vp.Width = innerW
 	m.vp.Height = innerH
 }

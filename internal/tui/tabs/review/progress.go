@@ -14,6 +14,108 @@ import (
 // the user is done (or chose to abort). Root then pops the stack.
 type CloseMsg struct{}
 
+// ChromeTitleFallback is the static tab title the bubble-overlay stack
+// renders when our OverlayTitle() method returns "" (which it never does
+// in practice — it always reports a phase-specific label). Lives on the
+// reviewtab package so detail.go can pass the same string into
+// EnableWindowChrome without re-declaring it.
+const ChromeTitleFallback = "appr-ai-sal · review"
+
+// OnOverlayClose fires when the bubble-overlay WindowChrome [x] button
+// is clicked (or any other library-driven Pop). The library has already
+// removed this entry from the stack by the time we're called, so we
+// only need to emit a CloseMsg so the root model can run the same
+// cleanup it does when the user presses esc/q (clear m.currentReviewOverlay,
+// refresh detail views, etc.). The redundant overlayStack.Pop() in the
+// CloseMsg handler is a no-op on the empty stack — Pop is idempotent —
+// so we don't double-pop.
+func (m *Model) OnOverlayClose() tea.Cmd {
+	return func() tea.Msg { return CloseMsg{} }
+}
+
+// OverlayTitle satisfies bubble-overlay's OverlayTitler interface so the
+// chrome's tab tracks the review's phase ("running", "approving",
+// "summary", …) instead of staying frozen on the static
+// ChromeTitleFallback the OverlayConfig was constructed with. Returning
+// "" would fall back to that static title, but every phase has a
+// well-defined label so we always return a non-empty string.
+//
+// While the modal is minimized AND the pipeline is still working, we
+// splice the spinner's current frame into the tab — the tab strip is
+// the only visible affordance in that state, so animating it tells the
+// user the review hasn't stalled. When the modal is expanded the
+// running-phase body already shows per-agent spinners, so we keep the
+// title plain to avoid a second source of motion competing for
+// attention. The frame comes from the same spinner.Model that drives
+// the body's indicators, so they animate in lockstep without a second
+// ticker.
+//
+// Peruse mode is reflected by titleForPhase via its "PERUSE · " prefix,
+// so we don't need to special-case it here.
+func (m *Model) OverlayTitle() string {
+	subtitle := chromeSubtitleForPhase(m)
+	working := m.phase == phaseRunning || m.phase == phaseGeneratingSummary
+	if working && m.chromeMinimized {
+		return ChromeTitleFallback + "  " + m.sp.View() + " · " + subtitle
+	}
+	return ChromeTitleFallback + " · " + subtitle
+}
+
+// chromeSubtitleForPhase keeps OverlayTitle's switch small. The strings
+// are intentionally shorter than titleForPhase's body labels — those
+// live inside the modal where there's room — because the tab strip
+// truncates aggressively when the modal is narrow.
+func chromeSubtitleForPhase(m *Model) string {
+	switch m.phase {
+	case phaseRunning:
+		return "running"
+	case phaseApprove:
+		if m.peruse {
+			return "browsing"
+		}
+		return "approving"
+	case phaseGeneratingSummary:
+		return "refining"
+	case phaseSummary:
+		return "summary"
+	case phaseConfirmApprove:
+		return "approve PR"
+	case phasePosted:
+		return "complete"
+	}
+	return "review"
+}
+
+// OnOverlayMinimize satisfies bubble-overlay's OverlayMinimizer interface
+// and is invoked whenever the user clicks the chrome's minimize /
+// restore toggle. We mirror the new state onto chromeMinimized so
+// OverlayTitle() can decide whether to splice the spinner glyph into
+// the tab (only when minimized — see the OverlayTitle docstring for
+// why we don't double up motion when the body is visible).
+//
+// The library handles the painted rendering switch on its own, and the
+// spinner keeps ticking in the background so the title stays animated
+// for as long as the user has the modal tucked away.
+func (m *Model) OnOverlayMinimize(minimized bool) tea.Cmd {
+	m.chromeMinimized = minimized
+	return nil
+}
+
+// OnOverlayResize satisfies bubble-overlay's OverlayResizer interface so
+// the modal's viewport reflows live as the user drags a resize handle
+// (or Alt+Shift+arrow grows the chrome).
+//
+// The library reports the new content rect (chrome border + tab
+// already subtracted) and has independently applied its own
+// WindowChrome.MinWidth / MinHeight clamps, so we can feed those dims
+// straight into ResizeContent — no need to round-trip through
+// resizeFromScreen and re-apply the terminal-budget clamp.
+func (m *Model) OnOverlayResize(contentW, contentH int) tea.Cmd {
+	m.ResizeContent(contentW, contentH)
+	m.rebuildBody()
+	return nil
+}
+
 func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 	switch p.Stage {
 	case "checkout":
