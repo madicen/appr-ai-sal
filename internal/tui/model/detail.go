@@ -199,9 +199,17 @@ func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
 	case zoneInBounds(zones.ControlsProfileEdit, msg):
 		return m.openSettings(settings.StartAI), true
 	case zoneInBounds(zones.ControlsRepoAgents, msg):
-		return m.openRepoAgentsForCurrentPR(true), true
+		// Clicking the row is a navigation gesture — open the tab
+		// focused on the current PR's repo. Regeneration is reserved
+		// for the explicit "build" path (ctrl+b), so click-to-view
+		// matches click-to-view-anything-else in the controls pane and
+		// doesn't surprise the user with an expensive LLM run.
+		return m.openRepoAgentsForCurrentPR(false), true
 	case zoneInBounds(zones.ControlsTechAgents, msg):
-		return m.openRepoAgentsForCurrentPR(true), true
+		// Same as above: tech experts open in navigate-only mode.
+		// ctrl+t is also navigate; the repo-agents tab's own UI is the
+		// regen entry point once the user is there.
+		return m.openRepoAgentsForCurrentPR(false), true
 	case zoneInBounds(zones.ControlsLangAgents, msg):
 		return m.openLangAgents(), true
 	case zoneInBounds(zones.ControlsToggleParallel, msg):

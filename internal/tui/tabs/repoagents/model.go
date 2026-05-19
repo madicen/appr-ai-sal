@@ -120,6 +120,16 @@ type Model struct {
 	// regenerate-all for the focused repo.
 	pendingAutoRegen string
 
+	// focusRepo is the lowercased owner/repo the tab was asked to land on
+	// when opened (Opts.FocusRepo). We persist it past New so the async
+	// reposLoadedMsg handler can re-apply the selection after merging /
+	// re-sorting the repo list — without it, repoIdx is a stale numeric
+	// pointer into a list whose alphabetical order may have shifted, and
+	// the user ends up on whatever happens to land at that index (often
+	// the alphabetically first repo). Cleared after the first apply so
+	// later manual SelectRepo calls aren't second-guessed by reloads.
+	focusRepo string
+
 	vp viewport.Model
 }
 
@@ -193,9 +203,13 @@ func New(o Opts) *Model {
 	}
 	// Honour FocusRepo by adding it to the seed list (so it always shows up
 	// even when no PRs in the list use it) and selecting it as the active
-	// row. AutoRegenAll is consumed in Init below.
+	// row. AutoRegenAll is consumed in Init below. We also stash the key on
+	// the model so reposLoadedMsg can re-apply the selection after the
+	// async disk merge resorts the list (otherwise repoIdx points at a
+	// different repo after the sort).
 	if focus := normalizeRepoKey(o.FocusRepo); focus != "" {
 		m.repos = sanitizeRepos(append(m.repos, focus))
+		m.focusRepo = focus
 		for i, r := range m.repos {
 			if r == focus {
 				m.repoIdx = i
@@ -252,6 +266,22 @@ func (m *Model) Init() tea.Cmd {
 		m.pendingAutoRegen = ""
 	}
 	return tea.Batch(cmds...)
+}
+
+// CurrentRepoKey returns the lowercased owner/repo currently selected in the
+// tab, or "" when the tab has no repos. Public so callers (and tests) can
+// observe which repo the tab landed on after opening — useful for asserting
+// that FocusRepo survived the async reposLoadedMsg merge.
+func (m *Model) CurrentRepoKey() string {
+	return m.currentRepoKey()
+}
+
+// Status returns the user-visible status line (e.g. "regenerating all
+// agents for owner/repo …"). Tests use this to confirm whether opening
+// the tab via AutoRegenAll triggered a build vs. landed in pure
+// navigation mode (empty status).
+func (m *Model) Status() string {
+	return m.statusMsg
 }
 
 // SelectRepo sets the active repo in the tab. Returns true when the repo was
@@ -354,6 +384,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			merged = append(merged, r)
 		}
 		m.repos = sanitizeRepos(merged)
+		// Re-apply the initial focus, if any. sanitizeRepos re-sorts the
+		// merged list alphabetically, so the numeric repoIdx that was
+		// good at New time often points at a different repo after the
+		// disk merge. Re-finding by key restores the caller's intent
+		// (e.g. "open the tab on the current PR's repo"). We only do
+		// this once — subsequent reposLoadedMsg events (e.g. from a
+		// user-initiated add) should respect whatever the user is
+		// currently looking at.
+		if m.focusRepo != "" {
+			for i, r := range m.repos {
+				if r == m.focusRepo {
+					m.repoIdx = i
+					break
+				}
+			}
+			m.focusRepo = ""
+		}
 		if m.repoIdx >= len(m.repos) {
 			m.repoIdx = 0
 		}
