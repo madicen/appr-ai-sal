@@ -154,17 +154,13 @@ The tape scripts live in [`vhs/`](vhs/) and the canned data in
 are tuned for a 1300×700 capture; tweak the `Set` directives at the top
 of each tape if you need a different size.
 
-The specialists are independent: each one focuses on a single concern
-(formatting, design, testing, docs, security) so their feedback is targeted
-and not muddled. A "vibe coach" specialist reads the combined output and
-produces a small set of high-leverage prompts the PR author can paste back
-into their own AI assistant.
-
 The same specialist prompts and JSON contracts are used for every backend;
 only the inference transport changes (subprocess `claude` vs HTTP). A bounded
 **repository context** block (convention files from the PR worktree plus
 optional merged-PR digest) is injected into every specialist and the vibe coach
-so Claude and HTTP backends see the same baseline “repo culture” text.
+so Claude and HTTP backends see the same baseline “repo culture” text. The
+[Review pipeline](#review-pipeline) section below walks through every agent
+that participates in a run.
 
 ### Review strictness
 
@@ -254,25 +250,117 @@ without rebuilding from source, drop an override at
 `~/.config/appr-ai-sal/prompts/<name>.md` (or `$XDG_CONFIG_HOME/appr-ai-sal/prompts/<name>.md`).
 The override takes precedence over the embedded prompt.
 
-## How it works
+## Review pipeline
 
-1. You select a PR (or paste a URL).
-2. `appr-ai-sal` fetches the PR's branch into a worktree under
-   `~/.cache/appr-ai-sal/`.
-3. It builds repository context from the PR worktree (and optional mapped local
-   clone for missing convention files), optionally appends a capped list of
-   recent merged PR titles from `gh`, then runs one inference call per
-   specialist in parallel. With **Claude**, that is `claude -p` with read-only
-   repo tools under the worktree. With **HTTP** backends there are no repo tools;
-   models rely on the unified diff, PR metadata, and the same injected
-   repository context block as Claude.
-4. Each specialist returns structured findings (path, line, severity,
-   comment, suggested edit).
-5. Once all specialists return, the vibe coach runs over their collected
-   output to produce author prompts.
-6. The TUI renders the draft review. You review, edit, and post.
+A run is a chain of small agents, each with a narrow job. The
+[Specialists](#specialists) subsection above lists the five code reviewers
+whose tags you see on each finding; this section explains every agent that
+participates — including the briefs they consume — and the order things
+happen in.
 
-Nothing is posted to GitHub until you press `p` and confirm.
+### The agents
+
+- **Code-reviewing specialists** (5 agents: `formatting`, `design`,
+  `testing`, `docs`, `security`). Each reads the PR (diff + injected
+  context briefs, repository tools when running on Claude) and returns
+  structured findings inside its lane. They never reach outside their
+  specialty in the rendered output, and every comment in the draft is
+  tagged with the specialist that produced it. Sequential by default;
+  toggle **Parallel specialists** in the Review controls pane (or set
+  `parallel_specialists: true` in `repo-context.json`) to run them
+  concurrently.
+
+- **Repo agents** (one brief per `(repo, specialist)`). Short markdown
+  documents describing how *this* repo handles each topic — e.g. the
+  testing brief might say "small pure helpers ship without tests in this
+  codebase." Each specialist's brief is threaded into its own user
+  prompt before it runs, so the specialist's findings reflect the local
+  convention rather than a generic best-practice. Open the **Repo
+  agents** tab with `ctrl+r` (or click the row in the controls pane);
+  build / refresh from the PR you're on with `ctrl+b`.
+
+- **Tech experts** (one brief per `(repo, technology)`). Per-stack
+  conventions — e.g. "Kestra flows in this repo register triggers via
+  X." A tech brief lives on a repo and is shared across all five
+  specialists for that repo. Tech experts are opt-in: a fresh repo has
+  none until you add one. Manage them with `ctrl+t`.
+
+- **Language briefs** (one brief per language). Convention notes that
+  apply *across* repos — Python uses `snake_case`, Go's exported
+  identifiers carry godoc comments, etc. The runner picks the brief(s)
+  matching the diff's dominant language(s) and injects them into every
+  specialist. The top-5 languages ship as bundled defaults; you can
+  generate, edit, and refresh them in the **Lang agents** tab (`ctrl+l`).
+
+- **Repository context block**. A bounded text blob built from the PR
+  worktree's convention files (`AGENTS.md`, `README`, lint configs)
+  plus an optional digest of recent merged-PR titles. Surfaced to the
+  human reviewer in the TUI; the per-specialist repo agent briefs above
+  are what specialists actually consume on the prompt side.
+
+- **Per-PR evidence pack**. Static + history evidence harvested from
+  the PR worktree (sibling test files, doc.go presence,
+  exported-symbol coverage, recent merged PRs touching the changed
+  paths). Currently injected only into the `testing` and `docs`
+  specialists and reused by the convention witness below.
+
+- **Convention witness**. A per-finding sanity check that fires
+  *between* the specialists and the arbiter for `testing` / `docs`
+  findings. For each finding it answers a single question — "does the
+  rest of this repo actually do what this finding asks for?" — and
+  tags it `congruent`, `divergent`, or `unknown` with a short
+  citation. The arbiter consumes the verdicts; reviewers see the
+  divergent/congruent/unknown tallies in the rendered review body.
+  Disabled by setting `convention_witness: false` in
+  `repo-context.json`.
+
+- **Repo arbiter**. The last gate before the human sees the findings.
+  Reads every specialist's output plus the briefs and convention
+  witnesses, and may **suppress** an inline comment (drop it from the
+  GitHub post; still shown in the TUI so the reviewer can override),
+  **demote** its severity by one rank, or **override** the merge
+  verdict. Defaults to "trust the specialists" — most calibration
+  already happened upstream via the briefs — and only intervenes when
+  a finding contradicts an explicit repo norm. Disabled by setting
+  `repo_expert_panel: false` in `repo-context.json`.
+
+- **Vibe coach**. A synthesis pass after the arbiter that reads the
+  surviving findings and emits (a) a merge **verdict** (`approve` /
+  `request_changes` / `comment`) and (b) a small set of paste-ready
+  **author prompts** the PR author can drop into *their* AI assistant
+  to fix the most important issues in one or two iterations. Re-runs
+  lazily if you skip findings during the approval flow so the verdict
+  and summary stay in sync with what you're actually posting.
+
+### Run order
+
+1. **Worktree + diff** — clone the PR head into
+   `~/.cache/appr-ai-sal/worktrees/`, fetch the unified diff. No LLM
+   calls yet.
+2. **Context injection** — load the per-specialist repo agent briefs,
+   tech expert briefs, language briefs, the repository context block,
+   and (for `testing` / `docs`) the per-PR evidence pack. Progress for
+   each appears in the **Context injection** group at the top of the
+   running overlay.
+3. **Specialists** run with their injected briefs (sequential by
+   default; parallel when configured). Each one is independently
+   retried inside its own per-stage budget.
+4. **Convention witness** (optional) classifies every testing/docs
+   finding against the PR evidence pack.
+5. **Repo arbiter** (optional) reconciles the specialist findings with
+   the briefs and witnesses; may suppress, demote, or override the
+   verdict.
+6. **Vibe coach** consumes the post-arbiter findings and produces the
+   verdict + paste-ready author prompts.
+7. **Review overlay** opens. You walk findings one card at a time
+   (`y` to post, `n` / `s` to skip, `←` / `→` to navigate, `f` to skip
+   the rest), then confirm the summary. **Nothing hits GitHub until
+   you press `y` on the final confirmation.**
+
+The chrome `[-]` button collapses the modal to its tab strip so you
+can keep browsing the diff while the pipeline runs; flip **Start
+review minimized** in the Run options pane to open the modal that way
+by default.
 
 ## AI configuration
 
