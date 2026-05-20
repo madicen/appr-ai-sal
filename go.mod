@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/lrstanley/bubblezone v1.0.0
 	github.com/madicen/bubble-color-picker v0.1.1
-	github.com/madicen/bubble-overlay v0.0.0-20260519170516-f5f558a16d13
+	github.com/madicen/bubble-overlay v0.0.0-20260519210602-a1ea65bfa4f7
 	github.com/muesli/termenv v0.16.0
 )
 
@@ -46,9 +46,3 @@ require (
 	golang.org/x/term v0.36.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 )
-
-// Point at the local bubble-overlay checkout that carries the
-// mouse-pass-through branch (madicen/bubble-overlay#17, adds
-// OverlayStack.MouseTargetsTop). Drop this replace and bump the require
-// line above to the merged SHA once the PR lands on main.
-replace github.com/madicen/bubble-overlay => ../bubble-overlay
