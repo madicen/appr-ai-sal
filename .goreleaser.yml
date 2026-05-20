@@ -1,0 +1,92 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: appr-ai-sal
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: appr-ai-sal
+    main: ./cmd/appr-ai-sal
+    binary: appr-ai-sal
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+      - Merge pull request
+      - Merge branch
+
+homebrew_casks:
+  - name: appr-ai-sal
+    repository:
+      owner: madicen
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/madicen/appr-ai-sal"
+    description: "Specialist AI code reviews for your GitHub PRs, in the terminal"
+    license: "MIT"
+    binaries:
+      - appr-ai-sal
+    # gh is the only hard runtime dep we can install via brew — the AI backend
+    # (claude CLI / Ollama / Gemini / OpenAI-compatible) is the user's choice
+    # and is configured at runtime, so we don't pin one here.
+    dependencies:
+      - formula: gh
+    # Unsigned GitHub release binaries are quarantined; without this, macOS shows
+    # "could not verify… malware" until the user runs xattr manually. Prefer real
+    # signing + notarization when feasible; see
+    # https://goreleaser.com/customization/publish/homebrew_casks/
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/appr-ai-sal"]
+          end
+
+release:
+  github:
+    owner: madicen
+    name: appr-ai-sal
+  draft: false
+  prerelease: auto
+  name_template: "v{{ .Version }}"
