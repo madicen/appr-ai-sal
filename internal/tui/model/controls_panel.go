@@ -172,7 +172,7 @@ func (m *Model) renderControlsToggles(width int) string {
 	parallel, _ := repoParallelExecutionFlags()
 	b.WriteString(zone.Mark(zones.ControlsToggleParallel, fitToWidth(toggleRow("Parallel specialists", parallel), width)) + "\n")
 	b.WriteString(zone.Mark(zones.ControlsToggleDryRun, fitToWidth(toggleRow("Dry run", m.opts.DryRun), width)) + "\n")
-	b.WriteString(zone.Mark(zones.ControlsTogglePeruse, fitToWidth(toggleRow("Peruse mode (ctrl+v)", m.peruseRequested), width)) + "\n")
+	b.WriteString(zone.Mark(zones.ControlsToggleStartMinimized, fitToWidth(toggleRow("Start review minimized", m.startReviewMinimized), width)) + "\n")
 	return b.String()
 }
 
@@ -192,9 +192,6 @@ func (m *Model) renderControlsStartButton(width int) string {
 		startBtn = styles.DimStyle.Render(startLabel)
 	}
 	b.WriteString(zone.Mark(zones.ControlsStartReview, startBtn) + "\n")
-	peruseLabel := " Peruse (ctrl+v) "
-	peruseBtn := styles.DimStyle.Render(peruseLabel)
-	b.WriteString(zone.Mark(zones.ControlsStartReviewPeruse, peruseBtn) + "\n")
 	return b.String()
 }
 

@@ -124,9 +124,9 @@ func (m *Model) renderSummaryBody() string {
 	b.WriteString("\n")
 	yes := zone.Mark(zones.StagedSummaryYes, styles.OkStyle.Render(" Post summary (y) "))
 	no := zone.Mark(zones.StagedSummaryNo, styles.DimStyle.Render(" Skip summary (n) "))
-	// "Approve only" is always offered at phaseSummary (peruse mode aside)
-	// so the human reviewer can submit GitHub APPROVE without publishing
-	// the summary body, regardless of how the AI verdict came out or
+	// "Approve only" is always offered at phaseSummary so the human
+	// reviewer can submit GitHub APPROVE without publishing the
+	// summary body, regardless of how the AI verdict came out or
 	// whether they already posted inline comments. The contextual hint
 	// paragraph above (gated on summaryPhaseOfferApproveWithoutSummary)
 	// only nudges them toward this path in the specific "you posted no
@@ -295,31 +295,21 @@ func (m *Model) View() string {
 }
 
 func (m *Model) titleForPhase() string {
-	prefix := ""
-	if m.peruse {
-		prefix = "PERUSE · "
-	}
 	switch m.phase {
 	case phaseRunning:
-		return prefix + "Review in progress"
+		return "Review in progress"
 	case phaseApprove:
-		if m.peruse {
-			return prefix + "Browse findings"
-		}
-		return prefix + "Review · approve findings"
+		return "Review · approve findings"
 	case phaseGeneratingSummary:
-		return prefix + "Review · refining summary"
+		return "Review · refining summary"
 	case phaseSummary:
-		if m.peruse {
-			return prefix + "Final summary preview"
-		}
-		return prefix + "Review · post summary"
+		return "Review · post summary"
 	case phaseConfirmApprove:
-		return prefix + "Review · approve PR"
+		return "Review · approve PR"
 	case phasePosted:
-		return prefix + "Review complete"
+		return "Review complete"
 	}
-	return prefix + "Review"
+	return "Review"
 }
 
 func (m *Model) spinnerForPhase() string {
@@ -330,31 +320,14 @@ func (m *Model) spinnerForPhase() string {
 }
 
 func (m *Model) helpForPhase() string {
-	// Peruse-mode flash takes priority for one frame so the user sees
-	// immediate feedback when they hit a disabled action key.
-	if m.peruseHint != "" {
-		hint := m.peruseHint
-		m.peruseHint = ""
-		return hint
-	}
-	peruseSuffix := ""
-	if m.peruse {
-		peruseSuffix = " · (peruse mode · no posting)"
-	}
 	switch m.phase {
 	case phaseRunning:
-		return "j/k focus row · space expand · q abort · ↑/↓ pgdn scroll · wheel" + peruseSuffix
+		return "j/k focus row · space expand · q abort · ↑/↓ pgdn scroll · wheel"
 	case phaseApprove:
-		if m.peruse {
-			return "←/→ prev/next · f jump to summary · R refresh PR · q exit · ↑/↓ scroll · wheel" + peruseSuffix
-		}
 		return "y post · n/s skip · ←/→ prev/next · R refresh PR · f skip-rest · q abort · wheel"
 	case phaseGeneratingSummary:
 		return "refining summary with your final selections… · q abort"
 	case phaseSummary:
-		if m.peruse {
-			return "↑/↓ scroll preview · R refresh PR · q exit" + peruseSuffix
-		}
 		// "a approve only" is always part of the help line at phaseSummary
 		// because the Approve only button is always rendered there. The
 		// suggestive variant ("approve without summary") is reserved for
@@ -364,9 +337,6 @@ func (m *Model) helpForPhase() string {
 		}
 		return "y post summary · a approve only · R refresh PR · n skip · q abort · ↑/↓ scroll preview · wheel"
 	case phaseConfirmApprove:
-		if m.peruse {
-			return "↑/↓ scroll · q exit" + peruseSuffix
-		}
 		if m.noFindingsApprove {
 			return "y APPROVE with body · a APPROVE without body · R refresh PR · q abort"
 		}
@@ -442,12 +412,6 @@ func (m *Model) RebuildIfVisible() {
 
 // SetDryRun lets root toggle dry-run after the overlay was constructed (rare).
 func (m *Model) SetDryRun(b bool) { m.dryRun = b }
-
-// SetPeruse switches the overlay into (or out of) peruse mode — a read-only
-// walkthrough where actPost*/actSkip* become no-ops. Root sets this right
-// after construction; toggling it post-adoption is not supported and not
-// exercised by any flow.
-func (m *Model) SetPeruse(b bool) { m.peruse = b }
 
 // Phase enumerates the overlay's screen state. Root reads this via Phase()
 // for routing decisions; tests in sibling packages match against the

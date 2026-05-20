@@ -269,16 +269,6 @@ type Model struct {
 	// header so the user knows the summary they're seeing may be stale
 	// or missing fix-prompts.
 	coachErr error
-
-	// peruse is the read-only walkthrough mode (entered via ctrl+v from
-	// the PR detail view). When true, actPost* and actSkip* become no-ops
-	// and the help line says so — the user can browse findings and the
-	// rendered summary without committing anything to GitHub.
-	peruse bool
-	// peruseHint is set briefly when the user presses a disabled action
-	// key in peruse mode. Rendered in the help line for one frame as a
-	// flash response, then cleared on the next non-flash key.
-	peruseHint string
 }
 
 func zoneOverlayAgent(i int) string {
@@ -653,7 +643,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastCoachHash = curHash
 		// Verdict may have changed (e.g. user skipped the last blocker
 		// → APPROVE). Route accordingly.
-		if !m.peruse && m.draft.PostEvent() == "APPROVE" && len(m.cards) > 0 {
+		if m.draft.PostEvent() == "APPROVE" && len(m.cards) > 0 {
 			// Only auto-route to confirmApprove when there were
 			// cards (i.e. we came through phaseApprove). If we
 			// reached enterSummary from AdoptDraft directly with
@@ -812,12 +802,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case "n", "N":
-			// In peruse mode there's nothing to "skip posting" of, so
-			// just close the overlay rather than rendering a misleading
-			// "you skipped post" message.
-			if m.peruse {
-				return m, func() tea.Msg { return CloseMsg{} }
-			}
 			m.summarySkip = true
 			m.phase = phasePosted
 			m.rebuildBody()
@@ -918,9 +902,6 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m.actPostSummary()
 			}
 			if z := zone.Get(zones.StagedSummaryNo); z != nil && z.InBounds(msg) {
-				if m.peruse {
-					return m, func() tea.Msg { return CloseMsg{} }
-				}
 				m.summarySkip = true
 				m.phase = phasePosted
 				m.rebuildBody()

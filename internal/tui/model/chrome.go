@@ -15,11 +15,6 @@ func clampInt(v, lo, hi int) int {
 	return v
 }
 
-// startReviewOverlay constructs the review overlay, pushes it onto the
-// stack, and kicks off the runner. When peruse is true, the overlay's
-// peruse flag is set so post / skip actions become no-ops with a flash
-// hint — the user can browse findings and the rendered summary without
-// committing anything to GitHub.
 func (m *Model) relayout() {
 	if m.width == 0 || m.height == 0 {
 		return

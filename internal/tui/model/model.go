@@ -316,10 +316,11 @@ type Model struct {
 	controlsHidden     bool
 	controlsUserHidden bool
 
-	// peruseRequested toggles the "Peruse mode" preference for the
-	// next review run kicked from the controls panel. Equivalent to
-	// the ctrl+v keybinding; reset when a review starts.
-	peruseRequested bool
+	// startReviewMinimized toggles the "Start minimized" preference
+	// for the next review run kicked from the controls panel. When
+	// true the review overlay opens collapsed to its tab strip so the
+	// PR detail view stays fully visible; reset when a review starts.
+	startReviewMinimized bool
 
 	// treeScrollLines is the line count of tree viewport content after the last
 	// refresh (used for mouse row mapping; must match visible wrapped lines).
@@ -593,6 +594,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.refreshDetailViews()
 		}
 		return m, c
+
+	case reviewOverlayMinimizeRequestMsg:
+		return m, m.minimizeReviewOverlay()
 
 	case state.NavigateMsg:
 		return m.handleNavigate(msg.Target)
