@@ -232,18 +232,12 @@ func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
 		m.opts.DryRun = !m.opts.DryRun
 		m.refreshDetailViews()
 		return nil, true
-	case zoneInBounds(zones.ControlsTogglePeruse, msg):
-		m.peruseRequested = !m.peruseRequested
+	case zoneInBounds(zones.ControlsToggleStartMinimized, msg):
+		m.startReviewMinimized = !m.startReviewMinimized
 		m.refreshDetailViews()
 		return nil, true
 	case zoneInBounds(zones.ControlsStartReview, msg):
-		peruse := m.peruseRequested
-		m.peruseRequested = false
-		_, cmd := m.startReviewOverlay(peruse)
-		return cmd, true
-	case zoneInBounds(zones.ControlsStartReviewPeruse, msg):
-		m.peruseRequested = false
-		_, cmd := m.startReviewOverlay(true)
+		_, cmd := m.startReviewOverlay()
 		return cmd, true
 	}
 	return nil, false
@@ -337,15 +331,7 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.refreshDetailViews()
 		return m, nil
 	case "r":
-		peruse := m.peruseRequested
-		m.peruseRequested = false
-		return m.startReviewOverlay(peruse)
-	case "ctrl+v":
-		// Peruse: same review run, read-only walkthrough. The overlay
-		// disables post/skip actions and lets the user see the final
-		// rendered summary without committing anything to GitHub.
-		m.peruseRequested = false
-		return m.startReviewOverlay(true)
+		return m.startReviewOverlay()
 	case "c":
 		// Toggle the right-hand "Review controls" pane. When the user
 		// hides it explicitly, remember that preference so a window
@@ -540,7 +526,7 @@ func (m *Model) applyLeftColumnIndex(idx int) {
 	m.scrollToSelectedFile = true
 }
 
-func (m *Model) startReviewOverlay(peruse bool) (tea.Model, tea.Cmd) {
+func (m *Model) startReviewOverlay() (tea.Model, tea.Cmd) {
 	if m.currentPR == nil {
 		return m, nil
 	}
@@ -549,14 +535,63 @@ func (m *Model) startReviewOverlay(peruse bool) (tea.Model, tea.Cmd) {
 	m.recomputeTreeRows()
 	parallelSpec, parallelRE := repoParallelExecutionFlags()
 	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
-	ro.SetPeruse(peruse)
 	m.currentReviewOverlay = ro
 	cfg := reviewWindowConfig()
-	return m, tea.Batch(
+	// Consume the "start minimized" preference here so a subsequent
+	// run defaults back to expanded.
+	startMinimized := m.startReviewMinimized
+	m.startReviewMinimized = false
+
+	// Sequence: push the overlay, deliver the synthetic WindowSizeMsg
+	// so the chrome and viewport size before we try to compute a
+	// click location, then (optionally) collapse the modal to its
+	// tab strip. The review run kicks off in parallel — it talks to
+	// the network via a goroutine that emits ProgressMsgs, so it
+	// doesn't need to wait for layout to settle.
+	prep := tea.Sequence(
 		m.overlayStack.Push(ro, cfg),
 		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
-		data.StartReviewCmd(ref, m.opts.AIConfig, m.opts.Demo),
 	)
+	if startMinimized {
+		prep = tea.Sequence(prep, func() tea.Msg { return reviewOverlayMinimizeRequestMsg{} })
+	}
+	return m, tea.Batch(prep, data.StartReviewCmd(ref, m.opts.AIConfig, m.opts.Demo))
+}
+
+// reviewOverlayMinimizeRequestMsg asks the root to collapse the
+// just-opened review overlay to its chrome tab strip. The handler
+// looks up the top entry's chrome regions and dispatches a synthetic
+// mouse press on the [-] minimize button — bubble-overlay only flips
+// LayerState.Minimized from a chrome-handled mouse press, so this
+// indirection is the public API we have for "start collapsed".
+type reviewOverlayMinimizeRequestMsg struct{}
+
+// minimizeReviewOverlay computes the screen position of the active
+// overlay's minimize button and synthesizes a left-button press there,
+// dispatching it through the overlay stack so the chrome's mouse
+// handler toggles LayerState.Minimized. Returns the stack's resulting
+// cmd (typically nil; minimize callbacks may schedule follow-up work).
+//
+// No-ops when no review overlay is on top, when the terminal hasn't
+// been sized yet, or when the chrome doesn't expose a minimize button.
+func (m *Model) minimizeReviewOverlay() tea.Cmd {
+	if m.reviewOverlayOnTop() == nil {
+		return nil
+	}
+	if m.width <= 0 || m.height <= 0 {
+		return nil
+	}
+	top, left, regions, ok := m.overlayStack.TopChromeLayout(m.width, m.height)
+	if !ok || regions.MinimizeW == 0 {
+		return nil
+	}
+	press := tea.MouseMsg{
+		X:      left + regions.MinimizeX + regions.MinimizeW/2,
+		Y:      top + regions.MinimizeY,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	return m.overlayStack.Update(press)
 }
 
 // reviewWindowConfig builds the bubble-overlay config for the review

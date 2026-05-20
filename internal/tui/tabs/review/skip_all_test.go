@@ -444,30 +444,3 @@ func TestSummaryPhaseApproveOnlyKeySendsApprove(t *testing.T) {
 		t.Fatalf("phase should remain phaseSummary until the post completes, got %v", ro.phase)
 	}
 }
-
-// TestSummaryPhaseAllowApproveOnlyDisabledInPeruse keeps peruse mode
-// strictly read-only — even though the button is otherwise always
-// available, peruse must never expose an action that posts to GitHub.
-func TestSummaryPhaseAllowApproveOnlyDisabledInPeruse(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil, false)
-	ro.peruse = true
-	d := &review.Draft{
-		PR:   &gh.PR{Repository: "o/r", Number: 1, HeadSHA: "abc", Owner: "o", Repo: "r"},
-		Diff: skipAllTestDiff,
-		Specialists: []review.SpecialistResult{
-			{Specialist: review.SpecDocs, Findings: []review.Finding{
-				{Path: "a.go", Line: 1, Side: "RIGHT", Severity: review.SeverityWarning, Comment: "c1"},
-			}},
-		},
-		VibeCoach: &review.VibeCoachResult{Verdict: review.VibeVerdictRequestChanges},
-	}
-	ro.AdoptDraft(d)
-	ro.phase = phaseSummary
-	if ro.summaryPhaseAllowApproveOnly() {
-		t.Fatal("peruse mode must never allow Approve only — read-only walkthrough should not expose post actions")
-	}
-	body := ro.renderSummaryBody()
-	if strings.Contains(body, "Approve only (a)") {
-		t.Fatalf("peruse summary body should not render the Approve only button: %s", body)
-	}
-}

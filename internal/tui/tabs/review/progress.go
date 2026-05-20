@@ -49,9 +49,6 @@ func (m *Model) OnOverlayClose() tea.Cmd {
 // attention. The frame comes from the same spinner.Model that drives
 // the body's indicators, so they animate in lockstep without a second
 // ticker.
-//
-// Peruse mode is reflected by titleForPhase via its "PERUSE · " prefix,
-// so we don't need to special-case it here.
 func (m *Model) OverlayTitle() string {
 	subtitle := chromeSubtitleForPhase(m)
 	working := m.phase == phaseRunning || m.phase == phaseGeneratingSummary
@@ -70,9 +67,6 @@ func chromeSubtitleForPhase(m *Model) string {
 	case phaseRunning:
 		return "running"
 	case phaseApprove:
-		if m.peruse {
-			return "browsing"
-		}
 		return "approving"
 	case phaseGeneratingSummary:
 		return "refining"

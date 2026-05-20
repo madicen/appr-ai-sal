@@ -104,8 +104,8 @@ func TestMiniHeaderHasNoAgentChips(t *testing.T) {
 // Clicking the "Parallel specialists" toggle in the Run options list must
 // flip the on-disk repoconfig knob in place — not navigate the user to the
 // Settings tab. The earlier "open settings" routing was confusing because
-// it broke the muscle memory the sibling toggles ("Dry run", "Peruse")
-// already established (click → flip → done).
+// it broke the muscle memory the sibling toggles ("Dry run", "Start review
+// minimized") already established (click → flip → done).
 func TestControlsClickToggleParallelFlipsRepoConfigInline(t *testing.T) {
 	t.Setenv("APPR_AI_SAL_CONFIG_DIR", t.TempDir())
 	// Defensively neutralize any APPR_AI_SAL_PARALLEL_SPECIALISTS the

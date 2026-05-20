@@ -165,93 +165,6 @@ func TestVibeCoachDoneMsgInstallsFreshResult(t *testing.T) {
 	}
 }
 
-// Peruse mode: pressing y on a finding card is a no-op. The card state
-// must NOT flip to posted; the help line flashes a hint about peruse.
-func TestPeruseModeBlocksPost(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil, false)
-	ro.peruse = true
-	ro.AdoptDraft(newDeferTestDraft(t))
-	if ro.phase != phaseApprove {
-		t.Fatalf("preconditions: phase %v, want phaseApprove", ro.phase)
-	}
-	if len(ro.cards) != 1 {
-		t.Fatalf("preconditions: cards %d, want 1", len(ro.cards))
-	}
-	out, cmd := ro.actPostCurrent()
-	ro = out.(*Model)
-	if cmd != nil {
-		t.Errorf("expected no cmd from peruse-blocked post, got non-nil")
-	}
-	if ro.cards[0].state == cardPosted {
-		t.Errorf("peruse should not mark the card as posted")
-	}
-	if !strings.Contains(ro.peruseHint, "peruse") {
-		t.Errorf("expected peruse hint, got %q", ro.peruseHint)
-	}
-}
-
-// Peruse mode: pressing s/n on a finding card is a no-op. The card
-// state must NOT flip to skipped; the help line flashes a hint.
-func TestPeruseModeBlocksSkip(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil, false)
-	ro.peruse = true
-	ro.AdoptDraft(newDeferTestDraft(t))
-	out, cmd := ro.actSkipCurrent()
-	ro = out.(*Model)
-	if cmd != nil {
-		t.Errorf("expected no cmd from peruse-blocked skip, got non-nil")
-	}
-	if ro.cards[0].state == cardSkipped {
-		t.Errorf("peruse should not mark the card as skipped")
-	}
-	if !strings.Contains(ro.peruseHint, "peruse") {
-		t.Errorf("expected peruse hint, got %q", ro.peruseHint)
-	}
-}
-
-// Peruse mode: pressing y on the summary phase is a no-op. The user
-// should never accidentally post a peruse-only review.
-func TestPeruseModeBlocksPostSummary(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil, false)
-	ro.peruse = true
-	ro.AdoptDraft(newDeferTestDraft(t))
-	out, cmd := ro.actPostSummary()
-	ro = out.(*Model)
-	if cmd != nil {
-		t.Errorf("expected no cmd from peruse-blocked post-summary, got non-nil")
-	}
-	if !strings.Contains(ro.peruseHint, "peruse") {
-		t.Errorf("expected peruse hint, got %q", ro.peruseHint)
-	}
-}
-
-// Peruse-mode title carries a "PERUSE" prefix so the user can never
-// mistake which mode they're in.
-func TestPeruseModeTitlePrefix(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil, false)
-	ro.peruse = true
-	for _, p := range []overlayPhase{phaseRunning, phaseApprove, phaseGeneratingSummary, phaseSummary, phasePosted} {
-		ro.phase = p
-		if !strings.HasPrefix(ro.titleForPhase(), "PERUSE") {
-			t.Errorf("phase %v: title missing PERUSE prefix: %q", p, ro.titleForPhase())
-		}
-	}
-}
-
-// Peruse-mode help text mentions "no posting" so the user knows their
-// keys are intentionally disabled.
-func TestPeruseModeHelpMentionsNoPosting(t *testing.T) {
-	ro := New(120, 44, false, false, false, nil, false)
-	ro.peruse = true
-	for _, p := range []overlayPhase{phaseRunning, phaseApprove, phaseSummary, phaseConfirmApprove} {
-		ro.phase = p
-		h := ro.helpForPhase()
-		if !strings.Contains(h, "peruse") {
-			t.Errorf("phase %v: help line missing peruse marker: %q", p, h)
-		}
-	}
-}
-
 // Generating-summary phase has its own help text so the user knows
 // they're waiting on the LLM, not stuck.
 func TestGeneratingSummaryHelpText(t *testing.T) {
@@ -286,7 +199,7 @@ func TestSkipSetHashStable(t *testing.T) {
 	}
 }
 
-// Ensure typed assertion of tea.Cmd usage compiles when reading the
-// peruse / done-msg messages; doc-only guard so the test file's
-// imports stay used if other tests are reworked.
+// Ensure typed assertion of tea.Cmd usage compiles for the vibe-coach
+// done-msg messages; doc-only guard so the test file's imports stay
+// used if other tests are reworked.
 var _ tea.Cmd = func() tea.Msg { return nil }

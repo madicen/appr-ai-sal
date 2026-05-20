@@ -47,8 +47,7 @@ func skipSetHash(keys map[string]struct{}) string {
 // the user's skips onto the draft, then either:
 //
 //   - lands directly in phaseSummary when no LLM refresh is needed
-//     (no aiConfig, identical skip set as last run, or peruse mode
-//     with an already-fresh draft), or
+//     (no aiConfig, identical skip set as last run), or
 //   - sets phaseGeneratingSummary and returns a tea.Cmd that runs
 //     vibe-coach against the final finding set off the UI thread.
 //
@@ -145,18 +144,13 @@ func (m *Model) advanceCard() tea.Cmd {
 		// did not recommend approve — treat as disagreeing with the objections
 		// and offer GitHub APPROVE before the long summary path.
 		skipDisagree := m.draft != nil && m.draft.PostEvent() != "APPROVE" && posted == 0 && skipped > 0
-		// Peruse mode never offers approval shortcuts — we only show
-		// the rendered summary so the user can read it.
-		if m.peruse {
-			skipDisagree = false
-		}
 		m.approveAfterSkipDisagree = skipDisagree
 		switch {
 		case skipDisagree:
 			m.phase = phaseConfirmApprove
 			m.vp.GotoTop()
 			return nil
-		case !m.peruse && m.draft != nil && m.draft.PostEvent() == "APPROVE":
+		case m.draft != nil && m.draft.PostEvent() == "APPROVE":
 			m.approveAfterSkipDisagree = false
 			m.phase = phaseConfirmApprove
 			m.vp.GotoTop()
@@ -171,9 +165,6 @@ func (m *Model) advanceCard() tea.Cmd {
 }
 
 func (m *Model) actPostCurrent() (tea.Model, tea.Cmd) {
-	if m.peruse {
-		return m.flashPeruse("peruse mode — no posting; use ←/→ to navigate, f to jump to summary, q to exit")
-	}
 	if m.existingCommentsLoading || m.idx >= len(m.cards) || m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
@@ -217,9 +208,6 @@ func (m *Model) actPostCurrent() (tea.Model, tea.Cmd) {
 // skipped, or pending with a valid hunk — F is a no-op (the inline
 // post is still the right choice and the reviewer should press y).
 func (m *Model) actPostCurrentFileLevel() (tea.Model, tea.Cmd) {
-	if m.peruse {
-		return m.flashPeruse("peruse mode — no posting; use ←/→ to navigate, f to jump to summary, q to exit")
-	}
 	if m.existingCommentsLoading || m.idx >= len(m.cards) || m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
@@ -330,9 +318,6 @@ func shortSHA(s string) string {
 }
 
 func (m *Model) actSkipCurrent() (tea.Model, tea.Cmd) {
-	if m.peruse {
-		return m.flashPeruse("peruse mode — no skipping; use ←/→ to navigate, f to jump to summary, q to exit")
-	}
 	if m.idx >= len(m.cards) {
 		return m, nil
 	}
@@ -366,9 +351,6 @@ func (m *Model) actPrev() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) actPostSummary() (tea.Model, tea.Cmd) {
-	if m.peruse {
-		return m.flashPeruse("peruse mode — no posting; q to exit without sending anything")
-	}
 	if m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
@@ -389,9 +371,6 @@ func (m *Model) actPostSummary() (tea.Model, tea.Cmd) {
 // that and posts APPROVE with an explicit empty body for reviewers who don't
 // want any review text published alongside the approval.
 func (m *Model) actPostApprove() (tea.Model, tea.Cmd) {
-	if m.peruse {
-		return m.flashPeruse("peruse mode — no approving; q to exit without sending anything")
-	}
 	if m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
@@ -407,23 +386,10 @@ func (m *Model) actPostApprove() (tea.Model, tea.Cmd) {
 // button there, where APPROVE always means "no body" already so the two
 // paths are equivalent.
 func (m *Model) actPostApproveOnly() (tea.Model, tea.Cmd) {
-	if m.peruse {
-		return m.flashPeruse("peruse mode — no approving; q to exit without sending anything")
-	}
 	if m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
 	return m, data.PostApproveBareCmd(m.draft.Ref, m.draft, m.dryRun, m.demoMode)
-}
-
-// flashPeruse records a one-frame help-line hint to surface why an
-// action key was ignored in peruse mode, then triggers a rebuild so
-// the hint is visible. Returns the no-op (m, nil) tuple every caller
-// uses, so it's an inline-friendly bail-out.
-func (m *Model) flashPeruse(hint string) (tea.Model, tea.Cmd) {
-	m.peruseHint = hint
-	m.rebuildBody()
-	return m, nil
 }
 
 // summaryPhaseOfferApproveWithoutSummary reports whether the summary step
@@ -439,11 +405,6 @@ func (m *Model) flashPeruse(hint string) (tea.Model, tea.Cmd) {
 // summaryPhaseAllowApproveOnly) — the human reviewer must always be able
 // to override the AI's verdict and approve.
 func (m *Model) summaryPhaseOfferApproveWithoutSummary() bool {
-	if m.peruse {
-		// Peruse never offers approval shortcuts — the whole point is
-		// "look without committing".
-		return false
-	}
 	if m.draft == nil || m.draft.PR == nil {
 		return false
 	}
@@ -473,12 +434,8 @@ func (m *Model) summaryPhaseOfferApproveWithoutSummary() bool {
 // always represents the human's own judgement, so the option to approve
 // must always be reachable from the final review screen.
 //
-// Only peruse mode (read-only walkthrough) and a missing draft/PR
-// disable it.
+// Only a missing draft/PR disables it.
 func (m *Model) summaryPhaseAllowApproveOnly() bool {
-	if m.peruse {
-		return false
-	}
 	if m.draft == nil || m.draft.PR == nil {
 		return false
 	}
