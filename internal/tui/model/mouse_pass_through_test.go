@@ -115,6 +115,227 @@ func TestReviewOverlayMouseStillTrappedInsideModal(t *testing.T) {
 	}
 }
 
+// TestReviewOverlayBodyClickReachesReviewModelViaFullUpdate is the
+// regression test for "mouse no longer works inside the review window
+// while the review is running". The existing
+// TestReviewOverlayClickThroughChromeDeliversMouseToContent dispatches
+// the mouse message DIRECTLY to overlayStack.Update, which bypasses
+// the model-level shouldPassMouseToBackground gate entirely. That
+// gate is the one piece of routing the user's clicks actually flow
+// through from the IDE — if it incorrectly forwards inside-modal
+// clicks to the detail mouse handler, the agent rows look completely
+// unresponsive even though the lib-level tests pass.
+//
+// We click inside the agent-row body area, AND do it through
+// m.Update (the same entry point Bubble Tea hands user mouse events
+// to). The AgentCursor moving to the target index proves the click
+// reached the review model, which is only possible if
+// shouldPassMouseToBackground kept the event with the overlay stack.
+//
+// We click TWICE on different rows to also catch state-corruption
+// regressions where the first click works but a second click on a
+// different row doesn't (e.g. if the chrome handler accidentally
+// latches Dragging=true on a non-tab cell, or if a stale zone-iteration
+// reference makes subsequent zone.Get lookups miss).
+func TestReviewOverlayBodyClickReachesReviewModelViaFullUpdate(t *testing.T) {
+	zone.NewGlobal()
+	m := New(Options{Demo: true})
+	m.width = 160
+	m.height = 50
+	m.mode = modeDetail
+	ro := reviewtab.New(m.width, m.height, true, false, false, nil, true)
+	m.overlayStack.Push(ro, reviewWindowConfig())
+	m.currentReviewOverlay = ro
+	m.overlayStack.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+
+	// Render the full model view (detail page + composited overlay) —
+	// this is what the user's TUI actually paints, so zone bounds
+	// scanned from this output are the ones bubblezone uses for hit
+	// testing in production.
+	//
+	// IMPORTANT: m.View() already calls zone.Scan internally on the
+	// composited output (see view.go), so we DO NOT wrap it in another
+	// zone.Scan — bubblezone increments an iteration counter on every
+	// Scan and async-deletes zones from prior iterations. A redundant
+	// outer Scan would scan the (already-stripped) output, find no
+	// markers, bump the iteration, and silently wipe every zone we
+	// just registered. That race is what caused this test to flake
+	// while debugging — the production TUI calls View() once per
+	// render cycle, so the bug only surfaces with the double-scan
+	// pattern.
+	out := m.View()
+
+	const targetIdx = 2
+	targetName := reviewtab.AgentZoneName(targetIdx)
+	// bubblezone's Scan ships zones to a buffered channel and a
+	// background goroutine commits them to the lookup map. The
+	// commit can lag the Scan call by enough scheduler slop that an
+	// immediate zone.Get returns nil — bubblezone's docs flag this
+	// explicitly, recommending Get for mouse handlers (which arrive
+	// well after the View flush). In tests, View → Get is back-to-back,
+	// so we wait briefly for the worker to drain rather than reading
+	// raw output. This is *not* the bug under test — see waitBubbleZone
+	// for the same pattern in TestReviewOverlayMousePassThroughToDetailTree.
+	waitBubbleZone(t, targetName)
+	target := zone.Get(targetName)
+	if target == nil || target.IsZero() {
+		t.Fatalf("expected zone %q to be registered after View(); got %+v\noutput:\n%s", targetName, target, out)
+	}
+	clickX := (target.StartX + target.EndX) / 2
+	clickY := (target.StartY + target.EndY) / 2
+
+	clickMsg := tea.MouseMsg{
+		X:      clickX,
+		Y:      clickY,
+		Type:   tea.MouseLeft,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+
+	// The bug surfaces here: if MouseTargetsTop reports the click is
+	// outside the modal (false), m.Update routes it to handleMouse
+	// (detail mouse handler) which has no agent-row logic, so the
+	// click is silently dropped and AgentCursor never moves.
+	if !m.overlayStack.MouseTargetsTop(clickMsg, m.width, m.height) {
+		top, left, _, ok := m.overlayStack.TopChromeLayout(m.width, m.height)
+		t.Fatalf("MouseTargetsTop returned false for click (%d,%d) inside zone %q (X[%d..%d] Y[%d..%d]) — chrome top=%d left=%d (ok=%v). The shouldPassMouseToBackground gate will forward this to the detail handler and the click will look unresponsive to the user",
+			clickX, clickY, targetName, target.StartX, target.EndX, target.StartY, target.EndY, top, left, ok)
+	}
+
+	if got := ro.AgentCursor(); got == targetIdx {
+		t.Fatalf("precondition failed: AgentCursor already at target idx %d before any click — choose a different row", targetIdx)
+	}
+
+	m.Update(clickMsg)
+
+	if got := ro.AgentCursor(); got != targetIdx {
+		t.Fatalf("click at (%d,%d) inside agent row %d via m.Update did not move AgentCursor (got %d). The model-level pass-through gate likely forwarded the click to the detail mouse handler instead of the overlay stack",
+			clickX, clickY, targetIdx, got)
+	}
+
+	// Now click a DIFFERENT row to verify subsequent clicks still
+	// route correctly. If a previous click leaves chrome state in a
+	// bad spot (e.g. Dragging=true) MouseTargetsTop will continue
+	// returning true (chrome won't release until a Release event)
+	// but the chrome handler will treat motion/press as drag and the
+	// review tab will never see them.
+	const secondIdx = 1
+	secondName := reviewtab.AgentZoneName(secondIdx)
+	// Re-render so zone bounds reflect any state change after the
+	// first click (e.g. expanded row reflowing). Wait for the
+	// bubblezone worker to commit the new bounds — same race as
+	// above, made explicit so the test isn't flaky.
+	_ = m.View()
+	waitBubbleZone(t, secondName)
+	secondZone := zone.Get(secondName)
+	if secondZone == nil || secondZone.IsZero() {
+		t.Fatalf("expected zone %q to be re-registered after first click + View(); got %+v", secondName, secondZone)
+	}
+	secondClick := tea.MouseMsg{
+		X:      (secondZone.StartX + secondZone.EndX) / 2,
+		Y:      (secondZone.StartY + secondZone.EndY) / 2,
+		Type:   tea.MouseLeft,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	m.Update(secondClick)
+	if got := ro.AgentCursor(); got != secondIdx {
+		t.Fatalf("second click at (%d,%d) inside agent row %d via m.Update did not move AgentCursor (got %d). The first click likely left chrome state in a bad spot — check Dragging / Resizing flags in LayerState",
+			secondClick.X, secondClick.Y, secondIdx, got)
+	}
+}
+
+// TestReviewOverlayBodyClickAfterMinimizeRestore exercises the
+// specific user-reported sequence "now the mouse no longer works
+// inside the review window while the review is running": the user
+// minimizes the modal, sees the spinner ticking in the title strip,
+// restores it, then clicks an agent row. The terminal screenshot
+// during the report showed the modal in a minimized state, so the
+// most likely real path is "restore → click body" — and that's what
+// this test pins. If anything about the minimize-then-restore cycle
+// leaves chrome state in a bad place (Dragging latched, Resizing
+// latched, content size un-resync'd, a stale OriginTop/Left from
+// minimized positioning, etc.) the click after restore will get
+// swallowed and AgentCursor will stay put.
+func TestReviewOverlayBodyClickAfterMinimizeRestore(t *testing.T) {
+	zone.NewGlobal()
+	m := New(Options{Demo: true})
+	m.width = 160
+	m.height = 50
+	m.mode = modeDetail
+	ro := reviewtab.New(m.width, m.height, true, false, false, nil, true)
+	m.overlayStack.Push(ro, reviewWindowConfig())
+	m.currentReviewOverlay = ro
+	m.overlayStack.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	_ = m.View()
+
+	// Step 1: click the [-] minimize button.
+	_, _, regs, ok := m.overlayStack.TopChromeLayout(m.width, m.height)
+	if !ok {
+		t.Fatal("TopChromeLayout returned ok=false before any interaction")
+	}
+	topPos, leftPos, _, _ := m.overlayStack.TopChromeLayout(m.width, m.height)
+	minimizeClick := tea.MouseMsg{
+		X:      leftPos + regs.MinimizeX + regs.MinimizeW/2,
+		Y:      topPos + regs.MinimizeY,
+		Type:   tea.MouseLeft,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	if mod, _ := m.Update(minimizeClick); mod != nil {
+		m = mod.(*Model)
+	}
+	_ = m.View()
+
+	// Step 2: click the [+] restore button (same screen position;
+	// the chrome glyph flipped but the hit rect is the same because
+	// MinimizeButtonWidth is fixed). Re-derive coords from the
+	// current layout in case the modal moved when it collapsed —
+	// EntryClampedOrigin recenters based on the new (smaller) modal
+	// when no explicit Origin is set.
+	topPos, leftPos, regs, ok = m.overlayStack.TopChromeLayout(m.width, m.height)
+	if !ok {
+		t.Fatal("TopChromeLayout returned ok=false after minimize")
+	}
+	restoreClick := tea.MouseMsg{
+		X:      leftPos + regs.MinimizeX + regs.MinimizeW/2,
+		Y:      topPos + regs.MinimizeY,
+		Type:   tea.MouseLeft,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	if mod, _ := m.Update(restoreClick); mod != nil {
+		m = mod.(*Model)
+	}
+	_ = m.View()
+
+	// Step 3: now click on agent row 2 — this is what the user is
+	// pressing and reporting as dead.
+	const targetIdx = 2
+	targetName := reviewtab.AgentZoneName(targetIdx)
+	waitBubbleZone(t, targetName)
+	target := zone.Get(targetName)
+	if target == nil || target.IsZero() {
+		t.Fatalf("expected zone %q to be registered after restore + View(); got %+v", targetName, target)
+	}
+	bodyClick := tea.MouseMsg{
+		X:      (target.StartX + target.EndX) / 2,
+		Y:      (target.StartY + target.EndY) / 2,
+		Type:   tea.MouseLeft,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonLeft,
+	}
+	preCursor := ro.AgentCursor()
+	if preCursor == targetIdx {
+		t.Fatalf("precondition failed: AgentCursor already at target idx %d", targetIdx)
+	}
+	m.Update(bodyClick)
+	if got := ro.AgentCursor(); got != targetIdx {
+		t.Fatalf("click at (%d,%d) inside agent row %d after minimize/restore cycle did NOT move AgentCursor (%d → %d). This matches the user-reported regression — the minimize/restore left chrome state in a bad spot that swallows body clicks",
+			bodyClick.X, bodyClick.Y, targetIdx, preCursor, got)
+	}
+}
+
 // TestReviewOverlayPassThroughOnlyInDetailMode pins the gating decision
 // from shouldPassMouseToBackground: pass-through only fires in
 // modeDetail. Clicks while we're on the PR list MUST stay with the

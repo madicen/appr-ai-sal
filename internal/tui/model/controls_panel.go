@@ -106,17 +106,22 @@ func (m *Model) renderControlsAgents(width int) string {
 
 func repoAgentRow(state repoagentsstore.Freshness) string {
 	label := "Repo agents"
+	// Primary action on this row is "open the tab focused on the current
+	// PR's repo" (ctrl+r). Regeneration (ctrl+b) lives on its own and is
+	// not advertised here because clicking / pressing the row should not
+	// trigger an expensive LLM run by default — the user can fire that
+	// from inside the tab once they're confirmed at the right repo.
 	switch state {
 	case repoagentsstore.FreshnessMissing:
-		return styles.ErrStyle.Render(" ● ") + label + " " + styles.ErrStyle.Render("missing") + " — " + styles.DimStyle.Render("ctrl+b")
+		return styles.ErrStyle.Render(" ● ") + label + " " + styles.ErrStyle.Render("missing") + " — " + styles.DimStyle.Render("ctrl+r")
 	case repoagentsstore.FreshnessIncomplete:
-		return styles.WarnStyle.Render(" ● ") + label + " " + styles.WarnStyle.Render("partial") + " — " + styles.DimStyle.Render("ctrl+b")
+		return styles.WarnStyle.Render(" ● ") + label + " " + styles.WarnStyle.Render("partial") + " — " + styles.DimStyle.Render("ctrl+r")
 	case repoagentsstore.FreshnessStale:
-		return styles.WarnStyle.Render(" ● ") + label + " " + styles.WarnStyle.Render("stale") + " — " + styles.DimStyle.Render("ctrl+b")
+		return styles.WarnStyle.Render(" ● ") + label + " " + styles.WarnStyle.Render("stale") + " — " + styles.DimStyle.Render("ctrl+r")
 	case repoagentsstore.FreshnessFresh:
-		return styles.OkStyle.Render(" ● ") + label + " " + styles.OkStyle.Render("fresh") + " — " + styles.DimStyle.Render("ctrl+b")
+		return styles.OkStyle.Render(" ● ") + label + " " + styles.OkStyle.Render("fresh") + " — " + styles.DimStyle.Render("ctrl+r")
 	default:
-		return styles.DimStyle.Render(" ● ") + label + " — " + styles.DimStyle.Render("ctrl+b")
+		return styles.DimStyle.Render(" ● ") + label + " — " + styles.DimStyle.Render("ctrl+r")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
+	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	techagentsstore "github.com/madicen/appr-ai-sal/internal/review/techagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
@@ -182,6 +183,92 @@ func TestControlsAutoHideOnNarrowTerminal(t *testing.T) {
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	if !m.controlsHidden {
 		t.Fatalf("controls pane should auto-hide at width=80; controlsUserHidden=%v controlsHidden=%v", m.controlsUserHidden, m.controlsHidden)
+	}
+}
+
+// TestControlsClickRepoAgentsRowNavigatesWithoutRegen is the regression
+// for two intertwined bugs the user hit:
+//
+//  1. Clicking the "Repo agents" row in the controls pane used to call
+//     openRepoAgentsForCurrentPR(true), which fires Regenerate-all on
+//     the focused repo as soon as the tab opens. Click is a navigation
+//     gesture; LLM regen should be an explicit action (ctrl+b or the
+//     in-tab Regenerate button), not a side effect of "let me look at
+//     what's there".
+//
+//  2. The tab landed on the alphabetically first repo instead of the
+//     current PR's repo, because the async reposLoadedMsg merge
+//     re-sorted the list without re-applying FocusRepo. (Lib-level
+//     regression test for that is in tabs/repoagents/focus_test.go;
+//     this app-level test pins the click's contract end-to-end.)
+//
+// Together: click must (a) enter repo-agents mode, (b) focus the PR's
+// repo, (c) leave the status line empty (no "regenerating …" banner).
+func TestControlsClickRepoAgentsRowNavigatesWithoutRegen(t *testing.T) {
+	m := detailFixtureModel(t)
+	// detailFixtureModel sets Repository but not Owner/Repo —
+	// openRepoAgentsForCurrentPR reads the split fields, so populate
+	// them explicitly so the click has a real focus key to land on.
+	m.currentPR.Owner = "o"
+	m.currentPR.Repo = "r"
+	_ = m.View()
+	msg := clickCenterOfZone(t, zones.ControlsRepoAgents)
+	out, cmd := m.detailHandleMouse(msg, false)
+	m2 := out.(*Model)
+	if cmd == nil {
+		t.Fatal("click on Repo agents row should produce a non-nil cmd (Init of the tab)")
+	}
+	if m2.mode != modeRepoAgents {
+		t.Fatalf("click should enter repo-agents mode, got %v", m2.mode)
+	}
+	if m2.repoAgents == nil {
+		t.Fatal("repoAgents tab should be constructed after the click")
+	}
+	if got := m2.repoAgents.CurrentRepoKey(); got != "o/r" {
+		t.Fatalf("tab should focus the current PR's repo o/r, got %q", got)
+	}
+	if status := m2.repoAgents.Status(); strings.Contains(strings.ToLower(status), "regenerat") {
+		t.Fatalf("click must NOT trigger regeneration; status=%q", status)
+	}
+}
+
+// TestControlsClickTechExpertsRowNavigatesWithoutRegen mirrors the repo
+// agents test for the tech experts row — same underlying handler, same
+// regression class.
+func TestControlsClickTechExpertsRowNavigatesWithoutRegen(t *testing.T) {
+	m := detailFixtureModel(t)
+	m.currentPR.Owner = "o"
+	m.currentPR.Repo = "r"
+	_ = m.View()
+	msg := clickCenterOfZone(t, zones.ControlsTechAgents)
+	out, _ := m.detailHandleMouse(msg, false)
+	m2 := out.(*Model)
+	if m2.mode != modeRepoAgents {
+		t.Fatalf("click on Tech experts row should enter repo-agents mode, got %v", m2.mode)
+	}
+	if m2.repoAgents == nil {
+		t.Fatal("repoAgents tab should be constructed after the click")
+	}
+	if got := m2.repoAgents.CurrentRepoKey(); got != "o/r" {
+		t.Fatalf("tab should focus the current PR's repo o/r, got %q", got)
+	}
+	if status := m2.repoAgents.Status(); strings.Contains(strings.ToLower(status), "regenerat") {
+		t.Fatalf("click must NOT trigger regeneration; status=%q", status)
+	}
+}
+
+// TestRepoAgentRowHintAdvertisesNavigateShortcut pins the row's
+// keyboard hint to the navigate shortcut (ctrl+r), not the build one
+// (ctrl+b). The row's primary action is "open the tab"; advertising
+// ctrl+b reinforced the wrong mental model and led users to expect
+// (and tolerate) auto-regen on every visit.
+func TestRepoAgentRowHintAdvertisesNavigateShortcut(t *testing.T) {
+	row := ansi.Strip(repoAgentRow(repoagentsstore.FreshnessUnknown))
+	if !strings.Contains(row, "ctrl+r") {
+		t.Fatalf("repo agents row should advertise ctrl+r (navigate); got %q", row)
+	}
+	if strings.Contains(row, "ctrl+b") {
+		t.Fatalf("repo agents row should NOT advertise ctrl+b (build) as the primary action; got %q", row)
 	}
 }
 

@@ -5,6 +5,91 @@ panel of specialist AI reviewers over them, and lets you edit and post the
 review with a keypress. You stay in the loop — nothing goes to GitHub without
 your confirmation.
 
+## Quick start
+
+New here? This walks you from zero to your first AI-assisted review.
+Skim the [Demo](#demo) below first if you want to see what the TUI looks
+like before installing.
+
+### 1. Install the prerequisites
+
+- **Go 1.22+** — check with `go version`.
+- **GitHub CLI** — install [`gh`](https://cli.github.com/) and run `gh auth login` once. `appr-ai-sal` uses `gh` for all GitHub auth and PR fetches.
+- **Pick one AI backend:**
+  - **Claude (default, simplest)** — install the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) so `claude` is on your `PATH`. No extra config needed.
+  - **Ollama (local, no API key)** — install [Ollama](https://ollama.com) and pull a model, e.g. `ollama pull llama3.2`.
+  - **Gemini** — grab an API key from [Google AI Studio](https://aistudio.google.com/apikey).
+  - **OpenAI-compatible** — note your server's base URL (e.g. `https://api.example.com/v1`) and API key.
+
+### 2. Install appr-ai-sal
+
+**Homebrew (macOS / Linux, recommended):**
+
+```bash
+brew install madicen/tap/appr-ai-sal
+```
+
+This also pulls in `gh` if you don't already have it. Verify with `appr-ai-sal -h`.
+
+**From source (any platform with a Go toolchain):**
+
+```bash
+go install github.com/madicen/appr-ai-sal/cmd/appr-ai-sal@latest
+```
+
+This drops the binary in `$GOBIN` (typically `~/go/bin`). Make sure that
+directory is on your `PATH`, then verify with `appr-ai-sal -h`.
+
+### 3. Point it at your AI backend
+
+If you installed the `claude` CLI you can skip this step — Claude is the
+default. Otherwise export the variables for your chosen provider:
+
+```bash
+# Ollama (local, no key needed)
+export APPR_AI_SAL_AI_PROVIDER=ollama
+export APPR_AI_SAL_AI_MODEL=llama3.2
+
+# Gemini
+export APPR_AI_SAL_AI_PROVIDER=gemini
+export APPR_AI_SAL_AI_MODEL=gemini-2.0-flash
+export APPR_AI_SAL_AI_API_KEY=...
+
+# OpenAI-compatible
+export APPR_AI_SAL_AI_PROVIDER=openai_compatible
+export APPR_AI_SAL_AI_BASE_URL=https://api.example.com/v1
+export APPR_AI_SAL_AI_MODEL=...
+export APPR_AI_SAL_AI_API_KEY=...
+```
+
+Prefer a GUI? Launch the app and press `o` to open **Settings** with the AI
+fields focused — `ctrl+s` saves to `~/.config/appr-ai-sal/ai.json` so you
+don't have to keep these env vars around.
+
+### 4. Run your first review
+
+```bash
+appr-ai-sal
+```
+
+In the TUI:
+
+1. The left pane lists PRs where you've been requested as a reviewer. Use `↑`/`↓` (or `j`/`k`) to highlight one and press `enter` to open it.
+   - Empty list? Press `u` to paste a PR URL (e.g. `https://github.com/owner/repo/pull/123`) or `owner/repo#123` shorthand.
+2. Press `r` to run the specialist panel. You'll see per-specialist progress while they run in parallel.
+3. Read through the rendered draft. Press `,` if you want to dial the review's intensity up or down (lenient / balanced / strict).
+4. Press `p` to post the draft as a GitHub review — you'll get a confirm prompt first. Press `q` or `esc` to walk away without posting; **nothing is sent until you confirm**.
+
+Want to kick the tires without touching GitHub or your AI provider? Try the
+self-contained demo mode, which runs end-to-end against canned data:
+
+```bash
+appr-ai-sal --demo
+```
+
+For full details on configuration, providers, repository context, and every
+keybinding, keep reading.
+
 ## Demo
 
 The hero recording walks through opening a PR, firing the specialist
@@ -110,7 +195,9 @@ key field.
 ## Install
 
 ```bash
-make install     # installs to $GOBIN (typically ~/go/bin)
+brew install madicen/tap/appr-ai-sal     # macOS / Linux, brings in gh
+# or
+make install                             # installs to $GOBIN (typically ~/go/bin)
 # or
 go install github.com/madicen/appr-ai-sal/cmd/appr-ai-sal@latest
 ```

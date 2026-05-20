@@ -152,6 +152,57 @@ func TestAutoRegenAllSkippedWhenFocusMissing(t *testing.T) {
 	}
 }
 
+// TestFocusRepoSurvivesReposLoadedResort is the regression for a subtle
+// bug where opening the tab focused on a specific repo landed correctly
+// at New() time, but the async reposLoadedMsg handler then merged disk
+// repos, re-sorted the list alphabetically, and left repoIdx pointing
+// at a stale numeric position — so the user ended up viewing whatever
+// repo happened to fall at that index (usually the alphabetically
+// first one), not the one they asked for.
+//
+// We simulate the wire-level sequence: New(FocusRepo=...) → Init() →
+// reposLoadedMsg arrives with disk repos that, when merged, shift the
+// focus key away from its original index. The selection must follow
+// the focus, not the index.
+func TestFocusRepoSurvivesReposLoadedResort(t *testing.T) {
+	m := newFocusTestModel(t, Opts{
+		// At New time the seed list (focus appended + sorted) is just
+		// ["globex/engine"], so repoIdx = 0.
+		InitialRepos: []string{},
+		FocusRepo:    "globex/engine",
+	})
+	if got := m.CurrentRepoKey(); got != "globex/engine" {
+		t.Fatalf("pre-condition: New() should land on focus; got %q", got)
+	}
+
+	// reposLoadedMsg with disk repos that sort BEFORE the focus key.
+	// After the merge the sorted list is:
+	//   ["aaa/foo", "bbb/bar", "globex/engine"]
+	// The pre-fix code keeps repoIdx = 0 and we'd land on "aaa/foo".
+	updated, _ := m.Update(reposLoadedMsg{
+		Repos: []string{"aaa/foo", "bbb/bar"},
+	})
+	m2 := updated.(*Model)
+
+	if got := m2.CurrentRepoKey(); got != "globex/engine" {
+		t.Fatalf("focus must survive reposLoadedMsg resort; got %q want globex/engine (repoIdx=%d, repos=%v)",
+			got, m2.repoIdx, m2.repos)
+	}
+
+	// A second reposLoadedMsg should NOT re-apply focus (focusRepo
+	// was cleared on first apply). This pins the "one-shot" contract:
+	// after the initial reload, the user's manual selection wins over
+	// any further disk merges.
+	if err := m2.SelectRepo("bbb/bar"); !err {
+		t.Fatal("SelectRepo bbb/bar should succeed")
+	}
+	updated2, _ := m2.Update(reposLoadedMsg{Repos: []string{"zzz/late"}})
+	m3 := updated2.(*Model)
+	if got := m3.CurrentRepoKey(); got != "bbb/bar" {
+		t.Fatalf("second reposLoadedMsg must not re-focus past the user's choice; got %q want bbb/bar", got)
+	}
+}
+
 // TestSelectRepoSetsActiveAndAddsMissing covers the public SelectRepo entry
 // point used to retarget an already-open tab.
 func TestSelectRepoSetsActiveAndAddsMissing(t *testing.T) {
