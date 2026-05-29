@@ -11,7 +11,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/lrstanley/bubblezone v1.0.0
 	github.com/madicen/bubble-color-picker v0.1.1
-	github.com/madicen/bubble-overlay v0.0.0-20260519210602-a1ea65bfa4f7
+	github.com/madicen/bubble-overlay v0.0.0-20260522055727-98ccf9e2a047
 	github.com/muesli/termenv v0.16.0
 )
 
