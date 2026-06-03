@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	zone "github.com/lrstanley/bubblezone"
 
 	la "github.com/madicen/appr-ai-sal/internal/review/langagents"
 )
@@ -133,6 +134,9 @@ func mustSaveAgent(t *testing.T, lang la.Language) {
 var _ tea.Msg = cacheLoadedMsg{}
 
 func TestMain(m *testing.M) {
+	// Initialise bubblezone once for the whole test binary so the mouse
+	// click tests can resolve rendered zones.
+	zone.NewGlobal()
 	dir, err := os.MkdirTemp("", "tui-langagents-test-")
 	if err != nil {
 		panic(err)

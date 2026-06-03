@@ -286,38 +286,93 @@ func (m *Model) toggleParallelSpecialists() error {
 	return nil
 }
 
+// detailBackToList returns from the PR detail view to the list. The
+// relayout call is load-bearing — see the inline note.
+func (m *Model) detailBackToList() {
+	m.centerView = centerDiff
+	m.diffOnly = false
+	m.mode = modeList
+	// Re-sync the bubbles list height to the current chrome
+	// budget. Opening the PR populated m.prLanguages, which
+	// flips the selected list row's lang-agents freshness from
+	// Unknown to Missing/Stale and lengthens the status hint.
+	// The hint then wraps to one extra row in renderStatus, so
+	// chromeBodyHeight shrinks by one — but the list was sized
+	// before the round-trip and would otherwise produce one row
+	// too many, overflowing m.height. The renderer would then
+	// drop the header line, every visible row would shift up by
+	// one, and bubblezone's recorded zone Y values would point
+	// one row below the visible search / URL inputs (the click
+	// would land in the panel's bottom border instead). See
+	// TestPanelZonesRemainAlignedAfterDetailRoundTrip.
+	m.relayout()
+}
+
+// detailToggleDescription swaps the centre pane between Description and
+// Diff (the `g` shortcut / "description" status hint / mini-header chip).
+func (m *Model) detailToggleDescription() tea.Cmd {
+	if m.centerView == centerDescription {
+		m.centerView = centerDiff
+	} else {
+		m.centerView = centerDescription
+	}
+	m.refreshDetailViews()
+	return m.ensureCenterDataLoaded()
+}
+
+// detailToggleDiffOnly flips the full-width diff layout (the `d` shortcut
+// / "diff-only" status hint).
+func (m *Model) detailToggleDiffOnly() {
+	m.diffOnly = !m.diffOnly
+	m.refreshDetailViews()
+}
+
+// detailToggleControls hides/shows the right-hand Review controls pane.
+// When the user hides it explicitly, remember that preference so a window
+// resize that would otherwise auto-show it stays hidden.
+func (m *Model) detailToggleControls() {
+	m.controlsUserHidden = !m.controlsUserHidden
+	if m.focusedPane == paneControls {
+		m.focusedPane = paneDiff
+	}
+	m.refreshDetailViews()
+}
+
+// detailBulkConfirmCmd pushes the bulk-post confirm overlay (the `P`
+// shortcut / "bulk" status hint). Returns nil when there's no draft.
+func (m *Model) detailBulkConfirmCmd() tea.Cmd {
+	if m.draft == nil {
+		return nil
+	}
+	modal := overlays.NewBulkConfirmOverlay(m.draft.Ref.String())
+	cfg := overlay.DefaultOverlayConfig()
+	return tea.Batch(
+		m.overlayStack.Push(modal, cfg),
+		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
+	)
+}
+
+// detailOpenBrowserCmd opens the current PR in the browser (the `O`
+// shortcut / "browser" status hint). Returns nil when there's no URL.
+func (m *Model) detailOpenBrowserCmd() tea.Cmd {
+	if m.currentPR != nil {
+		if u := strings.TrimSpace(m.currentPR.URL); u != "" {
+			return util.OpenInBrowserCmd(u)
+		}
+	}
+	return nil
+}
+
 func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
-		m.centerView = centerDiff
-		m.diffOnly = false
-		m.mode = modeList
-		// Re-sync the bubbles list height to the current chrome
-		// budget. Opening the PR populated m.prLanguages, which
-		// flips the selected list row's lang-agents freshness from
-		// Unknown to Missing/Stale and lengthens the status hint.
-		// The hint then wraps to one extra row in renderStatus, so
-		// chromeBodyHeight shrinks by one — but the list was sized
-		// before the round-trip and would otherwise produce one row
-		// too many, overflowing m.height. The renderer would then
-		// drop the header line, every visible row would shift up by
-		// one, and bubblezone's recorded zone Y values would point
-		// one row below the visible search / URL inputs (the click
-		// would land in the panel's bottom border instead). See
-		// TestPanelZonesRemainAlignedAfterDetailRoundTrip.
-		m.relayout()
+		m.detailBackToList()
 		return m, nil
 	case "g":
 		// Description is now an overview row, but `g` keeps its old job
 		// as a one-key shortcut — toggle Description ↔ Diff so muscle
 		// memory carries over.
-		if m.centerView == centerDescription {
-			m.centerView = centerDiff
-		} else {
-			m.centerView = centerDescription
-		}
-		m.refreshDetailViews()
-		return m, m.ensureCenterDataLoaded()
+		return m, m.detailToggleDescription()
 	case "tab":
 		m.cyclePane(+1)
 		m.refreshDetailViews()
@@ -327,20 +382,12 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.refreshDetailViews()
 		return m, nil
 	case "d":
-		m.diffOnly = !m.diffOnly
-		m.refreshDetailViews()
+		m.detailToggleDiffOnly()
 		return m, nil
 	case "r":
 		return m.startReviewOverlay()
 	case "c":
-		// Toggle the right-hand "Review controls" pane. When the user
-		// hides it explicitly, remember that preference so a window
-		// resize that would otherwise auto-show it stays hidden.
-		m.controlsUserHidden = !m.controlsUserHidden
-		if m.focusedPane == paneControls {
-			m.focusedPane = paneDiff
-		}
-		m.refreshDetailViews()
+		m.detailToggleControls()
 		return m, nil
 	case "ctrl+t":
 		// Tech experts share storage with repo agents (sibling json file
@@ -351,15 +398,7 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "a":
 		return m.reopenApprovalIfPossible()
 	case "P":
-		if m.draft == nil {
-			return m, nil
-		}
-		modal := overlays.NewBulkConfirmOverlay(m.draft.Ref.String())
-		cfg := overlay.DefaultOverlayConfig()
-		return m, tea.Batch(
-			m.overlayStack.Push(modal, cfg),
-			func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
-		)
+		return m, m.detailBulkConfirmCmd()
 	case "j", "down":
 		m.detailNavigate(+1)
 		m.refreshDetailViews()
@@ -417,12 +456,7 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// agents that will be injected into the next review.
 		return m, m.openRepoAgentsForCurrentPR(true)
 	case "O":
-		if m.currentPR != nil {
-			if u := strings.TrimSpace(m.currentPR.URL); u != "" {
-				return m, util.OpenInBrowserCmd(u)
-			}
-		}
-		return m, nil
+		return m, m.detailOpenBrowserCmd()
 	}
 	// fallthrough: pane scroll for the focused pane
 	switch m.focusedPane {

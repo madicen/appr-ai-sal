@@ -843,6 +843,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg.(type) {
 	case tea.KeyMsg, tea.MouseMsg:
+		// Status-bar hint clicks are dispatched before mode/tab routing
+		// so the always-present quit segment (and the list/detail hint
+		// buttons) fire even when a tab otherwise owns the event stream.
+		// Gated on InteractiveToBase so a click that belongs to an open
+		// modal isn't stolen by the status bar behind it.
+		if mm, ok := msg.(tea.MouseMsg); ok && m.overlayFocus.InteractiveToBase(msg) {
+			if model, cmd, handled := m.handleStatusBarMouse(mm); handled {
+				return model, cmd
+			}
+		}
 		if m.mode == modeSettings && m.settings != nil {
 			if km, ok := msg.(tea.KeyMsg); ok && km.String() == "ctrl+c" {
 				util.FlushMouse()

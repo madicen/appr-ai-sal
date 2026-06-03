@@ -547,7 +547,9 @@ func (m *Model) renderApprovalBody() string {
 			// so headings / lists / emphasis look like prose, not source.
 			b.WriteString(util.RenderMarkdownIndented(strings.TrimSpace(ar.UserSummary), rowW, 0) + "\n\n")
 		}
-		b.WriteString(styles.BoldStyle.Render("Press Enter or Space to acknowledge and continue") + " · q abort\n")
+		cont := zone.Mark(zones.StagedAck, styles.OkStyle.Render(" Continue (enter) "))
+		abort := zone.Mark(zones.StagedQuit, styles.ErrStyle.Render(" Abort (q) "))
+		b.WriteString(cont + "  " + abort + "\n")
 		return b.String()
 	}
 	if m.idx < 0 || m.idx >= len(m.cards) {

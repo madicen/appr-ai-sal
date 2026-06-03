@@ -729,6 +729,17 @@ func (m *Model) repoBlinkCmd() tea.Cmd {
 	return textinput.Blink
 }
 
+// focusAIField focuses a specific AI-profile text field (the click
+// equivalent of tabbing to it). field must be one of the fieldProfile*
+// / fieldProvider / … text-field constants.
+func (m *Model) focusAIField(field int) {
+	m.blurInputs()
+	m.focus = field
+	if ti := m.focusedInput(); ti != nil {
+		ti.Focus()
+	}
+}
+
 func (m *Model) focusedInput() *textinput.Model {
 	switch m.focus {
 	case fieldProfileName:
@@ -1051,18 +1062,12 @@ func (m *Model) buildForm() string {
 		b.WriteString("\n")
 		b.WriteString(boldStyle.Render("Edit profile") + "\n")
 		b.WriteString(dimStyle.Render("changes apply to the selected row above; click 'Set active' to use it for reviews") + "\n\n")
-		b.WriteString(m.fieldLabel("name", fieldProfileName) + "\n")
-		b.WriteString(m.profileName.View() + "\n\n")
-		b.WriteString(m.fieldLabel("provider", fieldProvider) + "\n")
-		b.WriteString(m.provider.View() + "\n\n")
-		b.WriteString(m.fieldLabel("base URL", fieldBaseURL) + "\n")
-		b.WriteString(m.baseURL.View() + "\n\n")
-		b.WriteString(m.fieldLabel("model", fieldModel) + "\n")
-		b.WriteString(m.model.View() + "\n\n")
-		b.WriteString(m.fieldLabel("API key (masked)", fieldAPIKey) + "\n")
-		b.WriteString(m.apiKey.View() + "\n\n")
-		b.WriteString(m.fieldLabel("timeout (sec)", fieldTimeout) + "\n")
-		b.WriteString(m.timeout.View() + "\n\n")
+		b.WriteString(zone.Mark(ZoneAIFieldName, m.fieldLabel("name", fieldProfileName)+"\n"+m.profileName.View()) + "\n\n")
+		b.WriteString(zone.Mark(ZoneAIFieldProvider, m.fieldLabel("provider", fieldProvider)+"\n"+m.provider.View()) + "\n\n")
+		b.WriteString(zone.Mark(ZoneAIFieldBaseURL, m.fieldLabel("base URL", fieldBaseURL)+"\n"+m.baseURL.View()) + "\n\n")
+		b.WriteString(zone.Mark(ZoneAIFieldModel, m.fieldLabel("model", fieldModel)+"\n"+m.model.View()) + "\n\n")
+		b.WriteString(zone.Mark(ZoneAIFieldAPIKey, m.fieldLabel("API key (masked)", fieldAPIKey)+"\n"+m.apiKey.View()) + "\n\n")
+		b.WriteString(zone.Mark(ZoneAIFieldTimeout, m.fieldLabel("timeout (sec)", fieldTimeout)+"\n"+m.timeout.View()) + "\n\n")
 		b.WriteString(dimStyle.Render("Config file: "+aiconfig.DefaultPath()) + "\n\n")
 	} else {
 		b.WriteString(dimStyle.Render("tab / shift+tab fields · space on toggles · ctrl+s save · esc cancel · [ ] review tab") + "\n\n")
@@ -1158,23 +1163,23 @@ func (m *Model) renderRepoPanel() string {
 	writeHdr("Local repository clones (repo_roots)")
 	b.WriteString(dimStyle.Render("One line per mapping: owner/repo=/absolute/path (e.g. acme/widget=/Users/me/src/widget). Lines starting with # are ignored.") + "\n")
 	b.WriteString(writeFocus(repoFieldRoots))
-	b.WriteString(m.repoRoots.View())
+	b.WriteString(zone.Mark(ZoneRepoFieldRoots, m.repoRoots.View()))
 	b.WriteString("\n\n")
 
 	writeHdr("Context bundle")
 	b.WriteString(writeFocus(repoFieldMaxBytes))
 	b.WriteString("max_bytes (injected context cap)\n")
-	b.WriteString(m.repoMaxBytes.View() + "\n")
+	b.WriteString(zone.Mark(ZoneRepoFieldMaxBytes, m.repoMaxBytes.View()) + "\n")
 	b.WriteString(writeFocus(repoFieldTTL))
 	b.WriteString("ttl_seconds (on-disk context bundle cache)\n")
-	b.WriteString(m.repoTTL.View() + "\n\n")
+	b.WriteString(zone.Mark(ZoneRepoFieldTTL, m.repoTTL.View()) + "\n\n")
 
 	writeHdr("Merged PR culture")
 	b.WriteString(writeFocus(repoFieldIncludePR))
 	b.WriteString(m.renderRepoToggle("Include merged PR titles in bundle", m.repoIncludePR, ZoneRepoToggleIncludePR) + "\n")
 	b.WriteString(writeFocus(repoFieldPRHistLimit))
 	b.WriteString("pr_history_limit\n")
-	b.WriteString(m.repoPRHistLimit.View() + "\n")
+	b.WriteString(zone.Mark(ZoneRepoFieldPRHistLimit, m.repoPRHistLimit.View()) + "\n")
 	b.WriteString(writeFocus(repoFieldCultureSum))
 	b.WriteString(m.renderRepoToggle("Summarize merged-PR culture (extra AI call)", m.repoCultureSum, ZoneRepoToggleCulture) + "\n\n")
 
@@ -1192,13 +1197,13 @@ func (m *Model) renderRepoPanel() string {
 	b.WriteString(dimStyle.Render("Repo-agent generation reuses these review-history digest knobs:") + "\n")
 	b.WriteString(writeFocus(repoFieldExpertPRs))
 	b.WriteString("repo_expert_review_prs (merged PRs sampled for review-body digest)\n")
-	b.WriteString(m.repoExpertPRs.View() + "\n")
+	b.WriteString(zone.Mark(ZoneRepoFieldExpertPRs, m.repoExpertPRs.View()) + "\n")
 	b.WriteString(writeFocus(repoFieldExpertMaxB))
 	b.WriteString("repo_expert_max_bytes (digest size cap)\n")
-	b.WriteString(m.repoExpertMaxB.View() + "\n")
+	b.WriteString(zone.Mark(ZoneRepoFieldExpertMaxB, m.repoExpertMaxB.View()) + "\n")
 	b.WriteString(writeFocus(repoFieldExpertTTL))
 	b.WriteString("repo_expert_review_ttl_seconds (digest disk cache)\n")
-	b.WriteString(m.repoExpertTTL.View() + "\n")
+	b.WriteString(zone.Mark(ZoneRepoFieldExpertTTL, m.repoExpertTTL.View()) + "\n")
 
 	return b.String()
 }

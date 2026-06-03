@@ -17,6 +17,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	la "github.com/madicen/appr-ai-sal/internal/review/langagents"
@@ -151,6 +152,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
+	case tea.MouseMsg:
+		return m, m.handleMouse(msg)
 	case cacheLoadedMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
@@ -289,7 +292,9 @@ func (m *Model) View() string {
 		b.WriteString(errStyle.Render(m.err.Error()))
 		b.WriteString("\n")
 	}
-	b.WriteString(hintStyle.Render("↑/↓ select · g/r generate or refresh · d delete · esc close"))
+	b.WriteString(zone.Mark(ZoneClose, btnStyle.Render(" Close ")))
+	b.WriteString("\n")
+	b.WriteString(hintStyle.Render("↑/↓ or click select · g/r or Generate/Refresh · d or Delete · esc or Close"))
 	return b.String()
 }
 
@@ -333,7 +338,32 @@ func (m *Model) renderRow(r row, selected bool) string {
 		chip,
 		meta,
 	)
-	return style.Render(line)
+	rendered := zone.Mark(zoneRow(r.Language), style.Render(line))
+	// Per-row action buttons mirror the g/r/d keys so the tab is fully
+	// mouse-drivable. Hidden while a regen is in flight (the keys are
+	// no-ops then too — see actionGenerate/actionDelete).
+	if !m.busy[r.Language] {
+		genLabel := " Generate "
+		if m.hasCached(r.Language) {
+			genLabel = " Refresh "
+		}
+		buttons := zone.Mark(zoneRowGen(r.Language), btnStyle.Render(genLabel))
+		if m.hasCached(r.Language) {
+			buttons = lipgloss.JoinHorizontal(lipgloss.Top, buttons, " ",
+				zone.Mark(zoneRowDel(r.Language), btnDangerStyle.Render("Delete")))
+		}
+		rendered = lipgloss.JoinHorizontal(lipgloss.Top, rendered, "  ", buttons)
+	}
+	return rendered
+}
+
+// hasCached reports whether a cached brief exists for the language.
+func (m *Model) hasCached(l la.Language) bool {
+	if m.cache == nil {
+		return false
+	}
+	_, ok := m.cache.Get(l)
+	return ok
 }
 
 func (m *Model) chipForRow(r row) string {

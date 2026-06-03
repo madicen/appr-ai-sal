@@ -19,6 +19,13 @@ const (
 	ZoneAddTechOpen   = "zone:repoagents:tech:add"
 	ZoneAddTechSave   = "zone:repoagents:tech:add:save"
 	ZoneAddTechCancel = "zone:repoagents:tech:add:cancel"
+
+	// Add-form text-field zones — clicking a field focuses it (the
+	// click equivalent of tab between fields). Typing still needs the
+	// keyboard.
+	ZoneAddRepoField = "zone:repoagents:repo:add:field"
+	ZoneAddTechName  = "zone:repoagents:tech:add:name"
+	ZoneAddTechSeed  = "zone:repoagents:tech:add:seed"
 )
 
 // zoneAgentRegen returns the click zone id for the per-specialist Regenerate chip.

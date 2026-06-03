@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
 
@@ -113,6 +114,24 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 			m.blurInputs()
 			return m.deleteSelectedProfile()
 		}
+		// Click-to-focus on a profile text field (typing still needs
+		// the keyboard, but reaching the field never does).
+		for _, f := range []struct {
+			zone  string
+			field int
+		}{
+			{ZoneAIFieldName, fieldProfileName},
+			{ZoneAIFieldProvider, fieldProvider},
+			{ZoneAIFieldBaseURL, fieldBaseURL},
+			{ZoneAIFieldModel, fieldModel},
+			{ZoneAIFieldAPIKey, fieldAPIKey},
+			{ZoneAIFieldTimeout, fieldTimeout},
+		} {
+			if z := zone.Get(f.zone); z != nil && z.InBounds(msg) {
+				m.focusAIField(f.field)
+				return textinput.Blink
+			}
+		}
 	}
 	if m.panelTab == 1 {
 		if z := zone.Get(ZoneRepoToggleIncludePR); z != nil && z.InBounds(msg) {
@@ -144,6 +163,24 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 			m.repoParallelExperts = !m.repoParallelExperts
 			m.focusRepoField(repoFieldParallelExperts)
 			return nil
+		}
+		// Click-to-focus on a repo-context text/number field.
+		for _, f := range []struct {
+			zone  string
+			field int
+		}{
+			{ZoneRepoFieldRoots, repoFieldRoots},
+			{ZoneRepoFieldMaxBytes, repoFieldMaxBytes},
+			{ZoneRepoFieldTTL, repoFieldTTL},
+			{ZoneRepoFieldPRHistLimit, repoFieldPRHistLimit},
+			{ZoneRepoFieldExpertPRs, repoFieldExpertPRs},
+			{ZoneRepoFieldExpertMaxB, repoFieldExpertMaxB},
+			{ZoneRepoFieldExpertTTL, repoFieldExpertTTL},
+		} {
+			if z := zone.Get(f.zone); z != nil && z.InBounds(msg) {
+				m.focusRepoField(f.field)
+				return m.repoBlinkCmd()
+			}
 		}
 	}
 	return nil

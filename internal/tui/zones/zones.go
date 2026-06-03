@@ -62,7 +62,11 @@ const (
 	// alongside an inline-comment or summary post error so the user can
 	// re-fetch the PR + diff and retry without leaving the overlay.
 	StagedRefresh     = "zone:staged:refresh"
-	PostedOK          = "zone:posted:ok"
+	// StagedAck is the clickable "Continue" button on the review
+	// overlay's suppress-acknowledgement gate, mirroring the
+	// Enter/Space key that dismisses the notice.
+	StagedAck = "zone:staged:ack"
+	PostedOK  = "zone:posted:ok"
 	RepoContextToggle = "zone:review:repo-context"
 	PaneTree          = "zone:pane:tree"
 	PaneDiff          = "zone:pane:diff"
@@ -120,4 +124,35 @@ const (
 	ControlsToggleDryRun         = "zone:controls:toggle:dry-run"
 	ControlsToggleStartMinimized = "zone:controls:toggle:start-minimized"
 	ControlsStartReview          = "zone:controls:start"
+
+	// Status-bar zones — every actionable hint segment in the bottom
+	// status bar (model/view.go renderStatus) is wrapped so a
+	// mouse-only user can click the hint to fire the same command the
+	// key would. Purely descriptive segments (↑/↓, click, wheel, …)
+	// are left unmarked because their mouse equivalent is the gesture
+	// itself, not a button.
+	//
+	// StatusQuit is the only segment present in every mode; clicks on
+	// it must be handled at the root before mode/tab delegation so it
+	// works even while the settings / repo-agents / lang-agents tabs
+	// own the rest of the event stream.
+	StatusQuit           = "zone:status:quit"
+	StatusSearch         = "zone:status:search"
+	StatusURL            = "zone:status:url"
+	StatusFilter         = "zone:status:filter"
+	StatusOpenBrowser    = "zone:status:open-browser"
+	StatusSettingsAI     = "zone:status:settings-ai"
+	StatusRepoCtx        = "zone:status:repo-ctx"
+	StatusRepoAgents     = "zone:status:repo-agents"
+	StatusLangAgents     = "zone:status:lang-agents"
+	StatusBuildAgents    = "zone:status:build-agents"
+	StatusRefresh        = "zone:status:refresh"
+	StatusCyclePane      = "zone:status:cycle-pane"
+	StatusReview         = "zone:status:review"
+	StatusToggleControls = "zone:status:toggle-controls"
+	StatusReopenApproval = "zone:status:reopen-approval"
+	StatusDescription    = "zone:status:description"
+	StatusDiffOnly       = "zone:status:diff-only"
+	StatusBulk           = "zone:status:bulk"
+	StatusBack           = "zone:status:back"
 )

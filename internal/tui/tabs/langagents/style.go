@@ -45,4 +45,17 @@ var (
 	errStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("203")).
 			Bold(true)
+
+	// btnStyle / btnDangerStyle render the per-row mouse action buttons
+	// (Generate/Refresh and Delete) and the footer Close button so the
+	// tab can be driven without the keyboard.
+	btnStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("231")).
+			Background(lipgloss.Color("238")).
+			Padding(0, 1)
+
+	btnDangerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("231")).
+			Background(lipgloss.Color("131")).
+			Padding(0, 1)
 )
