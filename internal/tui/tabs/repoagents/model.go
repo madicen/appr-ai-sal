@@ -580,13 +580,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancelAddTech()
 			return m, nil
 		case "tab", "shift+tab":
-			m.techSeedFocus = !m.techSeedFocus
 			if m.techSeedFocus {
-				m.techNameInput.Blur()
-				m.techSeedInput.Focus()
+				m.focusTechName()
 			} else {
-				m.techSeedInput.Blur()
-				m.techNameInput.Focus()
+				m.focusTechSeed()
 			}
 			return m, textinput.Blink
 		}
@@ -654,6 +651,20 @@ func (m *Model) cancelAddTech() {
 	m.addingTech = false
 	m.techNameInput.Blur()
 	m.techSeedInput.Blur()
+}
+
+// focusTechName / focusTechSeed move focus between the two add-tech
+// fields. Shared by the tab key and the click-to-focus zones.
+func (m *Model) focusTechName() {
+	m.techSeedFocus = false
+	m.techSeedInput.Blur()
+	m.techNameInput.Focus()
+}
+
+func (m *Model) focusTechSeed() {
+	m.techSeedFocus = true
+	m.techNameInput.Blur()
+	m.techSeedInput.Focus()
 }
 
 func (m *Model) commitAddTech() tea.Cmd {
@@ -1124,7 +1135,7 @@ func (m *Model) renderRepoSelector() string {
 		b.WriteString(nav + "\n")
 	}
 	if m.addingRepo {
-		b.WriteString(m.addInput.View())
+		b.WriteString(zone.Mark(ZoneAddRepoField, m.addInput.View()))
 		b.WriteString("  ")
 		b.WriteString(zone.Mark(ZoneAddRepoSave, okStyle.Render(" Add ")))
 		b.WriteString("  ")
@@ -1252,10 +1263,10 @@ func (m *Model) renderTechList() string {
 		b.WriteString(boldStyle.Render("New tech expert") + "  ")
 		b.WriteString(dimStyle.Render("· tab to switch fields · enter to generate · esc to cancel") + "\n")
 		b.WriteString(dimStyle.Render("Name") + "  ")
-		b.WriteString(m.techNameInput.View())
+		b.WriteString(zone.Mark(ZoneAddTechName, m.techNameInput.View()))
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render("Seed") + "  ")
-		b.WriteString(m.techSeedInput.View())
+		b.WriteString(zone.Mark(ZoneAddTechSeed, m.techSeedInput.View()))
 		b.WriteString("\n\n")
 		b.WriteString(zone.Mark(ZoneAddTechSave, okStyle.Render(" Generate ")))
 		b.WriteString("  ")

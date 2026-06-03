@@ -114,11 +114,11 @@ func TestReviewModalRendersWithTabChrome(t *testing.T) {
 		t.Fatalf("rendered overlay should contain the chrome close glyph [x]\nGOT:\n%s", out)
 	}
 	// Resizable=true draws the tab on top of the box border, so the right
-	// edge of the tab merges with the top border via `┴`. The bottom of
-	// the modal closes with `└` / `┘`. If Resizable accidentally regresses
-	// to false, the body will float without a box border and these glyphs
-	// will disappear.
-	for _, glyph := range []string{"┴", "└", "┘"} {
+	// edge of the tab merges with the top border via `┴`. The frame uses
+	// the bubble-overlay default rounded border, so the four corners are
+	// `╭ ╮ ╰ ╯`. If Resizable accidentally regresses to false, the body
+	// will float without a box border and these glyphs will disappear.
+	for _, glyph := range []string{"┴", "╭", "╮", "╰", "╯"} {
 		if !strings.Contains(out, glyph) {
 			t.Fatalf("rendered resizable overlay should contain box-border glyph %q\nGOT:\n%s", glyph, out)
 		}

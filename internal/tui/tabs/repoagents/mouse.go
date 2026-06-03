@@ -1,6 +1,7 @@
 package repoagents
 
 import (
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
 
@@ -52,6 +53,10 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 			m.addInput.Blur()
 			return nil
 		}
+		if z := zone.Get(ZoneAddRepoField); z != nil && z.InBounds(msg) {
+			m.addInput.Focus()
+			return textinput.Blink
+		}
 	} else {
 		if z := zone.Get(ZoneAddRepoOpen); z != nil && z.InBounds(msg) {
 			m.openAddRepo()
@@ -68,6 +73,14 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 		if z := zone.Get(ZoneAddTechCancel); z != nil && z.InBounds(msg) {
 			m.cancelAddTech()
 			return nil
+		}
+		if z := zone.Get(ZoneAddTechName); z != nil && z.InBounds(msg) {
+			m.focusTechName()
+			return textinput.Blink
+		}
+		if z := zone.Get(ZoneAddTechSeed); z != nil && z.InBounds(msg) {
+			m.focusTechSeed()
+			return textinput.Blink
 		}
 	} else {
 		if z := zone.Get(ZoneAddTechOpen); z != nil && z.InBounds(msg) {

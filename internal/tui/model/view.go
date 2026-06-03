@@ -102,32 +102,119 @@ func (m *Model) renderBody() string {
 	return ""
 }
 
-func (m *Model) renderStatus() string {
-	dry := ""
-	if m.opts.DryRun {
-		dry = " · " + styles.ErrStyle.Render("DRY-RUN")
+// statusSeg is one ` · `-separated chunk of the bottom status bar. When
+// zone is non-empty the chunk is wrapped in a bubblezone marker so a
+// mouse click on the hint dispatches the same action its key would (see
+// handleStatusBarMouse). Descriptive-only chunks leave zone empty.
+type statusSeg struct {
+	text string
+	zone string
+}
+
+// joinStatusSegs marks the clickable chunks and joins everything with the
+// status bar's ` · ` separator. bubblezone markers are ANSI escape
+// sequences that lipgloss width methods ignore, so the wrapping/height
+// behaviour documented below is unchanged by marking.
+func joinStatusSegs(segs []statusSeg) string {
+	parts := make([]string, 0, len(segs))
+	for _, s := range segs {
+		if s.text == "" {
+			continue
+		}
+		if s.zone != "" {
+			parts = append(parts, zone.Mark(s.zone, s.text))
+		} else {
+			parts = append(parts, s.text)
+		}
 	}
-	var hint string
+	return strings.Join(parts, " · ")
+}
+
+func (m *Model) statusSegs() []statusSeg {
+	var segs []statusSeg
 	switch m.mode {
 	case modeList:
 		owner, repo := m.repoAgentsFreshnessForListSelection()
 		lOwner, lRepo, lNum := m.listSelectionForLangFreshness()
-		hint = "↑/↓ · click · double-click open · enter · tab fields · / search · u URL · esc clear · f filter · O browser · o/, settings · ctrl+g repo ctx · ctrl+r repo agents · " +
-			m.renderBuildLangAgentsHint(lOwner, lRepo, lNum) +
-			" · " + m.renderBuildAgentsHint(owner, repo) +
-			" · R refresh · q quit" + dry
+		segs = []statusSeg{
+			{text: "↑/↓"},
+			{text: "click"},
+			{text: "double-click open"},
+			{text: "enter"},
+			{text: "tab fields"},
+			{text: "/ search", zone: zones.StatusSearch},
+			{text: "u URL", zone: zones.StatusURL},
+			{text: "esc clear"},
+			{text: "f filter", zone: zones.StatusFilter},
+			{text: "O browser", zone: zones.StatusOpenBrowser},
+			{text: "o/, settings", zone: zones.StatusSettingsAI},
+			{text: "ctrl+g repo ctx", zone: zones.StatusRepoCtx},
+			{text: "ctrl+r repo agents", zone: zones.StatusRepoAgents},
+			{text: m.renderBuildLangAgentsHint(lOwner, lRepo, lNum), zone: zones.StatusLangAgents},
+			{text: m.renderBuildAgentsHint(owner, repo), zone: zones.StatusBuildAgents},
+			{text: "R refresh", zone: zones.StatusRefresh},
+			{text: "q quit", zone: zones.StatusQuit},
+		}
 	case modeDetail:
 		// Per-agent state (repo / tech / lang) is owned by the right-hand
 		// "Review controls" pane now; the bottom status bar carries only
 		// the cross-cutting keybindings.
-		hint = "tab pane · j/k nav · space fold · r review · c toggle controls · a reopen approval · O browser · g description · d diff-only · P bulk · esc back" + dry
+		segs = []statusSeg{
+			{text: "tab pane", zone: zones.StatusCyclePane},
+			{text: "j/k nav"},
+			{text: "space fold"},
+			{text: "r review", zone: zones.StatusReview},
+			{text: "c toggle controls", zone: zones.StatusToggleControls},
+			{text: "a reopen approval", zone: zones.StatusReopenApproval},
+			{text: "O browser", zone: zones.StatusOpenBrowser},
+			{text: "g description", zone: zones.StatusDescription},
+			{text: "d diff-only", zone: zones.StatusDiffOnly},
+			{text: "P bulk", zone: zones.StatusBulk},
+			{text: "esc back", zone: zones.StatusBack},
+		}
 	case modeSettings:
-		hint = "[ ] tabs · ctrl+s save · esc · tab fields · ↑/↓ strictness · wheel · o AI · , review · ctrl+g repo tab · ctrl+c quit" + dry
+		// The settings tab strip, Save/Cancel, strictness rows, and
+		// profile buttons are all already clickable in the body; the
+		// only status-only action a mouse can't otherwise reach is quit.
+		segs = []statusSeg{
+			{text: "[ ] tabs"},
+			{text: "ctrl+s save"},
+			{text: "esc"},
+			{text: "tab fields"},
+			{text: "↑/↓ strictness"},
+			{text: "wheel"},
+			{text: "o AI"},
+			{text: ", review"},
+			{text: "ctrl+g repo tab"},
+			{text: "ctrl+c quit", zone: zones.StatusQuit},
+		}
 	case modeRepoAgents:
-		hint = "←/→ repo · a add repo · A regen all · click chips · esc close · ctrl+s save edit · ctrl+c quit" + dry
+		segs = []statusSeg{
+			{text: "←/→ repo"},
+			{text: "a add repo"},
+			{text: "A regen all"},
+			{text: "click chips"},
+			{text: "esc close"},
+			{text: "ctrl+s save edit"},
+			{text: "ctrl+c quit", zone: zones.StatusQuit},
+		}
 	case modeLangAgents:
-		hint = "↑/↓ select · g/r generate or regenerate · d delete cached · esc close · ctrl+c quit" + dry
+		segs = []statusSeg{
+			{text: "↑/↓ select"},
+			{text: "g/r generate or regenerate"},
+			{text: "d delete cached"},
+			{text: "esc close"},
+			{text: "ctrl+c quit", zone: zones.StatusQuit},
+		}
 	}
+	if m.opts.DryRun {
+		segs = append(segs, statusSeg{text: styles.ErrStyle.Render("DRY-RUN")})
+	}
+	return segs
+}
+
+func (m *Model) renderStatus() string {
+	hint := joinStatusSegs(m.statusSegs())
 	// Pre-wrap the hint at the StatusBar's content width (m.width minus
 	// horizontal padding) so its rendered height matches what the
 	// terminal will actually display.

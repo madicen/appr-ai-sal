@@ -1,11 +1,98 @@
 package model
 
 import (
+	"strings"
+
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
 
+	"github.com/madicen/appr-ai-sal/internal/tui/tabs/settings"
+	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
+
+// handleStatusBarMouse dispatches a left-click on a bottom status-bar hint
+// to the same action its key triggers, so a mouse-only user can drive the
+// whole app from the status bar. It runs at the root before mode/tab
+// routing so the universally-present quit segment works in every mode —
+// including the settings / repo-agents / lang-agents tabs that otherwise
+// own the event stream. handled=false means the click missed every status
+// zone and the caller should fall through to normal routing.
+//
+// Only the currently-rendered mode marks its status zones (see
+// statusSegs), so a zone for a different mode can never match here.
+func (m *Model) handleStatusBarMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd, bool) {
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
+		return m, nil, false
+	}
+	// Quit is the only segment present in every mode.
+	if zoneInBounds(zones.StatusQuit, msg) {
+		util.FlushMouse()
+		return m, tea.Quit, true
+	}
+	switch m.mode {
+	case modeList:
+		switch {
+		case zoneInBounds(zones.StatusSearch, msg):
+			return m, m.focusSearchInput(), true
+		case zoneInBounds(zones.StatusURL, msg):
+			return m, m.focusURLInput(), true
+		case zoneInBounds(zones.StatusFilter, msg):
+			return m, m.cycleFilterCmd(), true
+		case zoneInBounds(zones.StatusOpenBrowser, msg):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				if u := strings.TrimSpace(it.pr.URL); u != "" {
+					return m, util.OpenInBrowserCmd(u), true
+				}
+			}
+			return m, nil, true
+		case zoneInBounds(zones.StatusSettingsAI, msg):
+			return m, m.openSettings(settings.StartAI), true
+		case zoneInBounds(zones.StatusRepoCtx, msg):
+			return m, m.openSettings(settings.StartRepoContext), true
+		case zoneInBounds(zones.StatusRepoAgents, msg):
+			return m, m.openRepoAgents("", false), true
+		case zoneInBounds(zones.StatusLangAgents, msg):
+			return m, m.openLangAgents(), true
+		case zoneInBounds(zones.StatusBuildAgents, msg):
+			if it, ok := m.list.SelectedItem().(prItem); ok {
+				return m, m.openRepoAgents(it.pr.Owner+"/"+it.pr.Repo, true), true
+			}
+			return m, m.openRepoAgents("", false), true
+		case zoneInBounds(zones.StatusRefresh, msg):
+			return m, m.refreshPRListCmd(), true
+		}
+	case modeDetail:
+		switch {
+		case zoneInBounds(zones.StatusCyclePane, msg):
+			m.cyclePane(+1)
+			m.refreshDetailViews()
+			return m, nil, true
+		case zoneInBounds(zones.StatusReview, msg):
+			mm, cmd := m.startReviewOverlay()
+			return mm, cmd, true
+		case zoneInBounds(zones.StatusToggleControls, msg):
+			m.detailToggleControls()
+			return m, nil, true
+		case zoneInBounds(zones.StatusReopenApproval, msg):
+			mm, cmd := m.reopenApprovalIfPossible()
+			return mm, cmd, true
+		case zoneInBounds(zones.StatusOpenBrowser, msg):
+			return m, m.detailOpenBrowserCmd(), true
+		case zoneInBounds(zones.StatusDescription, msg):
+			return m, m.detailToggleDescription(), true
+		case zoneInBounds(zones.StatusDiffOnly, msg):
+			m.detailToggleDiffOnly()
+			return m, nil, true
+		case zoneInBounds(zones.StatusBulk, msg):
+			return m, m.detailBulkConfirmCmd(), true
+		case zoneInBounds(zones.StatusBack, msg):
+			m.detailBackToList()
+			return m, nil, true
+		}
+	}
+	return m, nil, false
+}
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	wheel := tea.MouseEvent(msg).IsWheel()

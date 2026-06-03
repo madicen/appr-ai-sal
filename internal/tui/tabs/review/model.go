@@ -729,22 +729,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.pendingSuppressAck {
 			switch msg.String() {
 			case "enter", " ":
-				m.pendingSuppressAck = false
-				// If the user had no cards to walk after the suppress notice,
-				// jump immediately to the right next phase rather than parking
-				// them on a "no findings" empty card view.
-				if len(m.cards) == 0 || m.idx >= len(m.cards) {
-					if m.draft != nil && m.draft.PostEvent() == "APPROVE" {
-						m.phase = phaseConfirmApprove
-						m.vp.GotoTop()
-						m.rebuildBody()
-						return m, nil
-					}
-					cmd := m.enterSummary()
-					return m, cmd
-				}
-				m.rebuildBody()
-				return m, nil
+				return m.acknowledgeSuppress()
 			case "q", "esc":
 				return m, func() tea.Msg { return CloseMsg{} }
 			}
@@ -854,6 +839,28 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// acknowledgeSuppress dismisses the suppress-acknowledgement gate and
+// advances to the right next phase. Shared by the Enter/Space keys and
+// the clickable Continue button.
+func (m *Model) acknowledgeSuppress() (tea.Model, tea.Cmd) {
+	m.pendingSuppressAck = false
+	// If the user had no cards to walk after the suppress notice,
+	// jump immediately to the right next phase rather than parking
+	// them on a "no findings" empty card view.
+	if len(m.cards) == 0 || m.idx >= len(m.cards) {
+		if m.draft != nil && m.draft.PostEvent() == "APPROVE" {
+			m.phase = phaseConfirmApprove
+			m.vp.GotoTop()
+			m.rebuildBody()
+			return m, nil
+		}
+		cmd := m.enterSummary()
+		return m, cmd
+	}
+	m.rebuildBody()
+	return m, nil
+}
+
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 		switch m.phase {
@@ -870,6 +877,12 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 		case phaseApprove:
 			if m.pendingSuppressAck {
+				if z := zone.Get(zones.StagedAck); z != nil && z.InBounds(msg) {
+					return m.acknowledgeSuppress()
+				}
+				if z := zone.Get(zones.StagedQuit); z != nil && z.InBounds(msg) {
+					return m, func() tea.Msg { return CloseMsg{} }
+				}
 				return m, nil
 			}
 			if m.existingCommentsLoading {
