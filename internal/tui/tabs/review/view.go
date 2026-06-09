@@ -21,7 +21,7 @@ func (m *Model) rebuildBody() {
 	case phaseRunning:
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderRunningBody(), m.vp.Width))
 	case phaseApprove:
-		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderApprovalBody(), m.vp.Width))
+		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderAgentTab(m.activeAgent()), m.vp.Width))
 	case phaseGeneratingSummary:
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderGeneratingSummaryBody(), m.vp.Width))
 	case phaseSummary:
@@ -31,6 +31,295 @@ func (m *Model) rebuildBody() {
 	case phasePosted:
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderPostedBody(), m.vp.Width))
 	}
+}
+
+// tabStatusGlyph returns a one-cell status glyph for an agent tab based
+// on the matching overlayAgentRow's phase, plus a findings-count hint
+// once it's done. Overview and summary tabs get their own markers.
+func (m *Model) tabStatusGlyph(t reviewTab) string {
+	switch t.kind {
+	case tabOverview:
+		return styles.DimStyle.Render("▦")
+	case tabSummary:
+		if m.posted {
+			return styles.OkStyle.Render("✓")
+		}
+		if m.done {
+			return styles.BoldStyle.Render("★")
+		}
+		return styles.DimStyle.Render("◌")
+	case tabAgent:
+		i := m.agentIndex(t.agent)
+		if i < 0 {
+			return styles.DimStyle.Render("◌")
+		}
+		return agentStatusIcon(&m.agents[i])
+	}
+	return " "
+}
+
+// renderTabBar draws the single-line tab strip shown above the viewport.
+// Each tab is wrapped in a bubblezone for click selection; the active tab
+// is highlighted. When the strip is wider than the modal it windows
+// around the active tab with ‹ / › overflow markers so the active tab is
+// always visible and no zone-marked label is cut mid-cell.
+func (m *Model) renderTabBar(width int) string {
+	if len(m.tabs) == 0 {
+		return ""
+	}
+	// Pre-render each tab's labelled, zoned segment.
+	segs := make([]string, len(m.tabs))
+	widths := make([]int, len(m.tabs))
+	for i, t := range m.tabs {
+		label := m.tabStatusGlyph(t) + " " + tabShortLabel(t)
+		styled := " " + label + " "
+		if i == m.activeTab {
+			styled = styles.BoldStyle.Render("[" + label + "]")
+		} else {
+			styled = styles.DimStyle.Render(" " + label + " ")
+		}
+		segs[i] = zone.Mark(zones.ReviewTab(i), styled)
+		widths[i] = ansi.StringWidth(styled)
+	}
+	// Greedily window around the active tab so it stays visible.
+	lo, hi := m.activeTab, m.activeTab
+	used := widths[m.activeTab]
+	for {
+		grew := false
+		if lo > 0 && used+widths[lo-1]+1 <= width {
+			used += widths[lo-1] + 1
+			lo--
+			grew = true
+		}
+		if hi < len(m.tabs)-1 && used+widths[hi+1]+1 <= width {
+			used += widths[hi+1] + 1
+			hi++
+			grew = true
+		}
+		if !grew {
+			break
+		}
+	}
+	var b strings.Builder
+	if lo > 0 {
+		b.WriteString(styles.DimStyle.Render("‹"))
+	}
+	for i := lo; i <= hi; i++ {
+		if i > lo {
+			b.WriteString(" ")
+		}
+		b.WriteString(segs[i])
+	}
+	if hi < len(m.tabs)-1 {
+		b.WriteString(styles.DimStyle.Render("›"))
+	}
+	line := b.String()
+	if ansi.StringWidth(line) > width {
+		line = ansi.Truncate(line, width, "")
+	}
+	return line
+}
+
+// renderAgentTab renders one per-agent tab: a header, the agent's
+// always-present summary of what it did / found, and its findings. While
+// the pipeline is still running the findings are read-only; once it
+// completes, postable findings become interactive cards (post/skip), and
+// findings the repo arbiter suppressed are listed read-only with the
+// arbiter's reason.
+func (m *Model) renderAgentTab(name string) string {
+	rowW := max(8, m.vp.Width)
+	i := m.agentIndex(name)
+	if i < 0 {
+		return styles.DimStyle.Render("(unknown agent)")
+	}
+	row := &m.agents[i]
+	var b strings.Builder
+
+	// Header: agent tag + status detail.
+	b.WriteString(styles.RenderTag(name) + "  " + agentStatusDetail(row) + "\n")
+	verdict := row.verdict
+	if verdict == "" && name == review.SpecVibeCoach && m.draft != nil && m.draft.VibeCoach != nil {
+		verdict = m.draft.VibeCoach.Verdict
+	}
+	if verdict != "" {
+		if lbl := review.VibeVerdictShortLabel(review.NormalizeVibeVerdict(verdict)); lbl != "" {
+			b.WriteString(styles.DimStyle.Render("Merge recommendation: ") + styles.BoldStyle.Render(lbl) + "\n")
+		}
+	}
+	b.WriteString("\n")
+
+	// Not finished yet — placeholder; the user can come back later. Once
+	// the whole pipeline is done (m.done) we always render the agent's
+	// summary + findings even if this row's streamed phase wasn't updated.
+	if !m.done && (row.phase == oaPending || row.phase == oaRunning) {
+		switch row.phase {
+		case oaRunning:
+			b.WriteString(styles.DimStyle.Render("This agent is still working. Its findings and summary will appear here when it finishes — you can keep browsing other tabs in the meantime.") + "\n")
+		default:
+			b.WriteString(styles.DimStyle.Render("Queued. This agent hasn't started yet.") + "\n")
+		}
+		return b.String()
+	}
+	if row.phase == oaErr && row.err != nil {
+		b.WriteString(styles.ErrStyle.Render("✗ "+row.err.Error()) + "\n\n")
+	}
+
+	// Always-present summary of what the agent did / found.
+	b.WriteString(styles.DimStyle.Render("Summary") + "\n")
+	if s := strings.TrimSpace(m.agentSummaryText(name, row)); s != "" {
+		b.WriteString(util.RenderMarkdownIndented(s, rowW, 2) + "\n")
+	} else {
+		b.WriteString(styles.DimStyle.Render("  (no written summary from this agent)") + "\n")
+	}
+	b.WriteString("\n")
+
+	// Findings.
+	if !m.done {
+		b.WriteString(m.renderAgentFindingsReadonly(row, rowW))
+		b.WriteString("\n" + styles.DimStyle.Render("Posting opens once the whole review completes (the repo arbiter runs after the specialists).") + "\n")
+		return b.String()
+	}
+
+	idxs := m.agentCardIndices(name)
+	if len(idxs) > 0 {
+		// Per-agent progress strip + focused interactive card.
+		onPR, posted, skipped := m.agentCardTally(name)
+		pos := positionOf(idxs, m.idx)
+		if pos < 0 {
+			m.idx = idxs[0]
+			pos = 0
+		}
+		b.WriteString(styles.BoldStyle.Render(fmt.Sprintf("Finding %d of %d", pos+1, len(idxs))) +
+			styles.DimStyle.Render(fmt.Sprintf("  ·  %d already on PR  ·  %d posted  ·  %d skipped", onPR, posted, skipped)) + "\n\n")
+		b.WriteString(m.renderCardDetail(rowW))
+	} else if hasAnyFinding(row) {
+		b.WriteString(styles.DimStyle.Render("All of this agent's findings were suppressed by the repo arbiter (see below).") + "\n")
+	} else {
+		b.WriteString(styles.OkStyle.Render("No findings from this agent.") + "\n")
+	}
+
+	// Suppressed / demoted findings for this agent (read-only context).
+	if sup := m.renderAgentSuppressions(name, rowW); sup != "" {
+		b.WriteString("\n" + sup)
+	}
+	return b.String()
+}
+
+// agentSummaryText returns the best available "what did this agent do"
+// text: the streamed row summary when present, otherwise derived from the
+// adopted draft (specialist Summary, arbiter recap, or vibe-coach
+// Summary). This keeps every agent tab populated even when the per-agent
+// progress events weren't observed (e.g. a reopened approval).
+func (m *Model) agentSummaryText(name string, row *overlayAgentRow) string {
+	if s := strings.TrimSpace(row.summary); s != "" {
+		return s
+	}
+	if m.draft == nil {
+		return ""
+	}
+	switch name {
+	case overlayAgentRepoArbiter:
+		return formatArbiterRowSummary(m.draft.RepoArbiter)
+	case review.SpecVibeCoach:
+		if m.draft.VibeCoach != nil {
+			return strings.TrimSpace(m.draft.VibeCoach.Summary)
+		}
+		return ""
+	}
+	for _, s := range m.draft.Specialists {
+		if s.Specialist == name {
+			return strings.TrimSpace(s.Summary)
+		}
+	}
+	return ""
+}
+
+// renderAgentFindingsReadonly lists an agent's streamed findings before
+// the pipeline completes (no post/skip actions yet).
+func (m *Model) renderAgentFindingsReadonly(row *overlayAgentRow, rowW int) string {
+	if len(row.findings) == 0 {
+		return styles.OkStyle.Render("No findings from this agent.") + "\n"
+	}
+	var b strings.Builder
+	b.WriteString(styles.DimStyle.Render(fmt.Sprintf("%d finding(s)", len(row.findings))) + "\n")
+	for _, f := range row.findings {
+		loc := f.Path
+		if f.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", f.Path, f.Line)
+		}
+		if loc == "" {
+			loc = "(PR-wide)"
+		}
+		head := "  " + styles.BoldStyle.Render(loc) + "  " + styles.RenderSeverity(string(f.Severity))
+		b.WriteString(head + "\n")
+		for _, wl := range strings.Split(util.WrapForViewport("    "+strings.TrimSpace(f.Comment), rowW), "\n") {
+			b.WriteString(styles.DimStyle.Render(wl) + "\n")
+		}
+	}
+	return b.String()
+}
+
+// renderAgentSuppressions renders the repo arbiter's suppressed and
+// demoted findings for one agent so the reviewer can see what was held
+// back and why.
+func (m *Model) renderAgentSuppressions(name string, rowW int) string {
+	if m.draft == nil || m.draft.RepoArbiter == nil {
+		return ""
+	}
+	ar := m.draft.RepoArbiter
+	var b strings.Builder
+	for _, s := range ar.Suppressed {
+		if s.Specialist != name {
+			continue
+		}
+		loc := s.Path
+		if s.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", s.Path, s.Line)
+		}
+		b.WriteString(styles.WarnStyle.Render("⊘ suppressed ") + styles.BoldStyle.Render(loc) + "\n")
+		if r := strings.TrimSpace(s.Reason); r != "" {
+			for _, wl := range strings.Split(util.WrapForViewport("    "+r, rowW), "\n") {
+				b.WriteString(styles.DimStyle.Render(wl) + "\n")
+			}
+		}
+	}
+	for _, d := range ar.Demoted {
+		if d.Specialist != name {
+			continue
+		}
+		loc := d.Path
+		if d.Line > 0 {
+			loc = fmt.Sprintf("%s:%d", d.Path, d.Line)
+		}
+		b.WriteString(styles.DimStyle.Render(fmt.Sprintf("▾ demoted %s → %s ", string(d.From), string(d.To))) + styles.BoldStyle.Render(loc) + "\n")
+	}
+	out := b.String()
+	if out == "" {
+		return ""
+	}
+	return styles.DimStyle.Render("Repo arbiter adjustments") + "\n" + out
+}
+
+// agentCardTally counts already-on-PR / posted / skipped cards for one agent.
+func (m *Model) agentCardTally(name string) (onPR, posted, skipped int) {
+	for _, gi := range m.agentCardIndices(name) {
+		switch m.cards[gi].state {
+		case cardAlreadyOnPR:
+			onPR++
+		case cardPosted:
+			posted++
+		case cardSkipped:
+			skipped++
+		}
+	}
+	return onPR, posted, skipped
+}
+
+// hasAnyFinding reports whether the agent produced any finding at all
+// (streamed during the run), used to distinguish "all suppressed" from
+// "genuinely clean".
+func hasAnyFinding(row *overlayAgentRow) bool {
+	return len(row.findings) > 0 || row.findingsN > 0
 }
 
 // renderGeneratingSummaryBody is the brief interstitial shown while
@@ -526,37 +815,10 @@ func stageChevronAndState(running, done, failed, total int) (string, string) {
 }
 
 func (m *Model) renderApprovalBody() string {
-	if m.pendingSuppressAck && m.draft != nil {
-		rowW := max(8, m.vp.Width)
-		allN := len(m.draft.FlatPostableFindings())
-		postN := len(m.draft.FlatPostableFindingsForPost())
-		var b strings.Builder
-		if banner := formatPriorActivityBanner(m.priorActivity); banner != "" {
-			b.WriteString(banner + "\n\n")
-		}
-		b.WriteString(styles.ErrStyle.Render("Repo arbiter") + " will skip " + fmt.Sprintf("%d", allN-postN) +
-			" of " + fmt.Sprintf("%d", allN) + " inline comment(s) (not in GitHub batch).\n\n")
-		if ar := m.draft.RepoArbiter; ar != nil && len(ar.Demoted) > 0 {
-			b.WriteString(styles.DimStyle.Render(fmt.Sprintf("It also demoted %d finding(s) one severity rank.", len(ar.Demoted))) + "\n\n")
-		}
-		if len(m.draft.ConventionWitness) > 0 {
-			b.WriteString(styles.DimStyle.Render(fmt.Sprintf("Convention witness classified %d testing/docs finding(s) against the repo's evidence.", len(m.draft.ConventionWitness))) + "\n\n")
-		}
-		if ar := m.draft.RepoArbiter; ar != nil && strings.TrimSpace(ar.UserSummary) != "" {
-			// Arbiter UserSummary is LLM-produced markdown; render it
-			// so headings / lists / emphasis look like prose, not source.
-			b.WriteString(util.RenderMarkdownIndented(strings.TrimSpace(ar.UserSummary), rowW, 0) + "\n\n")
-		}
-		cont := zone.Mark(zones.StagedAck, styles.OkStyle.Render(" Continue (enter) "))
-		abort := zone.Mark(zones.StagedQuit, styles.ErrStyle.Render(" Abort (q) "))
-		b.WriteString(cont + "  " + abort + "\n")
-		return b.String()
-	}
 	if m.idx < 0 || m.idx >= len(m.cards) {
-		return styles.DimStyle.Render("(no findings to approve — press y to post the summary, or skip)")
+		return styles.DimStyle.Render("(no findings to approve)")
 	}
 	rowW := max(8, m.vp.Width)
-	cur := m.cards[m.idx]
 	var b strings.Builder
 
 	if banner := formatPriorActivityBanner(m.priorActivity); banner != "" {
@@ -576,6 +838,20 @@ func (m *Model) renderApprovalBody() string {
 		styles.DimStyle.Render(fmt.Sprintf("%d", skipped)),
 	)
 	b.WriteString(styles.BoldStyle.Render(progress) + "\n\n")
+	b.WriteString(m.renderCardDetail(rowW))
+	return b.String()
+}
+
+// renderCardDetail renders the focused approval card (m.cards[m.idx]):
+// specialist + location, anchor warnings, diff hunk, the GitHub comment
+// preview, the current state badge, and the post/skip/nav action row.
+// Shared by renderApprovalBody and the per-agent tab.
+func (m *Model) renderCardDetail(rowW int) string {
+	if m.idx < 0 || m.idx >= len(m.cards) {
+		return ""
+	}
+	cur := m.cards[m.idx]
+	var b strings.Builder
 
 	// Specialist + location
 	b.WriteString(styles.RenderTag(cur.finding.Specialist) + "  ")
@@ -664,9 +940,8 @@ func (m *Model) renderApprovalBody() string {
 	right := zone.Mark(zones.StagedNext, styles.DimStyle.Render(" next → "))
 	post := zone.Mark(zones.StagedPost, styles.OkStyle.Render(" Post (y) "))
 	skip := zone.Mark(zones.StagedSkip, styles.DimStyle.Render(" Skip (n) "))
-	finish := zone.Mark(zones.StagedFinish, styles.BoldStyle.Render(" Skip rest, post summary (f) "))
 	quit := zone.Mark(zones.StagedQuit, styles.ErrStyle.Render(" Abort (q) "))
-	row := strings.Join([]string{left, post, skip, right, finish, quit}, "  ")
+	row := strings.Join([]string{left, post, skip, right, quit}, "  ")
 	b.WriteString(lipgloss.NewStyle().Width(rowW).Render(row))
 	b.WriteString("\n")
 	if m.dryRun {

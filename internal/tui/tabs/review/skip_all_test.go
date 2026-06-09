@@ -38,19 +38,15 @@ func TestReviewOverlaySkipAllFindingsOpensConfirmApprove(t *testing.T) {
 		VibeCoach: &review.VibeCoachResult{Verdict: review.VibeVerdictRequestChanges},
 	}
 	ro.AdoptDraft(d)
-	if ro.phase != phaseApprove {
-		t.Fatalf("phase %v want phaseApprove", ro.phase)
-	}
 	if len(ro.cards) != 2 {
 		t.Fatalf("cards %d want 2", len(ro.cards))
 	}
-	out, _ := ro.actSkipCurrent()
-	ro = out.(*Model)
-	if ro.phase != phaseApprove {
-		t.Fatalf("after one skip phase %v want phaseApprove", ro.phase)
-	}
-	out, _ = ro.actSkipCurrent()
-	ro = out.(*Model)
+	// Skip every finding across the agent tabs, then visit the summary
+	// tab — with nothing posted and a non-approve verdict it should offer
+	// the skip-disagree APPROVE confirmation.
+	ro.cards[0].state = cardSkipped
+	ro.cards[1].state = cardSkipped
+	ro.enterSummary()
 	if ro.phase != phaseConfirmApprove {
 		t.Fatalf("after skipping all, phase %v want phaseConfirmApprove", ro.phase)
 	}
@@ -75,8 +71,8 @@ func TestReviewOverlaySkipAllWithCommentVerdictOpensConfirmApprove(t *testing.T)
 	if len(ro.cards) != 1 {
 		t.Fatalf("cards %d want 1", len(ro.cards))
 	}
-	out, _ := ro.actSkipCurrent()
-	ro = out.(*Model)
+	ro.cards[0].state = cardSkipped
+	ro.enterSummary()
 	if ro.phase != phaseConfirmApprove {
 		t.Fatalf("phase %v want phaseConfirmApprove", ro.phase)
 	}
@@ -270,8 +266,8 @@ func TestRegularConfirmApproveAKeyIgnored(t *testing.T) {
 		VibeCoach: &review.VibeCoachResult{Verdict: review.VibeVerdictRequestChanges},
 	}
 	ro.AdoptDraft(d)
-	out, _ := ro.actSkipCurrent()
-	ro = out.(*Model)
+	ro.cards[0].state = cardSkipped
+	ro.enterSummary()
 	if ro.phase != phaseConfirmApprove {
 		t.Fatalf("setup phase=%v want phaseConfirmApprove (skip-disagree path)", ro.phase)
 	}

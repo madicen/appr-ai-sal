@@ -70,33 +70,22 @@ func newRootRoutingTestModel(t *testing.T) (*Model, *reviewtab.Model) {
 	return m, ro
 }
 
-// data.StagedFindingPostedMsg arriving for the LAST card must walk through the
-// overlay's advanceCard → enterSummary chain AND have its returned cmd
-// (the runVibeCoachCmd closure) propagated by the root Update. Without
-// the propagation the overlay sits in PhaseGeneratingSummary with
-// CoachInFlight()=true but no goroutine is ever scheduled.
-func TestRootForwardsStagedFindingPostedCmdSoVibeCoachActuallyRuns(t *testing.T) {
+// data.StagedFindingPostedMsg routed through the root Update must reach
+// the overlay handler so the focused finding (in its agent tab) is marked
+// posted. The root forwards the overlay's returned cmd unconditionally.
+func TestRootRoutesStagedFindingPostedMarksCardPosted(t *testing.T) {
 	m, ro := newRootRoutingTestModel(t)
+	ro.SelectAgentTab(review.SpecDocs)
 	if ro.Phase() != reviewtab.PhaseApprove {
-		t.Fatalf("preconditions: phase %v, want PhaseApprove", ro.Phase())
+		t.Fatalf("preconditions: phase %v, want PhaseApprove (agent tab)", ro.Phase())
 	}
 	if ro.CardCount() != 1 {
 		t.Fatalf("preconditions: cards %d, want 1", ro.CardCount())
 	}
 
-	// Mark the only card as posted so advanceCard's "are we done?"
-	// branch fires when data.StagedFindingPostedMsg arrives.
-	ro.SetCardState(0, reviewtab.CardPending)
-
-	_, cmd := m.Update(data.StagedFindingPostedMsg{})
-	if cmd == nil {
-		t.Fatalf("root Update dropped the runVibeCoachCmd from the overlay; UI would hang on PhaseGeneratingSummary")
-	}
-	if ro.Phase() != reviewtab.PhaseGeneratingSummary {
-		t.Errorf("expected overlay in PhaseGeneratingSummary, got %v", ro.Phase())
-	}
-	if !ro.CoachInFlight() {
-		t.Errorf("expected CoachInFlight()=true after enterSummary scheduled the goroutine")
+	_, _ = m.Update(data.StagedFindingPostedMsg{})
+	if ro.CardStateAt(0) != reviewtab.CardPosted {
+		t.Errorf("expected the focused finding to be marked posted, got %v", ro.CardStateAt(0))
 	}
 }
 

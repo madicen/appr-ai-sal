@@ -55,6 +55,30 @@ func skipSetHash(keys map[string]struct{}) string {
 // call repeatedly — coachInFlight guards against double-issue.
 func (m *Model) enterSummary() tea.Cmd {
 	m.syncUserSkipsToDraft()
+	// First decide whether the summary tab should show its confirm-approve
+	// sub-state instead of the full post-summary form. This subsumes the
+	// old advanceCard routing: no findings at all, an APPROVE verdict, or
+	// the user having skipped every objection they disagree with.
+	_, posted, skipped := m.tallyCardKinds()
+	switch {
+	case m.noFindingsApprove:
+		m.approveAfterSkipDisagree = false
+		m.setSummaryPhase(phaseConfirmApprove)
+		return nil
+	case m.draft != nil && m.draft.PostEvent() != "APPROVE" && posted == 0 && skipped > 0:
+		// Skipped every suggested inline (posted none) while the AI did
+		// not recommend approve — offer GitHub APPROVE before the long
+		// summary path.
+		m.approveAfterSkipDisagree = true
+		m.setSummaryPhase(phaseConfirmApprove)
+		return nil
+	case m.draft != nil && m.draft.PostEvent() == "APPROVE" && len(m.cards) > 0:
+		m.approveAfterSkipDisagree = false
+		m.setSummaryPhase(phaseConfirmApprove)
+		return nil
+	}
+	m.approveAfterSkipDisagree = false
+
 	hash := ""
 	if m.draft != nil {
 		hash = skipSetHash(m.draft.UserSkipPostKeys)
@@ -64,31 +88,36 @@ func (m *Model) enterSummary() tea.Cmd {
 	// common case on re-entry (user backs out, doesn't change skips,
 	// re-enters).
 	if m.draft != nil && m.draft.VibeCoach != nil && hash == m.lastCoachHash && m.coachErr == nil {
-		m.phase = phaseSummary
-		m.vp.GotoTop()
-		m.rebuildBody()
+		m.setSummaryPhase(phaseSummary)
 		return nil
 	}
 	// No AI config (tests / dev) → just show the summary with whatever
 	// is on the draft. Production always passes a config.
 	if m.aiConfig == nil || m.draft == nil {
-		m.phase = phaseSummary
-		m.vp.GotoTop()
-		m.rebuildBody()
+		m.setSummaryPhase(phaseSummary)
 		return nil
 	}
 	// Already running a vibe-coach call → don't issue a second one.
 	if m.coachInFlight {
-		m.phase = phaseGeneratingSummary
-		m.rebuildBody()
+		m.setSummaryPhase(phaseGeneratingSummary)
 		return nil
 	}
 	m.coachInFlight = true
 	m.coachErr = nil
-	m.phase = phaseGeneratingSummary
+	m.setSummaryPhase(phaseGeneratingSummary)
+	return runVibeCoachCmd(m.draft, m.aiConfig, hash)
+}
+
+// setSummaryPhase records a summary-tab sub-state and, when the summary
+// tab is focused, mirrors it onto m.phase so the renderer/help/title pick
+// it up. Callers use this instead of writing m.phase directly so the
+// dual phase/tab state stays consistent.
+func (m *Model) setSummaryPhase(p overlayPhase) {
+	if m.onSummaryTab() {
+		m.phase = p
+	}
 	m.vp.GotoTop()
 	m.rebuildBody()
-	return runVibeCoachCmd(m.draft, m.aiConfig, hash)
 }
 
 // runVibeCoachCmd kicks off vibe-coach against the draft's post-skip
@@ -121,51 +150,37 @@ func (m *Model) syncUserSkipsToDraft() {
 	}
 }
 
-// advanceCard moves to the next pending card. When the cards are
-// exhausted it transitions into the next phase (confirmApprove or, via
-// enterSummary, the summary phase — re-running vibe-coach first only
-// when the user's skip set differs from the pipeline-time run).
-// Returns the tea.Cmd that callers must include in their batch.
-//
-// Note: PostEvent() may currently return a stale verdict (vibe-coach
-// hasn't re-run yet against the final skip set). That's fine — the
-// confirmApprove vs summary decision is conservative: if the pre-skip
-// verdict was APPROVE, the user wanted approval and the post-skip set
-// can only have shrunk, so APPROVE is still safe. If it was anything
-// else, we route through summary, where the VibeCoachDoneMsg handler
-// can re-evaluate.
+// advanceCard moves to the next pending finding within the currently
+// focused agent tab after the user posts or skips one. It stays inside
+// the agent — the summary is reached by selecting the summary tab, not by
+// running off the end of a flat finding list. Returns nil (no phase
+// transition).
 func (m *Model) advanceCard() tea.Cmd {
-	if m.idx < len(m.cards) {
-		m.idx++
-	}
-	if m.idx >= len(m.cards) {
-		_, posted, skipped := m.tallyCardKinds()
-		// User skipped every suggestion (posted no inline comments) but the AI
-		// did not recommend approve — treat as disagreeing with the objections
-		// and offer GitHub APPROVE before the long summary path.
-		skipDisagree := m.draft != nil && m.draft.PostEvent() != "APPROVE" && posted == 0 && skipped > 0
-		m.approveAfterSkipDisagree = skipDisagree
-		switch {
-		case skipDisagree:
-			m.phase = phaseConfirmApprove
+	idxs := m.agentCardIndices(m.activeAgent())
+	// Next pending card after the current one.
+	for _, gi := range idxs {
+		if gi > m.idx && m.cards[gi].state == cardPending {
+			m.idx = gi
 			m.vp.GotoTop()
 			return nil
-		case m.draft != nil && m.draft.PostEvent() == "APPROVE":
-			m.approveAfterSkipDisagree = false
-			m.phase = phaseConfirmApprove
-			m.vp.GotoTop()
-			return nil
-		default:
-			m.approveAfterSkipDisagree = false
-			return m.enterSummary()
 		}
 	}
+	// Wrap: first pending card anywhere in this agent.
+	for _, gi := range idxs {
+		if m.cards[gi].state == cardPending {
+			m.idx = gi
+			m.vp.GotoTop()
+			return nil
+		}
+	}
+	// Nothing left pending for this agent — keep the focus on the last
+	// card so the reviewer still sees its resolved badge.
 	m.vp.GotoTop()
 	return nil
 }
 
 func (m *Model) actPostCurrent() (tea.Model, tea.Cmd) {
-	if m.existingCommentsLoading || m.idx >= len(m.cards) || m.draft == nil || m.draft.PR == nil {
+	if m.existingCommentsLoading || m.idx < 0 || m.idx >= len(m.cards) || m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
 	cur := &m.cards[m.idx]
@@ -208,7 +223,7 @@ func (m *Model) actPostCurrent() (tea.Model, tea.Cmd) {
 // skipped, or pending with a valid hunk — F is a no-op (the inline
 // post is still the right choice and the reviewer should press y).
 func (m *Model) actPostCurrentFileLevel() (tea.Model, tea.Cmd) {
-	if m.existingCommentsLoading || m.idx >= len(m.cards) || m.draft == nil || m.draft.PR == nil {
+	if m.existingCommentsLoading || m.idx < 0 || m.idx >= len(m.cards) || m.draft == nil || m.draft.PR == nil {
 		return m, nil
 	}
 	cur := &m.cards[m.idx]
@@ -318,7 +333,7 @@ func shortSHA(s string) string {
 }
 
 func (m *Model) actSkipCurrent() (tea.Model, tea.Cmd) {
-	if m.idx >= len(m.cards) {
+	if m.idx < 0 || m.idx >= len(m.cards) {
 		return m, nil
 	}
 	if m.cards[m.idx].state == cardAlreadyOnPR {
@@ -332,9 +347,12 @@ func (m *Model) actSkipCurrent() (tea.Model, tea.Cmd) {
 	return m, advCmd
 }
 
+// actNext / actPrev move the focused finding within the active agent tab.
 func (m *Model) actNext() (tea.Model, tea.Cmd) {
-	if m.idx < len(m.cards)-1 {
-		m.idx++
+	idxs := m.agentCardIndices(m.activeAgent())
+	pos := positionOf(idxs, m.idx)
+	if pos >= 0 && pos < len(idxs)-1 {
+		m.idx = idxs[pos+1]
 		m.vp.GotoTop()
 		m.rebuildBody()
 	}
@@ -342,12 +360,24 @@ func (m *Model) actNext() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) actPrev() (tea.Model, tea.Cmd) {
-	if m.idx > 0 {
-		m.idx--
+	idxs := m.agentCardIndices(m.activeAgent())
+	pos := positionOf(idxs, m.idx)
+	if pos > 0 {
+		m.idx = idxs[pos-1]
 		m.vp.GotoTop()
 		m.rebuildBody()
 	}
 	return m, nil
+}
+
+// positionOf returns the position of v in s, or -1.
+func positionOf(s []int, v int) int {
+	for i, x := range s {
+		if x == v {
+			return i
+		}
+	}
+	return -1
 }
 
 func (m *Model) actPostSummary() (tea.Model, tea.Cmd) {

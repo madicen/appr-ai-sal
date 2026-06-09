@@ -15,6 +15,13 @@ func TreeFile(i int) string {
 	return fmt.Sprintf("zone:tree:file:%d", i)
 }
 
+// ReviewTab marks one entry in the review overlay's tab bar (overview,
+// per-agent, and summary tabs). Indexed by tab position so each tab gets
+// a unique click zone.
+func ReviewTab(i int) string {
+	return fmt.Sprintf("zone:review:tab:%d", i)
+}
+
 // TreeFolder marks a folder header row in the hierarchical files tree.
 // Clicks on a folder zone toggle that folder's collapsed state. Indexed
 // by view-row position (i.e. index into treeViewRows) so the same row
