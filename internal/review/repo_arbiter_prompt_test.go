@@ -64,6 +64,31 @@ func TestBuildRepoArbiterUserPromptOmitsEmptyWitnessSection(t *testing.T) {
 	}
 }
 
+// The arbiter prompt must instruct the model to default-keep objective
+// PR-agent findings (empty description, failing checks) rather than silently
+// demoting them below the floor to quiet the review.
+func TestRepoArbiterPromptDefaultKeepsPRAgentFindings(t *testing.T) {
+	body, err := SpecialistPrompt(specRepoArbiter)
+	if err != nil {
+		t.Fatalf("load repo-arbiter prompt: %v", err)
+	}
+	mustContain := []string{
+		// Section framing PR-agent findings as objective.
+		"PR-agent findings are objective",
+		"Default-keep",
+		// The two canonical objective signals called out by name.
+		"empty",
+		"failing required check",
+		// The anti-pattern this calibration prevents.
+		"Never demote a PR-agent finding to dodge the strictness floor",
+	}
+	for _, marker := range mustContain {
+		if !strings.Contains(body, marker) {
+			t.Errorf("repo-arbiter prompt missing PR-agent default-keep marker %q", marker)
+		}
+	}
+}
+
 func TestFormatPerAgentBriefsIsStableAndMonotonic(t *testing.T) {
 	per := map[string]string{
 		"design":   "design brief A",

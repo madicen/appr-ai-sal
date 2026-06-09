@@ -138,6 +138,8 @@ func RenderTag(specialist string) string {
 		return TagStyle(theme.Color(theme.KeyTagDocs)).Render(specialist)
 	case "security":
 		return TagStyle(theme.Color(theme.KeyTagSecurity)).Render(specialist)
+	case "tech":
+		return TagStyle(theme.Color(theme.KeyTagTech)).Render(specialist)
 	case "vibe-coach":
 		return TagStyle(theme.Color(theme.KeyTagVibeCoach)).Render(specialist)
 	case "language-briefs":
@@ -148,6 +150,14 @@ func RenderTag(specialist string) string {
 		return TagStyle(theme.Color(theme.KeyTagRepoExperts)).Render("repo experts")
 	case "repo-arbiter":
 		return TagStyle(theme.Color(theme.KeyTagRepoArbiter)).Render("repo arbiter")
+	case "description":
+		return TagStyle(theme.Color(theme.KeyTagDescription)).Render(specialist)
+	case "checks":
+		return TagStyle(theme.Color(theme.KeyTagChecks)).Render(specialist)
+	case "discussion":
+		return TagStyle(theme.Color(theme.KeyTagDiscussion)).Render(specialist)
+	case "scope":
+		return TagStyle(theme.Color(theme.KeyTagScope)).Render(specialist)
 	default:
 		return lipgloss.NewStyle().Padding(0, 1).Render(specialist)
 	}

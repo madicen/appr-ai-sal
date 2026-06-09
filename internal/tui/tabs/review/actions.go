@@ -139,6 +139,13 @@ func (m *Model) syncUserSkipsToDraft() {
 	}
 	m.draft.UserSkipPostKeys = nil
 	for _, c := range m.cards {
+		// Demoted cards default to skipped but were never in the at-floor
+		// finding set, so their key matches nothing in the body/inline
+		// batch. Recording it would only pollute the skip-set hash and
+		// force a needless vibe-coach re-run on entering the summary.
+		if c.demoted {
+			continue
+		}
 		if c.state != cardSkipped {
 			continue
 		}
@@ -202,6 +209,43 @@ func (m *Model) actPostCurrent() (tea.Model, tea.Cmd) {
 	}
 	cmd := data.PostSingleFindingCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun)
 	return m, cmd
+}
+
+// actToggleDemotedPRWide flips whether the active agent's PR-wide findings
+// the repo arbiter demoted below the floor are included in the posted review
+// body. PR-wide findings have no diff anchor, so they aren't interactive
+// cards — this is their opt-in path. When an agent has several such findings,
+// they toggle together: if any is currently excluded, the press includes all
+// of them; otherwise it excludes all of them. Returns a nil cmd (nothing is
+// posted until the summary is submitted); it only updates the draft + body.
+func (m *Model) actToggleDemotedPRWide() (tea.Model, tea.Cmd) {
+	if m.draft == nil {
+		return m, nil
+	}
+	name := m.activeAgent()
+	if name == "" {
+		return m, nil
+	}
+	findings := m.agentDemotedPRWideFindings(name)
+	if len(findings) == 0 {
+		return m, nil
+	}
+	// Target state: if any finding is currently excluded, include them all;
+	// otherwise exclude them all.
+	desiredOn := false
+	for _, f := range findings {
+		if !m.draft.DemotedPostingEnabled(name, f) {
+			desiredOn = true
+			break
+		}
+	}
+	for _, f := range findings {
+		if m.draft.DemotedPostingEnabled(name, f) != desiredOn {
+			m.draft.ToggleDemotedPosting(name, f)
+		}
+	}
+	m.rebuildBody()
+	return m, nil
 }
 
 // actPostCurrentFileLevel is the file-level fallback: post the current

@@ -68,12 +68,12 @@ const (
 	// StagedRefresh is the clickable "Refresh PR" button rendered
 	// alongside an inline-comment or summary post error so the user can
 	// re-fetch the PR + diff and retry without leaving the overlay.
-	StagedRefresh     = "zone:staged:refresh"
+	StagedRefresh = "zone:staged:refresh"
 	// StagedAck is the clickable "Continue" button on the review
 	// overlay's suppress-acknowledgement gate, mirroring the
 	// Enter/Space key that dismisses the notice.
-	StagedAck = "zone:staged:ack"
-	PostedOK  = "zone:posted:ok"
+	StagedAck         = "zone:staged:ack"
+	PostedOK          = "zone:posted:ok"
 	RepoContextToggle = "zone:review:repo-context"
 	PaneTree          = "zone:pane:tree"
 	PaneDiff          = "zone:pane:diff"
@@ -117,20 +117,21 @@ const (
 
 	// Controls panel zones — clickable rows / buttons inside the
 	// right-hand "Review controls" pane.
-	ControlsStrictCriticalOnly   = "zone:controls:strict:critical_only"
-	ControlsStrictLenient        = "zone:controls:strict:lenient"
-	ControlsStrictBalanced       = "zone:controls:strict:balanced"
-	ControlsStrictStrict         = "zone:controls:strict:strict"
-	ControlsProfilePrev          = "zone:controls:profile:prev"
-	ControlsProfileNext          = "zone:controls:profile:next"
-	ControlsProfileEdit          = "zone:controls:profile:edit"
-	ControlsRepoAgents           = "zone:controls:agents:repo"
-	ControlsTechAgents           = "zone:controls:agents:tech"
-	ControlsLangAgents           = "zone:controls:agents:lang"
-	ControlsToggleParallel       = "zone:controls:toggle:parallel"
-	ControlsToggleDryRun         = "zone:controls:toggle:dry-run"
-	ControlsToggleStartMinimized = "zone:controls:toggle:start-minimized"
-	ControlsStartReview          = "zone:controls:start"
+	ControlsStrictCriticalOnly     = "zone:controls:strict:critical_only"
+	ControlsStrictLenient          = "zone:controls:strict:lenient"
+	ControlsStrictBalanced         = "zone:controls:strict:balanced"
+	ControlsStrictStrict           = "zone:controls:strict:strict"
+	ControlsProfilePrev            = "zone:controls:profile:prev"
+	ControlsProfileNext            = "zone:controls:profile:next"
+	ControlsProfileEdit            = "zone:controls:profile:edit"
+	ControlsRepoAgents             = "zone:controls:agents:repo"
+	ControlsTechAgents             = "zone:controls:agents:tech"
+	ControlsLangAgents             = "zone:controls:agents:lang"
+	ControlsToggleParallel         = "zone:controls:toggle:parallel"
+	ControlsToggleParallelPRAgents = "zone:controls:toggle:parallel-pr-agents"
+	ControlsToggleDryRun           = "zone:controls:toggle:dry-run"
+	ControlsToggleStartMinimized   = "zone:controls:toggle:start-minimized"
+	ControlsStartReview            = "zone:controls:start"
 
 	// Status-bar zones — every actionable hint segment in the bottom
 	// status bar (model/view.go renderStatus) is wrapped so a

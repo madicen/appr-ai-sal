@@ -1,6 +1,7 @@
 package review
 
 import (
+	"regexp"
 	"strings"
 )
 
@@ -128,12 +129,24 @@ func anchorExcerptVerdict(f Finding, files []FileDiff) anchorExcerptVerdictResul
 	// Below this point: the model's excerpt does not match the line it
 	// anchored to. Decide between re-anchor and strip-suggestion.
 
-	// Very short excerpts are unsafe to relocate against — `}`, `)`,
-	// `return nil`, blank lines, etc. match all over the place. Mirror
-	// substantiveSuggestionLineMin's posture from suggestion_validate.go
-	// rather than introducing a separate threshold so a future change to
-	// either tracks the other.
+	// Very short excerpts are usually unsafe to relocate against — `}`,
+	// `)`, `return nil`, blank lines, etc. match all over the place. But a
+	// short *content* line like "memory: 717M" is a genuine value the model
+	// quoted, and discarding the one-click fix because the line happens to
+	// be under substantiveSuggestionLineMin is exactly the failure mode we
+	// keep hitting on config/manifest tweaks. So for short excerpts we relax
+	// the floor only when the excerpt looks like a value line (see
+	// excerptRelocatableWhenShort) AND it uniquely matches one post-image
+	// line in the hunk; bare syntactic excerpts still strip.
 	if len(normExcerpt) < substantiveSuggestionLineMin {
+		if excerptRelocatableWhenShort(normExcerpt) {
+			if matches := findAnchorExcerptMatches(h, normExcerpt, f.Line); len(matches) == 1 {
+				return anchorExcerptVerdictResult{
+					outcome:    anchorOutcomeRelocate,
+					relocateTo: matches[0],
+				}
+			}
+		}
 		return anchorExcerptVerdictResult{
 			outcome: anchorOutcomeStrip,
 			reason: "anchor excerpt mismatch (model quoted " +
@@ -189,6 +202,30 @@ func findAnchorExcerptMatches(h *Hunk, normExcerpt string, exclude int) []int {
 		}
 	}
 	return out
+}
+
+// shortExcerptValueRe matches a "key: value" or "key = value" assignment
+// with a non-empty value (the kind of line config/manifest fixes live on,
+// e.g. "memory: 717M", "replicas = 3"). The value half must contain at least
+// one non-space character so we don't relocate against a dangling "foo:".
+var shortExcerptValueRe = regexp.MustCompile(`\S\s*[:=]\s*\S`)
+
+// shortExcerptDigitRe matches any digit, so short literal-bearing lines
+// ("port 8080", "timeout: 30") qualify even when they aren't strictly a
+// key/value pair.
+var shortExcerptDigitRe = regexp.MustCompile(`[0-9]`)
+
+// excerptRelocatableWhenShort reports whether a sub-substantiveSuggestionLineMin
+// excerpt is safe to relocate against when it uniquely matches one post-image
+// line. We only relax the floor for content lines (a key/value assignment or a
+// line carrying a numeric literal) and never for bare syntactic lines — blank,
+// comment-only, or closing-brace excerpts (`}`, `)`, `// note`) recur all over
+// a hunk and would re-anchor the suggestion to the wrong line.
+func excerptRelocatableWhenShort(normExcerpt string) bool {
+	if classifyAnchorLine(normExcerpt) != kindCode {
+		return false
+	}
+	return shortExcerptValueRe.MatchString(normExcerpt) || shortExcerptDigitRe.MatchString(normExcerpt)
 }
 
 // normaliseExcerpt strips leading and trailing whitespace and collapses

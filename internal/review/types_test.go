@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
+	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
 )
 
 func TestFindingOriginalSeverityReturnsDemotedSeverity(t *testing.T) {
@@ -908,6 +909,77 @@ func TestReconciledMergeVerdictKeepsRequestChangesWhenArbiterOverrode(t *testing
 	}
 }
 
+// TestEffectiveMergeVerdictGuardsRelaxingOverride is the regression for the
+// "balanced review approved over a request-changes" report: the arbiter
+// overrode to approve, but a surviving paste-ready prompt (real blocker)
+// means the override may not relax the verdict — it's clamped back to the
+// vibe-coach's request_changes.
+func TestEffectiveMergeVerdictGuardsRelaxingOverride(t *testing.T) {
+	live := Finding{Path: "b.go", Line: 2, Side: "RIGHT", Severity: SeverityWarning, Comment: "stays"}
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{
+			{Specialist: SpecTesting, Findings: []Finding{live}},
+		},
+		VibeCoach: &VibeCoachResult{
+			Verdict: VibeVerdictRequestChanges,
+			Summary: "Block.",
+			Prompts: []AuthorPrompt{
+				{Title: "Fix", AgentPrompt: "do it",
+					FindingRefs: []FindingRef{{Specialist: SpecTesting, Path: "b.go", Line: 2}}},
+			},
+		},
+		RepoArbiter: &RepoArbiterResult{
+			VerdictOverride:  VibeVerdictApprove,
+			EffectiveVerdict: VibeVerdictApprove,
+		},
+	}
+	if got := d.EffectiveMergeVerdict(); got != VibeVerdictRequestChanges {
+		t.Fatalf("EffectiveMergeVerdict = %q want request_changes (relaxing override blocked by surviving prompt)", got)
+	}
+}
+
+// TestEffectiveMergeVerdictHonoursOverrideWhenBlockersCleared confirms the
+// arbiter still gets its relaxed verdict when it actually cleared the
+// blockers (here, it suppressed the only finding the prompt referenced, so
+// no blocking content survives).
+func TestEffectiveMergeVerdictHonoursOverrideWhenBlockersCleared(t *testing.T) {
+	cleared := Finding{Path: "b.go", Line: 2, Side: "RIGHT", Severity: SeverityWarning, Comment: "gone"}
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{
+			{Specialist: SpecTesting, Findings: []Finding{cleared}},
+		},
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictRequestChanges, Summary: "Block."},
+		RepoArbiter: &RepoArbiterResult{
+			VerdictOverride:  VibeVerdictApprove,
+			EffectiveVerdict: VibeVerdictApprove,
+			suppressKeySet: map[string]struct{}{
+				suppressionKey(SpecTesting, "b.go", 2, "RIGHT"): {},
+			},
+		},
+	}
+	if got := d.EffectiveMergeVerdict(); got != VibeVerdictApprove {
+		t.Fatalf("EffectiveMergeVerdict = %q want approve (arbiter cleared the blocker, override stands)", got)
+	}
+}
+
+// TestEffectiveMergeVerdictAllowsStricterOverride keeps the arbiter free to
+// TIGHTEN the verdict (approve → request_changes) regardless of blockers.
+func TestEffectiveMergeVerdictAllowsStricterOverride(t *testing.T) {
+	d := &Draft{
+		PR:        &gh.PR{HeadSHA: "abc"},
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictApprove},
+		RepoArbiter: &RepoArbiterResult{
+			VerdictOverride:  VibeVerdictRequestChanges,
+			EffectiveVerdict: VibeVerdictRequestChanges,
+		},
+	}
+	if got := d.EffectiveMergeVerdict(); got != VibeVerdictRequestChanges {
+		t.Fatalf("EffectiveMergeVerdict = %q want request_changes (stricter override always allowed)", got)
+	}
+}
+
 func TestReconciledMergeVerdictPassesThroughNonRequestChanges(t *testing.T) {
 	d := &Draft{
 		PR:        &gh.PR{HeadSHA: "abc"},
@@ -939,5 +1011,153 @@ func TestRenderBodyShowsReconciliationNoteAfterDowngrade(t *testing.T) {
 	}
 	if !strings.Contains(body, "Verdict downgraded from Request changes to Comment only") {
 		t.Fatalf("body should explain the downgrade: %s", body)
+	}
+}
+
+// TestRenderBodyVerdictHeadlineMatchesArbiterPanel pins the fix for the
+// "Approve at the top, Request changes at the bottom" contradiction. When the
+// arbiter sets a relaxing verdict_override (approve) but a blocking prompt
+// survives, the override is clamped: the body headline, the arbiter panel
+// adjustment line, and ReconciledMergeVerdict must all agree on Request
+// changes — the headline must never show the clamped Approve.
+func TestRenderBodyVerdictHeadlineMatchesArbiterPanel(t *testing.T) {
+	finding := Finding{Path: "values.yaml", Line: 207, Side: "RIGHT", Severity: SeverityWarning, Comment: "Use the binary unit suffix Mi instead of M."}
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{
+			{Specialist: SpecDesign, Findings: []Finding{finding}},
+		},
+		VibeCoach: &VibeCoachResult{
+			Verdict: VibeVerdictRequestChanges,
+			Summary: "Correct the memory unit, then it's ready for merge.",
+			Prompts: []AuthorPrompt{{
+				Title:       "Fix memory unit suffix",
+				AgentPrompt: "change M to Mi in values.yaml",
+				FindingRefs: []FindingRef{{Specialist: SpecDesign, Path: "values.yaml", Line: 207}},
+			}},
+		},
+		RepoArbiter: &RepoArbiterResult{
+			UserSummary:      "Reviewed the resource limit change.",
+			VerdictOverride:  VibeVerdictApprove,
+			EffectiveVerdict: VibeVerdictApprove,
+		},
+	}
+
+	if got := NormalizeVibeVerdict(d.ReconciledMergeVerdict()); got != VibeVerdictRequestChanges {
+		t.Fatalf("reconciled verdict = %q, want request_changes (blocking prompt survives)", got)
+	}
+
+	body := d.RenderBody()
+	rcLabel := VibeVerdictShortLabel(VibeVerdictRequestChanges)
+	apLabel := VibeVerdictShortLabel(VibeVerdictApprove)
+	if !strings.Contains(body, "## Verdict: "+rcLabel) {
+		t.Fatalf("headline should be %q:\n%s", rcLabel, body)
+	}
+	if strings.Contains(body, "## Verdict: "+apLabel) {
+		t.Fatalf("headline must not show the clamped Approve override:\n%s", body)
+	}
+	if !strings.Contains(body, "stays **"+rcLabel+"**") {
+		t.Fatalf("arbiter panel should explain the override was clamped to %q:\n%s", rcLabel, body)
+	}
+}
+
+// TestRenderBodyOmitsDemotionListAndWitnessTally locks in that the posted
+// body never carries the non-actionable repo-arbiter process exhaust: the
+// per-finding demotion list ("warning → info") and the convention-witness
+// tally ("N congruent / divergent / unknown"). A demotion only re-grades a
+// finding — it either still shows at its new severity or was dropped under
+// the floor — so listing it gives the PR author nothing to act on, and the
+// witness counts are an internal QA signal. The arbiter's plain-English
+// summary and the suppressed-comment disclosure (location + reason) stay,
+// because those are reader-facing.
+func TestRenderBodyOmitsDemotionListAndWitnessTally(t *testing.T) {
+	kept := Finding{Path: "a.go", Line: 1, Side: "RIGHT", Severity: SeverityWarning, Comment: "keep"}
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{
+			{Specialist: SpecDocs, Findings: []Finding{kept}},
+		},
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictComment, Summary: "Looks ok."},
+		RepoArbiter: &RepoArbiterResult{
+			UserSummary: "Repo prefers light docs; softened a batch of header asks.",
+			Suppressed: []SuppressedFindingRef{
+				{Specialist: SpecDocs, Path: "b.yml", Line: 1, Side: "RIGHT", Reason: "header pattern congruent with the codebase"},
+			},
+			Demoted: []DemotedFindingRef{
+				{Specialist: SpecDocs, Path: "c.yml", Line: 1, Side: "RIGHT", From: SeverityWarning, To: SeverityInfo, Reason: "congruent"},
+			},
+		},
+		ConventionWitness: []conventionwitness.Witness{
+			{Specialist: SpecDocs, Path: "c.yml", Line: 1, Verdict: conventionwitness.VerdictCongruent},
+		},
+	}
+	body := d.RenderBody()
+
+	for _, banned := range []string{
+		"Findings demoted by repo arbiter",
+		"severity dropped one rank",
+		"warning → info",
+		"Convention witness",
+		"classified",
+	} {
+		if strings.Contains(body, banned) {
+			t.Errorf("posted body should not contain non-actionable %q:\n%s", banned, body)
+		}
+	}
+
+	// The reader-facing pieces of the panel survive.
+	if !strings.Contains(body, "Repo prefers light docs") {
+		t.Errorf("arbiter user summary should still be posted:\n%s", body)
+	}
+	if !strings.Contains(body, "Inline comments not posted") {
+		t.Errorf("suppressed-comment disclosure should still be posted:\n%s", body)
+	}
+}
+
+// A demoted PR-wide finding stays out of the posted body by default (the
+// arbiter's no-block intent), but the reviewer can opt it in, after which it
+// appears in a clearly-labelled "included despite demotion" section.
+func TestRenderBodyIncludesOptedInDemotedPRWideFinding(t *testing.T) {
+	kept := Finding{Path: "a.go", Line: 1, Side: "RIGHT", Severity: SeverityWarning, Comment: "keep this one"}
+	demoted := Finding{Path: "", Line: 0, Side: "RIGHT", Severity: SeverityInfo, Comment: "The description is empty."}
+	newDraft := func() *Draft {
+		return &Draft{
+			PR: &gh.PR{HeadSHA: "abc"},
+			Specialists: []SpecialistResult{
+				{Specialist: SpecDocs, Findings: []Finding{kept}},
+			},
+			VibeCoach:   &VibeCoachResult{Verdict: VibeVerdictComment, Summary: "ok"},
+			RepoArbiter: &RepoArbiterResult{},
+			DemotedHidden: []FlatFinding{
+				{Specialist: SpecDescription, Finding: demoted},
+			},
+		}
+	}
+
+	// Default: not opted in → comment absent from the body.
+	d := newDraft()
+	if body := d.RenderBody(); strings.Contains(body, "The description is empty.") {
+		t.Fatalf("demoted PR-wide finding should not post unless opted in:\n%s", body)
+	}
+
+	// Opt in → it appears under the demotion-inclusion section.
+	d = newDraft()
+	if !d.ToggleDemotedPosting(SpecDescription, demoted) {
+		t.Fatalf("toggling a not-yet-included demoted finding should return true (now included)")
+	}
+	body := d.RenderBody()
+	if !strings.Contains(body, "The description is empty.") {
+		t.Fatalf("opted-in demoted PR-wide finding should be posted:\n%s", body)
+	}
+	if !strings.Contains(body, "included despite demotion") {
+		t.Fatalf("opted-in demoted finding should sit under the demotion-inclusion section:\n%s", body)
+	}
+
+	// Toggling again removes it.
+	if d.ToggleDemotedPosting(SpecDescription, demoted) {
+		t.Fatalf("toggling an included demoted finding should return false (now excluded)")
+	}
+	if body := d.RenderBody(); strings.Contains(body, "The description is empty.") {
+		t.Fatalf("excluded demoted PR-wide finding should not post:\n%s", body)
 	}
 }

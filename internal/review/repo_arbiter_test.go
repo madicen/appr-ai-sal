@@ -94,7 +94,13 @@ func TestParseRepoArbiterJSONMinimal(t *testing.T) {
 	}
 }
 
-func TestEffectiveVibeCoachVerdictOverride(t *testing.T) {
+// A relaxing arbiter override is GUARDED in the displayed vibe-coach verdict,
+// exactly as it is in the posted event: with a blocking prompt still standing,
+// an override of "approve" must NOT show through as the headline verdict —
+// otherwise the body says Approve at the top while the arbiter panel / posted
+// event say Request changes at the bottom. The arbiter's summary addendum is
+// still applied regardless of the verdict guard.
+func TestEffectiveVibeCoachVerdictOverrideGuardedWhenBlocking(t *testing.T) {
 	d := &Draft{
 		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictRequestChanges, Summary: "block", Prompts: []AuthorPrompt{{Title: "t", AgentPrompt: "do"}}},
 		RepoArbiter: &RepoArbiterResult{
@@ -105,11 +111,29 @@ func TestEffectiveVibeCoachVerdictOverride(t *testing.T) {
 		},
 	}
 	vc := d.effectiveVibeCoach()
-	if NormalizeVibeVerdict(vc.Verdict) != VibeVerdictApprove {
-		t.Fatalf("verdict %q", vc.Verdict)
+	if NormalizeVibeVerdict(vc.Verdict) != VibeVerdictRequestChanges {
+		t.Fatalf("blocking prompt survives, so the relaxing override must be clamped to request_changes; got %q", vc.Verdict)
 	}
 	if !strings.Contains(vc.Summary, "Repo experts") {
 		t.Fatalf("summary %q", vc.Summary)
+	}
+}
+
+// When the arbiter actually clears every blocker (no surviving prompts, no
+// error/critical findings), its relaxing override DOES take effect and the
+// displayed verdict relaxes to approve — the guard only clamps overrides that
+// would wave live blockers through.
+func TestEffectiveVibeCoachVerdictOverrideAppliedWhenCleared(t *testing.T) {
+	d := &Draft{
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictRequestChanges, Summary: "block"},
+		RepoArbiter: &RepoArbiterResult{
+			VerdictOverride:  VibeVerdictApprove,
+			EffectiveVerdict: VibeVerdictApprove,
+		},
+	}
+	vc := d.effectiveVibeCoach()
+	if NormalizeVibeVerdict(vc.Verdict) != VibeVerdictApprove {
+		t.Fatalf("no blocking content remains, so the override should apply; got %q", vc.Verdict)
 	}
 }
 
@@ -298,10 +322,65 @@ func TestFinalizeRepoArbiterDemoteToInfoFiltersUnderBalanced(t *testing.T) {
 			{Specialist: "docs", Path: "x.go", Line: 5, Side: "RIGHT"},
 		},
 	}
+	d.RepoArbiter = ar
 	FinalizeRepoArbiter(ar, d)
 	if len(d.Specialists[0].Findings) != 0 {
 		t.Fatalf("expected demoted-to-info finding to be filtered out under balanced strictness; got %+v",
 			d.Specialists[0].Findings)
+	}
+	// The finding is removed from the verdict-bearing set but retained on
+	// DemotedHidden so the overlay can offer it as an opt-in post.
+	if len(d.DemotedHidden) != 1 {
+		t.Fatalf("expected the demoted-below-floor inline finding to be retained on DemotedHidden; got %+v", d.DemotedHidden)
+	}
+	got := d.DemotedHidden[0]
+	if got.Specialist != SpecDocs || got.Finding.Path != "x.go" || got.Finding.Line != 5 {
+		t.Fatalf("retained finding mismatch: %+v", got)
+	}
+	if got.Finding.Severity != SeverityInfo {
+		t.Fatalf("retained finding severity = %s, want info (post-demotion value)", got.Finding.Severity)
+	}
+	// FindingOriginalSeverity still resolves so the TUI can show "demoted from warning".
+	if orig, ok := d.FindingOriginalSeverity(got.Specialist, got.Finding); !ok || orig != SeverityWarning {
+		t.Fatalf("FindingOriginalSeverity = (%s, %v), want (warning, true)", orig, ok)
+	}
+}
+
+func TestFinalizeRepoArbiterRetainsDemotedPRWideFinding(t *testing.T) {
+	// PR-wide (body-only) findings carry no diff anchor, but they still carry
+	// a comment that belongs in the review body, so a demoted-below-floor
+	// PR-wide finding is retained on DemotedHidden (parity with inline) and
+	// surfaced as an opt-in post rather than silently lost.
+	d := &Draft{
+		Strictness: aiconfig.ReviewBalanced,
+		Specialists: []SpecialistResult{
+			{Specialist: SpecScope, Findings: []Finding{
+				{Path: "", Line: 0, Side: "RIGHT", Severity: SeverityWarning, Comment: "scope feels broad"},
+			}},
+		},
+	}
+	ar := &RepoArbiterResult{
+		Demoted: []DemotedFindingRef{
+			{Specialist: SpecScope, Path: "", Line: 0, Side: "RIGHT"},
+		},
+	}
+	d.RepoArbiter = ar
+	FinalizeRepoArbiter(ar, d)
+	if len(d.Specialists[0].Findings) != 0 {
+		t.Fatalf("expected demoted PR-wide finding filtered out of the verdict-bearing set; got %+v", d.Specialists[0].Findings)
+	}
+	if len(d.DemotedHidden) != 1 {
+		t.Fatalf("expected the demoted-below-floor PR-wide finding to be retained on DemotedHidden; got %+v", d.DemotedHidden)
+	}
+	got := d.DemotedHidden[0]
+	if got.Specialist != SpecScope || got.Finding.Comment != "scope feels broad" {
+		t.Fatalf("retained PR-wide finding mismatch: %+v", got)
+	}
+	if findingIsInlinePostable(got.Finding) {
+		t.Fatalf("retained finding should be PR-wide (no inline anchor); got %+v", got.Finding)
+	}
+	if got.Finding.Severity != SeverityInfo {
+		t.Fatalf("retained finding severity = %s, want info (post-demotion value)", got.Finding.Severity)
 	}
 }
 

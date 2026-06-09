@@ -158,6 +158,54 @@ func TestControlsClickToggleParallelFlipsRepoConfigInline(t *testing.T) {
 	}
 }
 
+// Clicking the "Parallel PR agents" toggle flips its repoconfig knob in
+// place, mirroring the Parallel specialists toggle (click → flip → stay in
+// detail), and never navigates to Settings.
+func TestControlsClickToggleParallelPRAgentsFlipsRepoConfigInline(t *testing.T) {
+	t.Setenv("APPR_AI_SAL_CONFIG_DIR", t.TempDir())
+	t.Setenv("APPR_AI_SAL_PARALLEL_PR_AGENTS", "")
+
+	m := detailFixtureModel(t)
+	if m.controlsHidden {
+		t.Fatalf("controls pane unexpectedly hidden at fixture width")
+	}
+	_ = m.View()
+
+	startCfg, err := repoconfig.Load()
+	if err != nil {
+		t.Fatalf("repoconfig.Load: %v", err)
+	}
+	startVal := startCfg.ParallelPRAgents
+
+	msg := clickCenterOfZone(t, zones.ControlsToggleParallelPRAgents)
+	out, _ := m.detailHandleMouse(msg, false)
+	m2 := out.(*Model)
+	if m2.mode != modeDetail {
+		t.Fatalf("toggle click must keep us in detail mode (was %v); regression: navigated to settings", m2.mode)
+	}
+	got, err := repoconfig.Load()
+	if err != nil {
+		t.Fatalf("repoconfig.Load after toggle: %v", err)
+	}
+	if got.ParallelPRAgents == startVal {
+		t.Fatalf("ParallelPRAgents did not flip on disk: got %v, want %v", got.ParallelPRAgents, !startVal)
+	}
+
+	msg = clickCenterOfZone(t, zones.ControlsToggleParallelPRAgents)
+	out, _ = m2.detailHandleMouse(msg, false)
+	m3 := out.(*Model)
+	got2, err := repoconfig.Load()
+	if err != nil {
+		t.Fatalf("repoconfig.Load after second toggle: %v", err)
+	}
+	if got2.ParallelPRAgents != startVal {
+		t.Fatalf("second toggle did not return to start: got %v, want %v", got2.ParallelPRAgents, startVal)
+	}
+	if m3.mode != modeDetail {
+		t.Fatalf("second toggle click must keep us in detail mode (was %v)", m3.mode)
+	}
+}
+
 // Pressing 'c' toggles the controls pane visibility.
 func TestKeyCToggleControlsPane(t *testing.T) {
 	m := detailFixtureModel(t)

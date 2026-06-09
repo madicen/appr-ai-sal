@@ -159,6 +159,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 			m.focusRepoField(repoFieldParallelSpecs)
 			return nil
 		}
+		if z := zone.Get(ZoneRepoToggleParallelPRAgents); z != nil && z.InBounds(msg) {
+			m.repoParallelPRAgents = !m.repoParallelPRAgents
+			m.focusRepoField(repoFieldParallelPRAgents)
+			return nil
+		}
 		if z := zone.Get(ZoneRepoToggleParallelExperts); z != nil && z.InBounds(msg) {
 			m.repoParallelExperts = !m.repoParallelExperts
 			m.focusRepoField(repoFieldParallelExperts)

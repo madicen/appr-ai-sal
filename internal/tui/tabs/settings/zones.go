@@ -13,12 +13,13 @@ const (
 	ZoneSettingsTabReview  = "zone:settings:tab:review-ai"
 	ZoneSettingsTabRepoCtx = "zone:settings:tab:repo-context"
 
-	ZoneRepoToggleIncludePR = "zone:settings:repo:toggle:include_pr"
-	ZoneRepoToggleCulture   = "zone:settings:repo:toggle:culture"
-	ZoneRepoToggleCtxVs     = "zone:settings:repo:toggle:ctx_vs"
-	ZoneRepoToggleExpert          = "zone:settings:repo:toggle:expert_panel"
-	ZoneRepoToggleParallelSpecs   = "zone:settings:repo:toggle:parallel_specialists"
-	ZoneRepoToggleParallelExperts = "zone:settings:repo:toggle:parallel_repo_experts"
+	ZoneRepoToggleIncludePR        = "zone:settings:repo:toggle:include_pr"
+	ZoneRepoToggleCulture          = "zone:settings:repo:toggle:culture"
+	ZoneRepoToggleCtxVs            = "zone:settings:repo:toggle:ctx_vs"
+	ZoneRepoToggleExpert           = "zone:settings:repo:toggle:expert_panel"
+	ZoneRepoToggleParallelSpecs    = "zone:settings:repo:toggle:parallel_specialists"
+	ZoneRepoToggleParallelPRAgents = "zone:settings:repo:toggle:parallel_pr_agents"
+	ZoneRepoToggleParallelExperts  = "zone:settings:repo:toggle:parallel_repo_experts"
 
 	// AI profile editor zones. Profile rows get a per-index zone so click
 	// selection works for any number of profiles; the action buttons sit

@@ -243,7 +243,7 @@ func (p *themePanel) applyOverlays(panel string, width, height int) string {
 func previewForKey(k theme.Key, label string) string {
 	switch k {
 	case theme.KeyTagFormatting, theme.KeyTagDesign, theme.KeyTagTesting,
-		theme.KeyTagDocs, theme.KeyTagSecurity, theme.KeyTagVibeCoach,
+		theme.KeyTagDocs, theme.KeyTagSecurity, theme.KeyTagTech, theme.KeyTagVibeCoach,
 		theme.KeyTagLangBriefs, theme.KeyTagTechExperts,
 		theme.KeyTagRepoExperts, theme.KeyTagRepoArbiter:
 		return tagPreview(theme.Current().Color(k), label)

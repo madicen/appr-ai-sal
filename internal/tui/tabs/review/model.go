@@ -38,6 +38,7 @@ const (
 	stageGroupExperts
 	stageGroupArbiter
 	stageGroupVibe
+	stageGroupPRAgents
 )
 
 // stageGroupOrder is the rendering order top-to-bottom. It also reflects
@@ -48,6 +49,7 @@ const (
 var stageGroupOrder = []overlayAgentStage{
 	stageGroupContextInjection,
 	stageGroupSpecialists,
+	stageGroupPRAgents,
 	stageGroupArbiter,
 	stageGroupVibe,
 }
@@ -63,6 +65,7 @@ var stageGroupMetas = map[overlayAgentStage]stageGroupMeta{
 	stageGroupContextInjection: {label: "Context injection", note: "before specialists"},
 	stageGroupSpecialists:      {label: "Specialists", note: ""},
 	stageGroupExperts:          {label: "Repo experts", note: ""}, // unused after repo-agents refactor; kept to satisfy the enum
+	stageGroupPRAgents:         {label: "PR agents", note: "whole-PR review"},
 	stageGroupArbiter:          {label: "Repo arbiter", note: "after specialists"},
 	stageGroupVibe:             {label: "Vibe coach", note: "after repo arbiter"},
 }
@@ -94,26 +97,39 @@ func overlayAgentLabel(name string) string {
 		return "Repo experts"
 	case overlayAgentRepoArbiter:
 		return "Repo arbiter"
+	case review.SpecDescription:
+		return "Description"
+	case review.SpecChecks:
+		return "Checks"
+	case review.SpecDiscussion:
+		return "Discussion"
+	case review.SpecScope:
+		return "Scope"
 	}
 	return name
 }
 
 // outputAgentOrder lists the agents that get their own tab, left to
-// right: the five specialists, then the repo arbiter, then the vibe
-// coach. Context-injection rows stay in the overview tab.
-func outputAgentOrder() []string {
-	out := make([]string, 0, len(review.AllSpecialists)+2)
-	out = append(out, review.AllSpecialists...)
+// right: the active specialists, then the PR agents, the repo arbiter,
+// and the vibe coach. Context-injection rows stay in the overview tab.
+// The specialist set is passed in so a run that excludes an optional
+// specialist (e.g. tech, when no technology experts are configured)
+// doesn't surface a tab for it.
+func outputAgentOrder(specialists []string) []string {
+	out := make([]string, 0, len(specialists)+len(review.AllPRAgents)+2)
+	out = append(out, specialists...)
+	out = append(out, review.AllPRAgents...)
 	out = append(out, overlayAgentRepoArbiter, review.SpecVibeCoach)
 	return out
 }
 
 // buildReviewTabs constructs the full tab bar: overview, one tab per
 // output agent, then the summary tab.
-func buildReviewTabs() []reviewTab {
-	tabs := make([]reviewTab, 0, len(outputAgentOrder())+2)
+func buildReviewTabs(specialists []string) []reviewTab {
+	order := outputAgentOrder(specialists)
+	tabs := make([]reviewTab, 0, len(order)+2)
 	tabs = append(tabs, reviewTab{kind: tabOverview})
-	for _, name := range outputAgentOrder() {
+	for _, name := range order {
 		tabs = append(tabs, reviewTab{kind: tabAgent, agent: name})
 	}
 	tabs = append(tabs, reviewTab{kind: tabSummary})
@@ -133,6 +149,14 @@ func tabShortLabel(t reviewTab) string {
 			return "Arbiter"
 		case review.SpecVibeCoach:
 			return "Vibe"
+		case review.SpecDescription:
+			return "Description"
+		case review.SpecChecks:
+			return "Checks"
+		case review.SpecDiscussion:
+			return "Discussion"
+		case review.SpecScope:
+			return "Scope"
 		}
 		return t.agent
 	}
@@ -347,6 +371,14 @@ type approvalCard struct {
 	// this; the resulting comment shows up on the PR's "Files changed"
 	// tab attached to the file header rather than inline at a line.
 	fileLevelPost bool
+	// demoted marks a card built from draft.DemotedHidden — a finding the
+	// repo arbiter demoted below the active strictness floor. These cards
+	// are opt-in: they start cardSkipped (the arbiter's "don't block on
+	// this" intent), are excluded from the post/skip tallies and the
+	// user-skip set, and never affect the verdict. The reviewer can still
+	// press y to post one by hand. renderCardDetail shows a "post anyway"
+	// banner instead of the plain skipped badge.
+	demoted bool
 }
 
 // Model is the persistent overlay that hosts the entire review flow:
@@ -365,6 +397,12 @@ type Model struct {
 	agents          []overlayAgentRow
 	log             []string
 	cursor          int
+	// specialists is the set of code specialists active for this run, in
+	// pipeline order. It defaults to review.AllSpecialists and is narrowed by
+	// SetSpecialists (e.g. the tech specialist is dropped when no technology
+	// experts are configured) so the rows and tabs only show agents that
+	// actually run.
+	specialists []string
 	// specialistsParallel / repoExpertsParallel mirror repo-context.json (+ env overrides)
 	// so the running header matches how the runner dispatches API calls.
 	specialistsParallel bool
@@ -488,30 +526,10 @@ func New(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsPara
 	// arithmetic.
 	vp := viewport.New(1, 1)
 	vp.MouseWheelEnabled = true
-	// Build the agent rows in pipeline order. The running view groups them by
-	// stage (context injection → specialists → arbiter → vibe). Each row
-	// tracks its own start/finish timestamps and retry count for actionable
-	// feedback. The context-injection rows resolve before any specialist
-	// starts (load lang briefs / tech experts / repo experts) so the user
-	// can see what's being threaded into specialists.
-	ag := make([]overlayAgentRow, 0, len(review.AllSpecialists)+5)
-	ag = append(ag,
-		overlayAgentRow{name: overlayAgentLangBriefs, stage: stageGroupContextInjection, phase: oaPending},
-		overlayAgentRow{name: overlayAgentTechExperts, stage: stageGroupContextInjection, phase: oaPending},
-		overlayAgentRow{name: overlayAgentRepoExperts, stage: stageGroupContextInjection, phase: oaPending},
-	)
-	for _, n := range review.AllSpecialists {
-		ag = append(ag, overlayAgentRow{name: n, stage: stageGroupSpecialists, phase: oaPending})
-	}
-	ag = append(ag,
-		overlayAgentRow{name: overlayAgentRepoArbiter, stage: stageGroupArbiter, phase: oaPending},
-		overlayAgentRow{name: review.SpecVibeCoach, stage: stageGroupVibe, phase: oaPending},
-	)
 	m := &Model{
 		vp:                  vp,
 		sp:                  sp,
-		agents:              ag,
-		tabs:                buildReviewTabs(),
+		specialists:         append([]string(nil), review.AllSpecialists...),
 		activeTab:           0,
 		cursor:              0,
 		phase:               phaseRunning,
@@ -522,12 +540,54 @@ func New(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsPara
 		runStartedAt:        time.Now(),
 		aiConfig:            cfg,
 	}
+	m.rebuildAgentLayout()
 	m.resizeFromScreen(screenW, screenH)
 	return m
 }
 
+// rebuildAgentLayout (re)builds the agent rows and tab bar from the current
+// m.specialists set. The agent rows are laid out in pipeline order so the
+// running view can group them by stage (context injection → specialists →
+// PR agents → arbiter → vibe). The context-injection rows resolve before any
+// specialist starts (load lang briefs / tech experts / repo experts) so the
+// user can see what's being threaded into specialists. Called from New and
+// from SetSpecialists; safe to call before the run starts.
+func (m *Model) rebuildAgentLayout() {
+	ag := make([]overlayAgentRow, 0, len(m.specialists)+len(review.AllPRAgents)+5)
+	ag = append(ag,
+		overlayAgentRow{name: overlayAgentLangBriefs, stage: stageGroupContextInjection, phase: oaPending},
+		overlayAgentRow{name: overlayAgentTechExperts, stage: stageGroupContextInjection, phase: oaPending},
+		overlayAgentRow{name: overlayAgentRepoExperts, stage: stageGroupContextInjection, phase: oaPending},
+	)
+	for _, n := range m.specialists {
+		ag = append(ag, overlayAgentRow{name: n, stage: stageGroupSpecialists, phase: oaPending})
+	}
+	for _, n := range review.AllPRAgents {
+		ag = append(ag, overlayAgentRow{name: n, stage: stageGroupPRAgents, phase: oaPending})
+	}
+	ag = append(ag,
+		overlayAgentRow{name: overlayAgentRepoArbiter, stage: stageGroupArbiter, phase: oaPending},
+		overlayAgentRow{name: review.SpecVibeCoach, stage: stageGroupVibe, phase: oaPending},
+	)
+	m.agents = ag
+	m.tabs = buildReviewTabs(m.specialists)
+}
+
+// SetSpecialists narrows the active specialist set (e.g. dropping the tech
+// specialist when no technology experts are configured) and rebuilds the rows
+// and tabs to match. Intended to be called once, immediately after New and
+// before the overlay renders. An empty set falls back to all specialists.
+func (m *Model) SetSpecialists(specialists []string) {
+	if len(specialists) == 0 {
+		specialists = append([]string(nil), review.AllSpecialists...)
+	}
+	m.specialists = append([]string(nil), specialists...)
+	m.rebuildAgentLayout()
+	m.activeTab = 0
+}
+
 func (m *Model) specialistsStageNote() string {
-	n := len(review.AllSpecialists)
+	n := len(m.specialists)
 	if m.specialistsParallel {
 		return fmt.Sprintf("%d agents · parallel", n)
 	}
@@ -637,6 +697,13 @@ func (m *Model) hydrateAgentRowsFromDraft(d *review.Draft) {
 	if d == nil {
 		return
 	}
+	// Findings the arbiter demoted below the floor were moved out of
+	// d.Specialists into d.DemotedHidden, but they're still surfaced (as
+	// opt-in cards), so they count toward what the agent's tab shows.
+	demotedBySpec := make(map[string][]review.Finding)
+	for _, f := range d.DemotedHidden {
+		demotedBySpec[f.Specialist] = append(demotedBySpec[f.Specialist], f.Finding)
+	}
 	for _, sr := range d.Specialists {
 		i := m.agentIndex(sr.Specialist)
 		if i < 0 {
@@ -649,12 +716,22 @@ func (m *Model) hydrateAgentRowsFromDraft(d *review.Draft) {
 		if strings.TrimSpace(row.summary) == "" {
 			row.summary = sr.Summary
 		}
-		if len(row.findings) == 0 {
-			row.findings = sr.Findings
+		// A specialist that errored carries no final findings; leave its
+		// streamed error state untouched rather than zeroing the row.
+		if sr.Err != nil {
+			continue
 		}
-		if row.findingsN == 0 {
-			row.findingsN = len(sr.Findings)
-		}
+		// Re-derive findings and the count authoritatively from the final
+		// draft. The streamed value is the RAW specialist output (before the
+		// cross-specialist dedupe and the repo arbiter ran), so a header that
+		// kept it would claim more findings than the tab actually shows. The
+		// real per-agent set is the surviving findings plus any the arbiter
+		// demoted-but-retained for this specialist.
+		final := make([]review.Finding, 0, len(sr.Findings)+len(demotedBySpec[sr.Specialist]))
+		final = append(final, sr.Findings...)
+		final = append(final, demotedBySpec[sr.Specialist]...)
+		row.findings = final
+		row.findingsN = len(final)
 	}
 	if d.RepoArbiter != nil {
 		if i := m.agentIndex(overlayAgentRepoArbiter); i >= 0 {
@@ -664,6 +741,9 @@ func (m *Model) hydrateAgentRowsFromDraft(d *review.Draft) {
 			}
 			if strings.TrimSpace(row.summary) == "" {
 				row.summary = formatArbiterRowSummary(d.RepoArbiter)
+			}
+			if row.findingsN == 0 {
+				row.findingsN = len(d.RepoArbiter.Suppressed) + len(d.RepoArbiter.Demoted)
 			}
 		}
 	}
@@ -679,6 +759,9 @@ func (m *Model) hydrateAgentRowsFromDraft(d *review.Draft) {
 			if row.verdict == "" {
 				row.verdict = d.VibeCoach.Verdict
 			}
+			if row.findingsN == 0 {
+				row.findingsN = len(d.VibeCoach.Prompts)
+			}
 		}
 	}
 }
@@ -692,9 +775,26 @@ func (m *Model) AdoptDraft(d *review.Draft) tea.Cmd {
 	}
 	m.files = review.ParseDiff(d.Diff)
 	flat := d.FlatPostableFindingsForPost()
-	m.cards = make([]approvalCard, 0, len(flat))
+	m.cards = make([]approvalCard, 0, len(flat)+len(d.DemotedHidden))
 	for _, f := range flat {
 		card := approvalCard{finding: f}
+		anchorCardToDiff(&card, m.files)
+		m.cards = append(m.cards, card)
+	}
+	// Findings the repo arbiter demoted below the strictness floor are
+	// surfaced as opt-in cards appended after the normal ones. They start
+	// skipped (the arbiter's no-block intent) so they don't post unless the
+	// reviewer navigates to one and presses y. They belong to their original
+	// specialist, so agentCardIndices lands them on that agent's tab in place
+	// of the old "No findings from this agent" message.
+	for _, f := range d.DemotedHidden {
+		// PR-wide (body-only) demoted findings have no diff line to anchor a
+		// card against; they're surfaced read-only on the agent tab with an
+		// opt-in "include in the body" toggle instead (see renderAgentTab).
+		if strings.TrimSpace(f.Finding.Path) == "" || f.Finding.Line <= 0 {
+			continue
+		}
+		card := approvalCard{finding: f, demoted: true, state: cardSkipped}
 		anchorCardToDiff(&card, m.files)
 		m.cards = append(m.cards, card)
 	}
@@ -987,6 +1087,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case phaseApprove:
 		switch msg.String() {
 		case "y", "Y":
+			// On an agent tab with no focused inline card, y opts the agent's
+			// demoted PR-wide finding(s) into the posted body instead.
+			if m.idx < 0 && len(m.agentDemotedPRWideFindings(m.activeAgent())) > 0 {
+				return m.actToggleDemotedPRWide()
+			}
 			return m.actPostCurrent()
 		case "n", "N", "s":
 			return m.actSkipCurrent()
@@ -1077,6 +1182,20 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	// Mouse wheel over the tab strip scrolls it horizontally. The strip
+	// auto-windows around the active tab (there's no independent scroll
+	// offset), so "scrolling" moves focus one tab over, revealing the
+	// neighbour that was clipped by the ‹/› ends. Anywhere else the wheel
+	// falls through to the viewport for normal vertical scroll.
+	if tea.MouseEvent(msg).IsWheel() && m.wheelOverTabBar(msg) {
+		switch msg.Button {
+		case tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft:
+			return m, m.prevTab()
+		case tea.MouseButtonWheelDown, tea.MouseButtonWheelRight:
+			return m, m.nextTab()
+		}
+		return m, nil
+	}
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 		// Tab-bar clicks switch tabs from any phase.
 		for i := range m.tabs {
@@ -1176,4 +1295,18 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.vp, cmd = m.vp.Update(msg)
 	return m, cmd
+}
+
+// wheelOverTabBar reports whether a mouse event landed on the tab-strip row.
+// Every tab segment is marked on the same single line, so the first rendered
+// ReviewTab zone gives us that row (the active tab is always rendered). We
+// match on Y only so the wheel still counts when the cursor is over a gap,
+// the ‹/› overflow arrows, or empty trailing space on the strip.
+func (m *Model) wheelOverTabBar(msg tea.MouseMsg) bool {
+	for i := range m.tabs {
+		if z := zone.Get(zones.ReviewTab(i)); z != nil {
+			return msg.Y == z.StartY
+		}
+	}
+	return false
 }

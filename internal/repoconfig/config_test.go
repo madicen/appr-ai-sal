@@ -37,23 +37,25 @@ func TestApplyParallelExecutionEnv(t *testing.T) {
 	c := Default()
 	t.Setenv("APPR_AI_SAL_PARALLEL_SPECIALISTS", "true")
 	t.Setenv("APPR_AI_SAL_PARALLEL_REPO_EXPERTS", "1")
+	t.Setenv("APPR_AI_SAL_PARALLEL_PR_AGENTS", "yes")
 	ApplyParallelExecutionEnv(c)
-	if !c.ParallelSpecialists || !c.ParallelRepoExperts {
-		t.Fatalf("got specialists=%v repoExperts=%v", c.ParallelSpecialists, c.ParallelRepoExperts)
+	if !c.ParallelSpecialists || !c.ParallelRepoExperts || !c.ParallelPRAgents {
+		t.Fatalf("got specialists=%v repoExperts=%v prAgents=%v", c.ParallelSpecialists, c.ParallelRepoExperts, c.ParallelPRAgents)
 	}
 	t.Setenv("APPR_AI_SAL_PARALLEL_SPECIALISTS", "0")
 	t.Setenv("APPR_AI_SAL_PARALLEL_REPO_EXPERTS", "false")
+	t.Setenv("APPR_AI_SAL_PARALLEL_PR_AGENTS", "off")
 	ApplyParallelExecutionEnv(c)
-	if c.ParallelSpecialists || c.ParallelRepoExperts {
-		t.Fatalf("expected both false after falsy env, got specialists=%v repoExperts=%v",
-			c.ParallelSpecialists, c.ParallelRepoExperts)
+	if c.ParallelSpecialists || c.ParallelRepoExperts || c.ParallelPRAgents {
+		t.Fatalf("expected all false after falsy env, got specialists=%v repoExperts=%v prAgents=%v",
+			c.ParallelSpecialists, c.ParallelRepoExperts, c.ParallelPRAgents)
 	}
 }
 
 func TestLoadParallelFlagsFromJSON(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "repo-context.json")
-	if err := os.WriteFile(path, []byte(`{"parallel_specialists":true,"parallel_repo_experts":true}`), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(`{"parallel_specialists":true,"parallel_repo_experts":true,"parallel_pr_agents":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("APPR_AI_SAL_CONFIG_DIR", dir)
@@ -61,7 +63,7 @@ func TestLoadParallelFlagsFromJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !c.ParallelSpecialists || !c.ParallelRepoExperts {
+	if !c.ParallelSpecialists || !c.ParallelRepoExperts || !c.ParallelPRAgents {
 		t.Fatalf("got %+v", c)
 	}
 }
