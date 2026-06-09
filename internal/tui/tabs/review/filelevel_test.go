@@ -39,6 +39,9 @@ func newFilelevelOverlayWithErroredCard(t *testing.T) *Model {
 	if len(ro.cards) != 1 {
 		t.Fatalf("setup: cards %d want 1", len(ro.cards))
 	}
+	// Focus the docs agent tab so the finding is the active card and the
+	// F / post keys route through phaseApprove.
+	focusAgentTabForTest(t, ro, review.SpecDocs)
 	if _, _ = ro.actPostCurrent(); ro.cards[0].state != cardError {
 		t.Fatalf("setup: card state %v want cardError after pre-flight", ro.cards[0].state)
 	}

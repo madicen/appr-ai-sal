@@ -65,9 +65,15 @@ func (m *Model) OverlayTitle() string {
 func chromeSubtitleForPhase(m *Model) string {
 	switch m.phase {
 	case phaseRunning:
+		if m.done {
+			return "overview"
+		}
 		return "running"
 	case phaseApprove:
-		return "approving"
+		if m.activeTab >= 0 && m.activeTab < len(m.tabs) {
+			return tabShortLabel(m.tabs[m.activeTab])
+		}
+		return "agent"
 	case phaseGeneratingSummary:
 		return "refining"
 	case phaseSummary:
@@ -205,6 +211,7 @@ func (m *Model) applyAgentDetail(name, detail string, p review.Progress) {
 		case p.Result != nil:
 			row.phase = oaDone
 			row.summary = p.Result.Summary
+			row.findings = p.Result.Findings
 			row.findingsN = len(p.Result.Findings)
 		case p.Vibe != nil && p.Vibe.Err != nil:
 			row.phase = oaErr
@@ -212,6 +219,7 @@ func (m *Model) applyAgentDetail(name, detail string, p review.Progress) {
 		case p.Vibe != nil:
 			row.phase = oaDone
 			row.summary = p.Vibe.Summary
+			row.verdict = p.Vibe.Verdict
 			row.findingsN = len(p.Vibe.Prompts)
 		case p.Arbiter != nil && p.Arbiter.Err != nil:
 			row.phase = oaErr

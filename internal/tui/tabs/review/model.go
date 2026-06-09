@@ -98,6 +98,144 @@ func overlayAgentLabel(name string) string {
 	return name
 }
 
+// outputAgentOrder lists the agents that get their own tab, left to
+// right: the five specialists, then the repo arbiter, then the vibe
+// coach. Context-injection rows stay in the overview tab.
+func outputAgentOrder() []string {
+	out := make([]string, 0, len(review.AllSpecialists)+2)
+	out = append(out, review.AllSpecialists...)
+	out = append(out, overlayAgentRepoArbiter, review.SpecVibeCoach)
+	return out
+}
+
+// buildReviewTabs constructs the full tab bar: overview, one tab per
+// output agent, then the summary tab.
+func buildReviewTabs() []reviewTab {
+	tabs := make([]reviewTab, 0, len(outputAgentOrder())+2)
+	tabs = append(tabs, reviewTab{kind: tabOverview})
+	for _, name := range outputAgentOrder() {
+		tabs = append(tabs, reviewTab{kind: tabAgent, agent: name})
+	}
+	tabs = append(tabs, reviewTab{kind: tabSummary})
+	return tabs
+}
+
+// tabShortLabel is the compact label shown in the tab strip.
+func tabShortLabel(t reviewTab) string {
+	switch t.kind {
+	case tabOverview:
+		return "Overview"
+	case tabSummary:
+		return "Summary"
+	case tabAgent:
+		switch t.agent {
+		case overlayAgentRepoArbiter:
+			return "Arbiter"
+		case review.SpecVibeCoach:
+			return "Vibe"
+		}
+		return t.agent
+	}
+	return "?"
+}
+
+// summaryTabIndex returns the index of the summary tab (always last).
+func (m *Model) summaryTabIndex() int { return len(m.tabs) - 1 }
+
+// onSummaryTab reports whether the summary tab is focused.
+func (m *Model) onSummaryTab() bool {
+	return m.activeTab >= 0 && m.activeTab < len(m.tabs) && m.tabs[m.activeTab].kind == tabSummary
+}
+
+// activeAgent returns the agent name for the focused tab, or "" when the
+// focused tab isn't an agent tab.
+func (m *Model) activeAgent() string {
+	if m.activeTab < 0 || m.activeTab >= len(m.tabs) {
+		return ""
+	}
+	if m.tabs[m.activeTab].kind != tabAgent {
+		return ""
+	}
+	return m.tabs[m.activeTab].agent
+}
+
+// agentCardIndices returns the global indices into m.cards whose finding
+// belongs to the named agent (specialist), in card order.
+func (m *Model) agentCardIndices(name string) []int {
+	if name == "" {
+		return nil
+	}
+	var out []int
+	for i := range m.cards {
+		if m.cards[i].finding.Specialist == name {
+			out = append(out, i)
+		}
+	}
+	return out
+}
+
+// firstCardForAgent returns the global index of the agent's first pending
+// card, falling back to its first card; -1 when the agent has no cards.
+func (m *Model) firstCardForAgent(name string) int {
+	idxs := m.agentCardIndices(name)
+	if len(idxs) == 0 {
+		return -1
+	}
+	for _, gi := range idxs {
+		if m.cards[gi].state == cardPending {
+			return gi
+		}
+	}
+	return idxs[0]
+}
+
+// focusTab switches the active tab and re-derives the overlay phase from
+// it. Returns the tea.Cmd from entering the summary tab (vibe-coach
+// re-run), or nil for the overview / agent tabs.
+func (m *Model) focusTab(i int) tea.Cmd {
+	if i < 0 || i >= len(m.tabs) {
+		return nil
+	}
+	m.activeTab = i
+	t := m.tabs[i]
+	switch t.kind {
+	case tabOverview:
+		m.phase = phaseRunning
+	case tabAgent:
+		m.phase = phaseApprove
+		m.idx = m.firstCardForAgent(t.agent)
+	case tabSummary:
+		switch {
+		case !m.done:
+			// Summary not generated yet — render the "not ready" body.
+			m.phase = phaseSummary
+		case m.posted:
+			m.phase = phasePosted
+		default:
+			m.vp.GotoTop()
+			return m.enterSummary()
+		}
+	}
+	m.vp.GotoTop()
+	m.rebuildBody()
+	return nil
+}
+
+// nextTab / prevTab move the focus one tab over (no wraparound).
+func (m *Model) nextTab() tea.Cmd {
+	if m.activeTab < len(m.tabs)-1 {
+		return m.focusTab(m.activeTab + 1)
+	}
+	return nil
+}
+
+func (m *Model) prevTab() tea.Cmd {
+	if m.activeTab > 0 {
+		return m.focusTab(m.activeTab - 1)
+	}
+	return nil
+}
+
 type overlayAgentRow struct {
 	name  string
 	stage overlayAgentStage
@@ -107,6 +245,13 @@ type overlayAgentRow struct {
 	// summary). Shown when expanded.
 	summary   string
 	findingsN int
+	// findings holds the agent's streamed findings (specialists only) so
+	// the per-agent tab can show them live during the run, before the
+	// pipeline completes and AdoptDraft turns them into postable cards.
+	findings []review.Finding
+	// verdict is the vibe-coach merge recommendation, surfaced on the
+	// vibe-coach tab. Empty for every other agent.
+	verdict string
 	// startedAt and finishedAt let the renderer show elapsed time live (per-agent
 	// timers show how long each specialist took even though they run in order).
 	startedAt  time.Time
@@ -120,7 +265,36 @@ type overlayAgentRow struct {
 	expanded  bool
 }
 
+// tabKind classifies the entries in the review overlay's tab bar.
+type tabKind int
+
+const (
+	// tabOverview is the always-present first tab — the live pipeline
+	// progress view (renderRunningBody).
+	tabOverview tabKind = iota
+	// tabAgent is one of the per-agent tabs (a specialist, the repo
+	// arbiter, or the vibe coach). It shows that agent's findings (with
+	// per-finding post/skip once the pipeline completes) and an
+	// always-present summary of what the agent did / found.
+	tabAgent
+	// tabSummary is the final tab — the review summary, approve
+	// confirmation, and posted receipt.
+	tabSummary
+)
+
+// reviewTab is one entry in the tab bar. Agent tabs carry the agent name
+// (a specialist key, overlayAgentRepoArbiter, or review.SpecVibeCoach) so
+// the renderer and key handlers can resolve the matching overlayAgentRow
+// and approval cards.
+type reviewTab struct {
+	kind  tabKind
+	agent string
+}
+
 // overlayPhase tags which screen the persistent review overlay is showing.
+// It is kept in lock-step with the active tab: phaseRunning ↔ the overview
+// tab, phaseApprove ↔ an agent tab, and the four summary sub-states ↔ the
+// summary tab.
 type overlayPhase int
 
 const (
@@ -200,7 +374,21 @@ type Model struct {
 	// show each specialist's duration after it finishes.
 	runStartedAt time.Time
 
-	phase  overlayPhase
+	phase overlayPhase
+	// tabs is the tab-bar model: overview, one per output agent, then
+	// summary. activeTab indexes it and is kept consistent with phase.
+	tabs      []reviewTab
+	activeTab int
+	// done flips true once AdoptDraft installs the runner's final draft
+	// (the pipeline finished). Per-finding posting is only enabled after
+	// this — the repo arbiter runs after the specialists and can suppress
+	// or demote findings, so posting earlier could publish something the
+	// arbiter would have removed.
+	done bool
+	// posted flips true once the summary / approve review has been posted
+	// (or skipped) so re-focusing the summary tab restores the receipt
+	// instead of re-rendering the post form.
+	posted bool
 	dryRun bool
 	// demoMode mirrors model.Options.Demo. We thread it down to every
 	// data.*Cmd call this overlay makes (RefreshPRCmd,
@@ -219,9 +407,6 @@ type Model struct {
 	summarySkip   bool
 	summaryErr    error
 	summaryDryMsg string
-
-	// When repo arbiter suppressed inline findings, require explicit ack before y/n.
-	pendingSuppressAck bool
 
 	// approveAfterSkipDisagree: user skipped every postable inline (posted none)
 	// while the AI verdict was not APPROVE — we offer GitHub APPROVE anyway.
@@ -275,6 +460,19 @@ func zoneOverlayAgent(i int) string {
 	return fmt.Sprintf("zone:overlay:agent:%d", i)
 }
 
+// digitKey reports whether the key message is a single ASCII digit and,
+// if so, its numeric value (1-9, plus 0). Used for jump-to-tab shortcuts.
+func digitKey(msg tea.KeyMsg) (int, bool) {
+	if msg.Type != tea.KeyRunes || len(msg.Runes) != 1 {
+		return 0, false
+	}
+	r := msg.Runes[0]
+	if r < '0' || r > '9' {
+		return 0, false
+	}
+	return int(r - '0'), true
+}
+
 // New builds a fresh review overlay. cfg is used to
 // re-run vibe-coach lazily when the user changes their skip set
 // between approve and summary; pass nil in tests that don't exercise
@@ -313,6 +511,8 @@ func New(screenW, screenH int, dryRun bool, specialistsParallel, repoExpertsPara
 		vp:                  vp,
 		sp:                  sp,
 		agents:              ag,
+		tabs:                buildReviewTabs(),
+		activeTab:           0,
 		cursor:              0,
 		phase:               phaseRunning,
 		specialistsParallel: specialistsParallel,
@@ -356,14 +556,14 @@ func (m *Model) Init() tea.Cmd {
 // reviewBodyPadW / reviewBodyPadH are the cells reviewBodyStyle's
 // Padding(1, 2) adds inside that frame.
 //
-// reviewBodySepH counts the four non-viewport rows of the body's
-// JoinVertical layout: title, blank, blank, help.
+// reviewBodySepH counts the five non-viewport rows of the body's
+// JoinVertical layout: title, tab bar, blank, blank, help.
 const (
 	reviewChromeFrameW = 2
 	reviewChromeFrameH = 4
 	reviewBodyPadW     = 4
 	reviewBodyPadH     = 2
-	reviewBodySepH     = 4
+	reviewBodySepH     = 5
 )
 
 // resizeFromScreen sizes the modal from a raw screen budget (full
@@ -420,14 +620,69 @@ func (m *Model) setOuterDims(outerW, outerH int) {
 // If the arbiter suppressed inline findings, we route through phaseApprove
 // first so pendingSuppressAck can show the suppress notice; the user
 // acknowledges and walks the (possibly empty) card list before reaching
-// confirmApprove via advanceCard.
 // AdoptDraft installs the runner's final draft, builds approval cards,
-// and routes to the appropriate first phase. Returns a tea.Cmd that
-// callers MUST include in their tea.Batch — when the post-arbiter set
-// has no cards and the verdict isn't APPROVE, the overlay flips to
-// summary and (only if the draft is missing a vibe-coach result) may
-// dispatch a regeneration. The runner normally produces VibeCoach in
-// the pipeline, so the typical path is a nil cmd straight to summary.
+// hydrates the per-agent tabs, and (when the user is still on the overview
+// tab) auto-focuses the summary tab. Returns a tea.Cmd that callers MUST
+// include in their tea.Batch — focusing the summary tab may dispatch a
+// vibe-coach regeneration when the draft is missing a cached result. The
+// runner normally produces VibeCoach in the pipeline, so the typical path
+// is a nil cmd straight to the summary.
+// hydrateAgentRowsFromDraft backfills the overlay's agent rows from a
+// completed draft. Rows already marked done/skipped/errored by streamed
+// progress events keep richer state; rows still pending (the reopen case,
+// where no progress was observed) get their summary, findings, and
+// done-phase from the draft so every agent tab and the overview render
+// correctly.
+func (m *Model) hydrateAgentRowsFromDraft(d *review.Draft) {
+	if d == nil {
+		return
+	}
+	for _, sr := range d.Specialists {
+		i := m.agentIndex(sr.Specialist)
+		if i < 0 {
+			continue
+		}
+		row := &m.agents[i]
+		if row.phase == oaPending {
+			row.phase = oaDone
+		}
+		if strings.TrimSpace(row.summary) == "" {
+			row.summary = sr.Summary
+		}
+		if len(row.findings) == 0 {
+			row.findings = sr.Findings
+		}
+		if row.findingsN == 0 {
+			row.findingsN = len(sr.Findings)
+		}
+	}
+	if d.RepoArbiter != nil {
+		if i := m.agentIndex(overlayAgentRepoArbiter); i >= 0 {
+			row := &m.agents[i]
+			if row.phase == oaPending {
+				row.phase = oaDone
+			}
+			if strings.TrimSpace(row.summary) == "" {
+				row.summary = formatArbiterRowSummary(d.RepoArbiter)
+			}
+		}
+	}
+	if d.VibeCoach != nil {
+		if i := m.agentIndex(review.SpecVibeCoach); i >= 0 {
+			row := &m.agents[i]
+			if row.phase == oaPending {
+				row.phase = oaDone
+			}
+			if strings.TrimSpace(row.summary) == "" {
+				row.summary = d.VibeCoach.Summary
+			}
+			if row.verdict == "" {
+				row.verdict = d.VibeCoach.Verdict
+			}
+		}
+	}
+}
+
 func (m *Model) AdoptDraft(d *review.Draft) tea.Cmd {
 	m.draft = d
 	m.approveAfterSkipDisagree = false
@@ -437,8 +692,6 @@ func (m *Model) AdoptDraft(d *review.Draft) tea.Cmd {
 	}
 	m.files = review.ParseDiff(d.Diff)
 	flat := d.FlatPostableFindingsForPost()
-	allN := len(d.FlatPostableFindings())
-	m.pendingSuppressAck = d.HasRepoExpertSuppressions() && len(flat) < allN
 	m.cards = make([]approvalCard, 0, len(flat))
 	for _, f := range flat {
 		card := approvalCard{finding: f}
@@ -446,7 +699,12 @@ func (m *Model) AdoptDraft(d *review.Draft) tea.Cmd {
 		m.cards = append(m.cards, card)
 	}
 	m.idx = 0
+	m.done = true
 	m.existingCommentsLoading = false
+	// Make the agent rows reflect the final draft so the overview tab and
+	// the per-agent tab glyphs are correct even when the per-agent
+	// progress events weren't observed (e.g. a reopened approval).
+	m.hydrateAgentRowsFromDraft(d)
 	// The runner produces a VibeCoach result against the post-arbiter
 	// finding set (UserSkipPostKeys is empty at pipeline time). Record
 	// its skip hash so a same-skip-set entry to phaseSummary reuses
@@ -459,32 +717,25 @@ func (m *Model) AdoptDraft(d *review.Draft) tea.Cmd {
 	} else {
 		m.lastCoachHash = ""
 	}
-	switch {
-	case m.pendingSuppressAck:
-		m.phase = phaseApprove
-		m.vp.GotoTop()
-		return nil
-	case d.HasNoFindings():
-		// Nothing actionable came back from any agent — go straight to a
-		// tailored APPROVE confirmation instead of the post-summary screen.
-		// No vibe-coach needed (APPROVE bodies are empty).
-		m.noFindingsApprove = true
-		m.phase = phaseConfirmApprove
-		m.vp.GotoTop()
-		return nil
-	case len(m.cards) == 0 && d.PostEvent() == "APPROVE":
-		m.phase = phaseConfirmApprove
-		m.vp.GotoTop()
-		return nil
-	case len(m.cards) == 0:
-		// No cards to walk → user can't change skips → vibe-coach
-		// runs against the post-arbiter set immediately on enter.
-		return m.enterSummary()
-	default:
-		m.phase = phaseApprove
-		m.vp.GotoTop()
-		return nil
+	// Every agent came back clean — the summary tab's confirm-approve
+	// sub-state explains the no-findings approval rather than dropping the
+	// user on a near-empty post-summary screen.
+	m.noFindingsApprove = d.HasNoFindings()
+	// On completion, auto-focus the summary tab (the natural end state)
+	// when the user is still parked on the overview tab. If they've
+	// already navigated into an agent tab to watch a result, leave them
+	// there so the jump isn't disorienting; the summary tab stays one
+	// keystroke away.
+	if m.tabs[m.activeTab].kind == tabOverview {
+		return m.focusTab(m.summaryTabIndex())
 	}
+	// Refresh whichever agent tab they're on now that cards exist.
+	if m.tabs[m.activeTab].kind == tabAgent {
+		m.idx = m.firstCardForAgent(m.activeAgent())
+	}
+	m.vp.GotoTop()
+	m.rebuildBody()
+	return nil
 }
 
 // anchorCardToDiff fills in card.file and card.hunk against files, mutating
@@ -552,9 +803,11 @@ func (m *Model) markCardsAlreadyOnGitHub(viewer string, existing []gh.PullReview
 			m.cards[i].state = cardAlreadyOnPR
 		}
 	}
-	m.idx = m.firstPendingCardIndex()
-	if m.idx >= len(m.cards) {
-		return m.enterSummary()
+	// Re-point the focused card on whichever agent tab is active so the
+	// first pending finding for that agent is highlighted (no auto-jump to
+	// the summary tab — the user navigates there themselves).
+	if m.tabs[m.activeTab].kind == tabAgent {
+		m.idx = m.firstCardForAgent(m.activeAgent())
 	}
 	m.vp.GotoTop()
 	return nil
@@ -607,7 +860,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case data.StagedFindingPostedMsg:
 		// Single finding succeeded — mark current as posted and advance.
 		var advCmd tea.Cmd
-		if m.phase == phaseApprove && m.idx < len(m.cards) {
+		if m.phase == phaseApprove && m.idx >= 0 && m.idx < len(m.cards) {
 			m.cards[m.idx].state = cardPosted
 			advCmd = m.advanceCard()
 		}
@@ -641,15 +894,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.coachErr = msg.Result.Err
 		}
 		m.lastCoachHash = curHash
-		// Verdict may have changed (e.g. user skipped the last blocker
-		// → APPROVE). Route accordingly.
-		if m.draft.PostEvent() == "APPROVE" && len(m.cards) > 0 {
-			// Only auto-route to confirmApprove when there were
-			// cards (i.e. we came through phaseApprove). If we
-			// reached enterSummary from AdoptDraft directly with
-			// no cards, the original adopt logic already routed
-			// us — don't override the user.
-		}
+		// The refreshed summary belongs on the summary tab. Focus it (no
+		// further vibe-coach re-run is needed now that the cache is warm)
+		// and show the post-summary body.
+		m.activeTab = m.summaryTabIndex()
 		m.phase = phaseSummary
 		m.vp.GotoTop()
 		m.rebuildBody()
@@ -659,7 +907,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// In dry-run, both the approve flow and summary post route here.
 		var advCmd tea.Cmd
 		switch {
-		case m.phase == phaseApprove && m.idx < len(m.cards):
+		case m.phase == phaseApprove && m.idx >= 0 && m.idx < len(m.cards):
 			m.cards[m.idx].state = cardPosted // treat preview as accepted under dry-run
 			advCmd = m.advanceCard()
 		case m.phase == phaseSummary, m.phase == phaseConfirmApprove:
@@ -695,16 +943,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Tab navigation works from every phase: the user can browse the
+	// overview, any finished agent, and (once ready) the summary at will.
+	switch msg.String() {
+	case "tab", "]", ">":
+		return m, m.nextTab()
+	case "shift+tab", "[", "<":
+		return m, m.prevTab()
+	}
+	if n, ok := digitKey(msg); ok && n >= 1 && n <= len(m.tabs) {
+		return m, m.focusTab(n - 1)
+	}
 	switch m.phase {
 	case phaseRunning:
 		switch msg.String() {
-		case "j":
+		case "j", "down":
 			if m.cursor < len(m.agents)-1 {
 				m.cursor++
 			}
 			m.rebuildBody()
 			return m, nil
-		case "k":
+		case "k", "up":
 			if m.cursor > 0 {
 				m.cursor--
 			}
@@ -726,22 +985,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg { return CloseMsg{} }
 		}
 	case phaseApprove:
-		if m.pendingSuppressAck {
-			switch msg.String() {
-			case "enter", " ":
-				return m.acknowledgeSuppress()
-			case "q", "esc":
-				return m, func() tea.Msg { return CloseMsg{} }
-			}
-			return m, nil
-		}
-		if m.existingCommentsLoading {
-			switch msg.String() {
-			case "q", "esc":
-				return m, func() tea.Msg { return CloseMsg{} }
-			}
-			return m, nil
-		}
 		switch msg.String() {
 		case "y", "Y":
 			return m.actPostCurrent()
@@ -759,12 +1002,6 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// the current diff. The handler is a no-op when the card
 			// isn't in a state where this makes sense.
 			return m.actPostCurrentFileLevel()
-		case "f":
-			// Finish approving early; jump to summary even with cards left.
-			// enterSummary handles syncing skips + re-running vibe-coach
-			// only if the skip set differs from the pipeline-time run.
-			cmd := m.enterSummary()
-			return m, cmd
 		case "q", "esc":
 			return m, func() tea.Msg { return CloseMsg{} }
 		}
@@ -839,30 +1076,14 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// acknowledgeSuppress dismisses the suppress-acknowledgement gate and
-// advances to the right next phase. Shared by the Enter/Space keys and
-// the clickable Continue button.
-func (m *Model) acknowledgeSuppress() (tea.Model, tea.Cmd) {
-	m.pendingSuppressAck = false
-	// If the user had no cards to walk after the suppress notice,
-	// jump immediately to the right next phase rather than parking
-	// them on a "no findings" empty card view.
-	if len(m.cards) == 0 || m.idx >= len(m.cards) {
-		if m.draft != nil && m.draft.PostEvent() == "APPROVE" {
-			m.phase = phaseConfirmApprove
-			m.vp.GotoTop()
-			m.rebuildBody()
-			return m, nil
-		}
-		cmd := m.enterSummary()
-		return m, cmd
-	}
-	m.rebuildBody()
-	return m, nil
-}
-
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+		// Tab-bar clicks switch tabs from any phase.
+		for i := range m.tabs {
+			if z := zone.Get(zones.ReviewTab(i)); z != nil && z.InBounds(msg) {
+				return m, m.focusTab(i)
+			}
+		}
 		switch m.phase {
 		case phaseRunning:
 			for i := range m.agents {
@@ -876,18 +1097,6 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case phaseApprove:
-			if m.pendingSuppressAck {
-				if z := zone.Get(zones.StagedAck); z != nil && z.InBounds(msg) {
-					return m.acknowledgeSuppress()
-				}
-				if z := zone.Get(zones.StagedQuit); z != nil && z.InBounds(msg) {
-					return m, func() tea.Msg { return CloseMsg{} }
-				}
-				return m, nil
-			}
-			if m.existingCommentsLoading {
-				return m, nil
-			}
 			if z := zone.Get(zones.StagedPost); z != nil && z.InBounds(msg) {
 				return m.actPostCurrent()
 			}
@@ -902,10 +1111,6 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			if z := zone.Get(zones.StagedRefresh); z != nil && z.InBounds(msg) {
 				return m.actRefreshPR()
-			}
-			if z := zone.Get(zones.StagedFinish); z != nil && z.InBounds(msg) {
-				cmd := m.enterSummary()
-				return m, cmd
 			}
 			if z := zone.Get(zones.StagedQuit); z != nil && z.InBounds(msg) {
 				return m, func() tea.Msg { return CloseMsg{} }

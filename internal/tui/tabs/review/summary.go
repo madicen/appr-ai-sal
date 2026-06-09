@@ -281,8 +281,9 @@ var reviewBodyStyle = lipgloss.NewStyle().Padding(1, 2)
 
 func (m *Model) View() string {
 	title := styles.BoldStyle.Render(m.titleForPhase()) + "  " + m.spinnerForPhase()
+	tabBar := m.renderTabBar(max(8, m.outerW-reviewChromeFrameW-reviewBodyPadW))
 	help := styles.DimStyle.Render(m.helpForPhase())
-	body := lipgloss.JoinVertical(lipgloss.Left, title, "", m.vp.View(), "", help)
+	body := lipgloss.JoinVertical(lipgloss.Left, title, tabBar, "", m.vp.View(), "", help)
 	// Render at the chrome's expected content dims (outerW-2 × outerH-4 —
 	// box border + chrome rows). Setting an explicit Height pads the body
 	// to fill the area when the running phase has few rows so the modal's
@@ -297,9 +298,16 @@ func (m *Model) View() string {
 func (m *Model) titleForPhase() string {
 	switch m.phase {
 	case phaseRunning:
+		if m.done {
+			return "Review · overview"
+		}
 		return "Review in progress"
 	case phaseApprove:
-		return "Review · approve findings"
+		name := m.activeAgent()
+		if name != "" {
+			return "Review · " + overlayAgentLabel(name)
+		}
+		return "Review · agent"
 	case phaseGeneratingSummary:
 		return "Review · refining summary"
 	case phaseSummary:
@@ -322,9 +330,12 @@ func (m *Model) spinnerForPhase() string {
 func (m *Model) helpForPhase() string {
 	switch m.phase {
 	case phaseRunning:
-		return "j/k focus row · space expand · q abort · ↑/↓ pgdn scroll · wheel"
+		return "tab/[ ] switch tab · j/k focus row · space expand · q abort · ↑/↓ scroll · wheel"
 	case phaseApprove:
-		return "y post · n/s skip · ←/→ prev/next · R refresh PR · f skip-rest · q abort · wheel"
+		if !m.done {
+			return "tab/[ ] switch tab · ↑/↓ scroll · q abort · wheel"
+		}
+		return "tab/[ ] switch tab · y post · n/s skip · ←/→ finding · R refresh PR · q abort · wheel"
 	case phaseGeneratingSummary:
 		return "refining summary with your final selections… · q abort"
 	case phaseSummary:
@@ -351,6 +362,10 @@ func (m *Model) helpForPhase() string {
 // post — moves into phasePosted with the success state.
 func (m *Model) MarkSummaryPosted() {
 	m.summaryDone = true
+	m.posted = true
+	// The receipt lives on the summary tab; focus it so the posted body
+	// renders and the summary tab's glyph flips to ✓.
+	m.activeTab = m.summaryTabIndex()
 	m.phase = phasePosted
 	m.rebuildBody()
 }
@@ -359,7 +374,7 @@ func (m *Model) MarkSummaryPosted() {
 func (m *Model) MarkPostError(err error) {
 	switch m.phase {
 	case phaseApprove:
-		if m.idx < len(m.cards) {
+		if m.idx >= 0 && m.idx < len(m.cards) {
 			m.cards[m.idx].state = cardError
 			m.cards[m.idx].err = err
 		}
@@ -489,6 +504,28 @@ func (m *Model) SetCardState(i int, state CardState) {
 		return
 	}
 	m.cards[i].state = state
+}
+
+// CardStateAt returns the i-th approval card's state. Test-only accessor
+// for cross-package tests that drive posting through the root model and
+// need to assert the result.
+func (m *Model) CardStateAt(i int) CardState {
+	if i < 0 || i >= len(m.cards) {
+		return cardPending
+	}
+	return m.cards[i].state
+}
+
+// SelectAgentTab focuses the named agent's tab (a specialist key,
+// overlayAgentRepoArbiter, or review.SpecVibeCoach). Test-only helper so
+// cross-package tests can exercise the per-agent posting flow.
+func (m *Model) SelectAgentTab(name string) {
+	for i, tb := range m.tabs {
+		if tb.kind == tabAgent && tb.agent == name {
+			m.focusTab(i)
+			return
+		}
+	}
 }
 
 // SetForcedCoachInFlight rigs the overlay's coach-in-flight guard for tests

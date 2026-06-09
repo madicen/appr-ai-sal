@@ -51,8 +51,10 @@ func newDeferTestDraft(t *testing.T) *review.Draft {
 func TestEnterSummaryWithoutAIConfigGoesDirectlyToSummary(t *testing.T) {
 	ro := New(120, 44, false, false, false, nil, false)
 	ro.AdoptDraft(newDeferTestDraft(t))
-	if ro.phase != phaseApprove {
-		t.Fatalf("preconditions: phase %v, want phaseApprove", ro.phase)
+	// Completion auto-focuses the summary tab; with no aiConfig and a
+	// cached vibe-coach result that lands directly in phaseSummary.
+	if ro.phase != phaseSummary {
+		t.Fatalf("preconditions: phase %v, want phaseSummary", ro.phase)
 	}
 	cmd := ro.enterSummary()
 	if cmd != nil {
