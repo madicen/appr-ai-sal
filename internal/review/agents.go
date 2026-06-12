@@ -122,6 +122,19 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// wrong for the file's language (e.g. "should be snake_case" on
 		// a .go file). See convention_gate.go.
 		res.Findings = validateNamingConvention(res.Findings)
+		// Last chance: synthesize a one-click suggestion from the comment
+		// for any inline finding the model left suggestion-less but whose
+		// comment unambiguously names the corrected token. Runs after the
+		// strip gates so it only fills genuinely empty suggestions and never
+		// resurrects a stripped one; the synthesized line is re-validated by
+		// the same safety checks. See suggestion_synthesize.go.
+		res.Findings = synthesizeSuggestions(res.Findings, parsedFiles)
+		// Batched AI fallback: for inline findings still missing a usable
+		// one-click fix, a focused second model call picks the anchor line
+		// and writes the replacement, re-validated by the same safety gates.
+		// Fail-open and only fires when there is at least one candidate. See
+		// suggestion_repair.go.
+		res.Findings = repairMissingSuggestions(ctx, cfg, worktree, name, res.Findings, parsedFiles)
 		// Re-apply the floor: a finding demoted to info above must obey
 		// the same strictness gate the model originally got.
 		res.Findings = FilterFindingsBySeverity(res.Findings, floor)
@@ -304,7 +317,7 @@ func buildVibeCoachUserPrompt(pr *gh.PR, specialists []SpecialistResult, strict 
 			continue
 		}
 		if s.Summary != "" {
-			b.WriteString("Summary: " + s.Summary + "\n")
+			b.WriteString("Summary (CONTEXT ONLY — what this specialist observed; NOT a finding and NOT actionable): " + s.Summary + "\n")
 		}
 		for _, f := range s.Findings {
 			fmt.Fprintf(&b, "  [%s] %s:%d — %s\n", f.Severity, f.Path, f.Line, f.Comment)
@@ -334,6 +347,13 @@ const reviewOutputContract = `Return your review as a single JSON object and not
     }
   ]
 }
+
+SPECIALTY SCOPE (HARD — this gates EVERY finding, not just the summary):
+
+You own exactly one lens, defined in the system prompt above. Every finding you file MUST be an issue *in that specialty*. This is not a duplicate tie-breaker — it decides whether you file at all:
+   - Do NOT file a finding that belongs to another specialist's lane, even when it is real, obvious, and nobody else has flagged it. Another specialist owns it and will catch it. Concretely: a wrong Kubernetes memory unit suffix ("memory: 717M" → "717Mi"), a misconfigured value, a logic bug in application code, or a missing doc are NOT testing findings, NOT formatting findings, NOT security findings unless that specific lens is yours. Raising someone else's issue makes the panel noisier and the review worse.
+   - A change can fall entirely outside your lens. A pure config / YAML / infra / data PR often contains nothing in your specialty at all. When that is the case, return an EMPTY "findings" array and say so in one sentence in "summary". An empty result from the right specialist is the correct, useful answer.
+   - If the only issue you can find is one you'd have to reach outside your lane to file, file NOTHING. The absence of in-lane issues is itself a valid finding-free result — do not manufacture coverage by grabbing another lane's problem.
 
 ANCHOR PROOF (anchor_excerpt — DETERMINISTICALLY ENFORCED):
 
@@ -398,6 +418,7 @@ You MUST emit a non-empty "suggestion" whenever ALL of these hold:
 
 Examples that MUST have a suggestion (non-exhaustive):
    - Spelling/grammar fix in a comment, log line, error message, or doc string.
+   - Correcting a wrong literal, constant, enum value, or unit suffix on the anchor line WHEN that correction is in your specialty (e.g. "memory: 717M" → "memory: 717Mi", a flipped boolean default, an off-by-one bound). If the fix is in your lane and your "comment" names the exact corrected value, you can — and MUST — put it in "suggestion"; do not let "this is a bigger note" talk you out of an obvious one-token fix. (If the issue is NOT in your specialty, do not file it at all — see SPECIALTY SCOPE above. This rule is about completeness of an in-lane finding, never a licence to reach into another lane.)
    - Replacing md5/sha1 with sha256 for a security finding when the call site is local.
    - Adding a missing doc comment on an exported identifier (in any language) — see "Adding a doc comment ABOVE a declaration" above for the anchor + replay rule.
    - Replacing string concatenation with a parameterised query when the params are already in scope.

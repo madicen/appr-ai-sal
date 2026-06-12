@@ -169,8 +169,9 @@ func techAgentsFreshness(owner, repo string) techagentsstore.Freshness {
 func (m *Model) renderControlsToggles(width int) string {
 	var b strings.Builder
 	b.WriteString(styles.BoldStyle.Render("Run options") + "\n")
-	parallel, _ := repoParallelExecutionFlags()
+	parallel, _, prAgentsParallel := repoParallelExecutionFlags()
 	b.WriteString(zone.Mark(zones.ControlsToggleParallel, fitToWidth(toggleRow("Parallel specialists", parallel), width)) + "\n")
+	b.WriteString(zone.Mark(zones.ControlsToggleParallelPRAgents, fitToWidth(toggleRow("Parallel PR agents", prAgentsParallel), width)) + "\n")
 	b.WriteString(zone.Mark(zones.ControlsToggleDryRun, fitToWidth(toggleRow("Dry run", m.opts.DryRun), width)) + "\n")
 	b.WriteString(zone.Mark(zones.ControlsToggleStartMinimized, fitToWidth(toggleRow("Start review minimized", m.startReviewMinimized), width)) + "\n")
 	return b.String()

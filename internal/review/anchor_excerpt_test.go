@@ -278,3 +278,67 @@ func TestValidateAnchorExcerptRelocatedFindingFlowsThroughPruneSuggestions(t *te
 		t.Fatalf("relocated suggestion should survive prune pass, got empty (reason=%q)", final[0].SuggestionStrippedReason)
 	}
 }
+
+// shortContentRelocateDiff mirrors the production.yaml screenshot: a memory
+// limit on its own short line. The model anchored one line up (the cpu line)
+// but quoted the memory line, which is only 12 characters — under
+// substantiveSuggestionLineMin.
+const shortContentRelocateDiff = `diff --git a/deploy/app.yaml b/deploy/app.yaml
+--- a/deploy/app.yaml
++++ b/deploy/app.yaml
+@@ -200,4 +200,4 @@ spec:
+       requests:
++        cpu: 271m
++        memory: 717M
+       limits:
+`
+
+// TestValidateAnchorExcerptRelocatesShortContentExcerpt is the fix for the
+// screenshot failure: a short but content-bearing excerpt ("memory: 717M")
+// that uniquely matches one post-image line should relocate instead of being
+// stripped for being under the length floor.
+func TestValidateAnchorExcerptRelocatesShortContentExcerpt(t *testing.T) {
+	files := ParseDiff(shortContentRelocateDiff)
+	f := Finding{
+		Path:          "deploy/app.yaml",
+		Line:          201, // wrong: anchored at "cpu: 271m"
+		Side:          "RIGHT",
+		Severity:      SeverityWarning,
+		Comment:       "Use binary units (Mi) for Kubernetes memory limits.",
+		AnchorExcerpt: "memory: 717M",
+		Suggestion:    "        memory: 717Mi",
+	}
+	out := validateAnchorExcerpt([]Finding{f}, files)
+	if out[0].Line != 202 {
+		t.Fatalf("expected relocate to line 202 (the memory line), got Line=%d", out[0].Line)
+	}
+	if out[0].AnchorRelocatedFrom != 201 {
+		t.Fatalf("expected AnchorRelocatedFrom=201, got %d", out[0].AnchorRelocatedFrom)
+	}
+	if strings.TrimSpace(out[0].Suggestion) != "memory: 717Mi" {
+		t.Fatalf("short content excerpt should keep its suggestion after relocation, got %q (reason=%q)", out[0].Suggestion, out[0].SuggestionStrippedReason)
+	}
+}
+
+// TestExcerptRelocatableWhenShort pins the content-vs-syntactic distinction
+// that gates short-excerpt relocation.
+func TestExcerptRelocatableWhenShort(t *testing.T) {
+	cases := []struct {
+		excerpt string
+		want    bool
+	}{
+		{"memory: 717M", true},  // key: value
+		{"replicas = 3", true},  // key = value
+		{"port 8080", true},     // bare numeric literal
+		{"}", false},            // closing brace
+		{"})", false},           // closing brace
+		{"return nil", false},   // code but no value/digit
+		{"", false},             // blank
+		{"// note", false},      // comment-only
+	}
+	for _, tc := range cases {
+		if got := excerptRelocatableWhenShort(tc.excerpt); got != tc.want {
+			t.Errorf("excerptRelocatableWhenShort(%q) = %v, want %v", tc.excerpt, got, tc.want)
+		}
+	}
+}

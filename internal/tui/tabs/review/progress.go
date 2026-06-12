@@ -152,6 +152,21 @@ func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 		}
 		name, detail := parts[0], parts[1]
 		m.applyAgentDetail(name, detail, p)
+	case "pr-agent":
+		// runner emits "<name>:start", "<name>:done", "<name>:retry N (...)",
+		// or "warning: <fetch failure>" when a PR-data fetch failed before the
+		// agents ran. The warning form has no agent row to drive, so it lands
+		// in the log instead.
+		detail := strings.TrimSpace(p.Detail)
+		if strings.HasPrefix(detail, "warning:") {
+			m.log = append(m.log, "pr agents: "+strings.TrimSpace(strings.TrimPrefix(detail, "warning:")))
+			return nil
+		}
+		parts := strings.SplitN(detail, ":", 2)
+		if len(parts) != 2 {
+			return nil
+		}
+		m.applyAgentDetail(parts[0], parts[1], p)
 	case "vibe-coach":
 		// runner emits Detail = "start" / "done" / "retry N (...)".
 		m.applyAgentDetail(review.SpecVibeCoach, p.Detail, p)

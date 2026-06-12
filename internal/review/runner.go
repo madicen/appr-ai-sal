@@ -22,7 +22,7 @@ import (
 // Progress messages are emitted on the channel returned by Run so the TUI can
 // stream updates to the user as specialists complete.
 type Progress struct {
-	Stage   string // "checkout", "diff", "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "vibe-coach", "repo-arbiter", "done"; vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed
+	Stage   string // "checkout", "diff", "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "pr-agent", "vibe-coach", "repo-arbiter", "done"; specialist/pr-agent Detail is "<name>:start"/"<name>:done"/"<name>:retry N (...)" (pr-agent also emits "warning: ..." for fetch failures); vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed
 	Detail  string // free-form detail about the stage
 	Err     error  // non-nil if this stage hit an error worth surfacing
 	Result  *SpecialistResult
@@ -88,6 +88,37 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			out <- Progress{Stage: "repo-context", Detail: "config: " + rerr.Error()}
 		}
 		repoconfig.ApplyParallelExecutionEnv(rc)
+
+		// PR-level agents (description / checks / discussion / scope) read the
+		// PR's CI checks, review threads, and conversation. Fetch those signals
+		// in the background so they overlap with repo-context composition and the
+		// specialist phase; each fetch degrades gracefully (an empty input just
+		// means the matching agent runs without that section).
+		prAgentsEnabled := rc == nil || rc.PRAgents
+		var prDataCh chan PRAgentInput
+		if prAgentsEnabled {
+			prDataCh = make(chan PRAgentInput, 1)
+			go func() {
+				var in PRAgentInput
+				if checks, cerr := gh.GetChecks(ctx, ref); cerr == nil {
+					in.Checks = checks
+				} else {
+					out <- Progress{Stage: "pr-agent", Detail: "warning: checks fetch: " + cerr.Error()}
+				}
+				if threads, terr := gh.GetReviewThreads(ctx, ref); terr == nil {
+					in.Threads = threads
+				} else {
+					out <- Progress{Stage: "pr-agent", Detail: "warning: review-threads fetch: " + terr.Error()}
+				}
+				if disc, derr := gh.GetDiscussion(ctx, ref); derr == nil {
+					in.Discussion = disc
+				} else {
+					out <- Progress{Stage: "pr-agent", Detail: "warning: discussion fetch: " + derr.Error()}
+				}
+				prDataCh <- in
+			}()
+		}
+
 		repoBlock, composeErr := ComposeRepositoryContextBlock(ctx, runCfg, rc, pr, worktree, false)
 		if composeErr != nil {
 			out <- Progress{Stage: "repo-context", Detail: "warning: " + composeErr.Error()}
@@ -158,9 +189,43 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// internal/review/langagents for the selection rule.
 		langSection := composeLangBriefSection(diff, out)
 
+		// PR-level agents run against the PR metadata fetched above. They reuse
+		// the SpecialistResult pipeline, so their findings post like a
+		// specialist's. They're kept in a separate slice from the code
+		// specialists so the convention witness (which reasons about code
+		// testing/docs findings) keeps seeing only the code specialists. The
+		// repo arbiter, by contrast, IS informed of the PR-agent findings (see
+		// allSpecialists below) so it can suppress/demote them too.
+		//
+		// PR agents share no data dependency with the specialists (they read PR
+		// metadata + the diff, not specialist findings), so when
+		// rc.ParallelPRAgents is set we run their phase concurrently with the
+		// specialists phase to cut wall-clock time. Both phases only need to be
+		// done before the arbiter. Default (flag off): PR agents run after the
+		// specialists, sequentially, to keep concurrent LLM calls (and
+		// rate-limit bursts) low — mirroring ParallelSpecialists.
+		var prAgents []SpecialistResult
+		prParallel := prAgentsEnabled && rc != nil && rc.ParallelPRAgents
+		var prWG sync.WaitGroup
+		if prParallel {
+			prWG.Add(1)
+			go func() {
+				defer prWG.Done()
+				prData := <-prDataCh
+				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, diff, prData, out))
+			}()
+		}
+
 		// Specialists: sequential by default (repo-context.json parallel_specialists),
 		// or parallel when configured / env override — see runSpecialistsPhase.
 		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, diff, perAgent, prEvidence, langSection, techSection, out)
+
+		if prParallel {
+			prWG.Wait()
+		} else if prAgentsEnabled {
+			prData := <-prDataCh
+			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, diff, prData, out))
+		}
 
 		cv := <-cvCh
 		cvSummary := strings.TrimSpace(cv.text)
@@ -171,7 +236,16 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			out <- Progress{Stage: "context-summary", Detail: fmt.Sprintf("%d chars", len(cvSummary))}
 		}
 
-		skipDownstream := !SpecialistsHaveAnyFindings(specialists)
+		allSpecialists := make([]SpecialistResult, 0, len(specialists)+len(prAgents))
+		allSpecialists = append(allSpecialists, specialists...)
+		allSpecialists = append(allSpecialists, prAgents...)
+		// Collapse the same inline finding when several specialists filed it
+		// on one line, so it posts once (from the most-relevant lane) instead
+		// of once per agent. Runs before the arbiter/vibe-coach so finding
+		// counts are consistent across every surface. See finding_dedupe.go.
+		allSpecialists = dedupeInlineFindingsAcrossSpecialists(allSpecialists)
+
+		skipDownstream := !SpecialistsHaveAnyFindings(allSpecialists)
 
 		final := &Draft{
 			Ref:                        ref,
@@ -179,7 +253,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			Diff:                       diff,
 			Worktree:                   worktree,
 			Strictness:                 runCfg.ReviewStrictness,
-			Specialists:                specialists,
+			Specialists:                allSpecialists,
 			RepositoryContext:          repoBlock,
 			ContextVersusChangeSummary: cvSummary,
 		}
@@ -202,7 +276,10 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			}
 			if rc != nil && rc.RepoExpertPanel {
 				out <- Progress{Stage: "repo-arbiter", Detail: "start"}
-				arb := RunRepoArbiter(ctx, runCfg, worktree, pr, specialists, perAgent, techSection, witnesses)
+				// Pass the combined slice (code specialists + PR agents) so the
+				// arbiter sees the whole-PR findings and can suppress/demote
+				// them, not just the code specialists'.
+				arb := RunRepoArbiter(ctx, runCfg, worktree, pr, allSpecialists, perAgent, techSection, witnesses)
 				if arb != nil && rc != nil && !rc.RepoArbiterDemotions {
 					arb.Demoted = nil
 				}
@@ -232,10 +309,55 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 	return out, nil
 }
 
-// retryReason produces a short, log-friendly label for the cause of a retry.
-// runSpecialistsPhase runs AllSpecialists either sequentially or in parallel
-// depending on repoconfig / APPR_AI_SAL_PARALLEL_SPECIALISTS. Specialist order in
-// the returned slice always matches AllSpecialists indices.
+// ActiveSpecialists returns the specialists to run (and to surface in the
+// overlay) for one review. The tech specialist exists only to enforce the
+// repo's technology-expert briefs, so when none are configured it has nothing
+// to do, ever — exclude it entirely rather than run a guaranteed-empty pass or
+// show a permanently empty tab. Every other specialist is a universal baseline
+// reviewer and is always included.
+func ActiveSpecialists(techConfigured bool) []string {
+	if techConfigured {
+		return append([]string(nil), AllSpecialists...)
+	}
+	out := make([]string, 0, len(AllSpecialists))
+	for _, s := range AllSpecialists {
+		if s == SpecTech {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// HasUsableTechExperts reports whether this repo has technology-expert briefs
+// the tech specialist could enforce: the toggle is on, the briefs load, and at
+// least one carries non-empty content. It mirrors composeTechSection's gating
+// (minus the diff and the progress events) so callers — notably the TUI, which
+// must decide before the run whether to surface the tech tab — agree with the
+// runner on whether the tech specialist is active.
+func HasUsableTechExperts(pr *gh.PR, rc *repoconfig.Config) bool {
+	if pr == nil {
+		return false
+	}
+	if rc != nil && !rc.TechAgents {
+		return false
+	}
+	ta, err := techagents.Load(pr.Owner, pr.Repo)
+	if err != nil || ta == nil || !ta.HasAny() {
+		return false
+	}
+	for _, k := range ta.SortedTechs() {
+		if ta.ContextFor(k) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// runSpecialistsPhase runs the active specialists (see ActiveSpecialists)
+// either sequentially or in parallel depending on repoconfig /
+// APPR_AI_SAL_PARALLEL_SPECIALISTS. Specialist order in the returned slice
+// always matches the active-specialist order.
 //
 // perAgent maps specialist name → repo-agent brief; missing keys mean "no
 // brief — use the no-repo intro for that specialist".
@@ -275,17 +397,22 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 		return r
 	}
 
-	specialists := make([]SpecialistResult, len(AllSpecialists))
+	// Only run the specialists active for this repo. The tech specialist is
+	// dropped when no technology-expert briefs are configured (techSection is
+	// empty in exactly that case), so it neither costs an API call nor shows
+	// an empty tab.
+	active := ActiveSpecialists(strings.TrimSpace(techSection) != "")
+	specialists := make([]SpecialistResult, len(active))
 	parallel := rc != nil && rc.ParallelSpecialists
 	if !parallel {
-		for i, name := range AllSpecialists {
+		for i, name := range active {
 			specialists[i] = runOne(name)
 		}
 		return specialists
 	}
 
 	var wg sync.WaitGroup
-	for i, name := range AllSpecialists {
+	for i, name := range active {
 		wg.Add(1)
 		i, name := i, name
 		go func() {
@@ -295,6 +422,55 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 	}
 	wg.Wait()
 	return specialists
+}
+
+// runPRAgentsPhase runs AllPRAgents over the PR metadata. It mirrors
+// runSpecialistsPhase (per-stage retry + budget) and emits Stage="pr-agent"
+// progress so the overlay's "PR agents" group can track each one. The agents
+// run sequentially by default, or concurrently among themselves when
+// rc.ParallelPRAgents is set. Results are returned in AllPRAgents order;
+// callers may re-sort with sortedPRAgentResults after parallel runs.
+func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, in PRAgentInput, out chan<- Progress) []SpecialistResult {
+	runOne := func(name string) SpecialistResult {
+		out <- Progress{Stage: "pr-agent", Detail: name + ":start"}
+		notify := func(attempt int, err error) {
+			out <- Progress{Stage: "pr-agent", Detail: fmt.Sprintf("%s:retry %d (%s)", name, attempt, retryReason(err))}
+		}
+		var r SpecialistResult
+		_ = stageWithRetry(ctx, runCfg, "pr-agent "+name, notify, func(sctx context.Context) error {
+			stCtx, cancel := context.WithTimeout(sctx, perStageBudget(runCfg))
+			defer cancel()
+			r = runPRAgent(stCtx, runCfg, name, worktree, pr, diff, in)
+			if r.Err != nil {
+				return r.Err
+			}
+			return nil
+		})
+		cp := r
+		out <- Progress{Stage: "pr-agent", Detail: name + ":done", Result: &cp}
+		return r
+	}
+
+	results := make([]SpecialistResult, len(AllPRAgents))
+	parallel := rc != nil && rc.ParallelPRAgents
+	if !parallel {
+		for i, name := range AllPRAgents {
+			results[i] = runOne(name)
+		}
+		return results
+	}
+
+	var wg sync.WaitGroup
+	for i, name := range AllPRAgents {
+		wg.Add(1)
+		i, name := i, name
+		go func() {
+			defer wg.Done()
+			results[i] = runOne(name)
+		}()
+	}
+	wg.Wait()
+	return results
 }
 
 // runConventionWitnessPhase calls the convention-witness agent for any
@@ -346,6 +522,7 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 	return res.Witnesses
 }
 
+// retryReason produces a short, log-friendly label for the cause of a retry.
 func retryReason(err error) string {
 	if err == nil {
 		return "unknown"

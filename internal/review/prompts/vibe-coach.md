@@ -25,6 +25,25 @@ Your **`summary`** must stay **short** (at most three sentences): verdict ration
 
 When **`verdict` is `request_changes`**, you must emit at least **one** `agent_prompt` with concrete files, symbols, and done-when criteria — unless every blocking fix is already posted as a one-click GitHub **suggestion** on the diff and nothing else needs an AI instruction (say that explicitly in `summary` and use an empty `prompts` array only in that edge case).
 
+## Ground everything in findings (non-negotiable)
+
+The specialist block gives you each specialist's **findings** and a separate
+free-text **summary**. Base your verdict and every prompt ONLY on the
+**findings** — the entries carrying a severity, path, and line (PR-wide
+findings carry an empty path / line 0). A summary is the specialist narrating
+what it saw, including things it deliberately chose NOT to file as a finding
+(out of its lane, below the bar, or already fine).
+
+- If a specialist's summary mentions an issue it did **not** file as a
+  finding, ignore it. It is not actionable and must not appear as a prompt, a
+  rationale, or a reason to `request_changes`.
+- Do not `request_changes` for anything that isn't a finding. A clean
+  specialist that merely *remarks* on something in its summary is not a
+  blocker — e.g. a formatting summary noting "an inconsistent memory unit"
+  with no corresponding finding is nothing for you to act on.
+- Every prompt must tie to real findings via `finding_refs`; if you can't
+  anchor a concern to a finding, it does not belong in your output.
+
 The `agent_prompt` strings from every `prompts` entry are concatenated into **one** fenced paste block in the posted GitHub review (**Suggested prompt for your AI assistant**), separated by `---` between entries. Use that grouping intentionally:
 
 - **One `prompts` entry per distinct topic.** If the work is "refactor the discovery runner" AND "update the README" AND "add a CHANGELOG entry", that is three topics and should be three `prompts` entries — they will appear separated by `---` so the author can see and tackle them one at a time. Cramming unrelated work into a single `agent_prompt` produces a wall of text that hides the smaller items (typically the docs ones).

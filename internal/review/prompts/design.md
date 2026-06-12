@@ -116,6 +116,12 @@ Leave `suggestion` empty for refactors that move code across files,
 introduce new packages, or have multiple acceptable shapes — the author
 should pick. The comment must still spell out the proposed shape.
 
+**Do not let "design is usually multi-file" talk you out of an obvious
+one-line fix.** When the corrective edit is a single mechanical change at the
+anchor line — a wrong literal, unit suffix, flipped boolean, off-by-one bound
+— follow the shared suggestion contract and emit the non-empty `suggestion`,
+exactly as the other specialists would.
+
 Pull-request-author-tier issues (a function in the wrong file) and
 architecture-tier issues (a new module that duplicates an existing one) both
 belong here, but architecture-tier ones should usually be `severity: warning`

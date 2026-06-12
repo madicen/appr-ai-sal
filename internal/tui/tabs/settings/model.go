@@ -55,6 +55,7 @@ const (
 	repoFieldCtxVsChange
 	repoFieldExpertPanel
 	repoFieldParallelSpecs
+	repoFieldParallelPRAgents
 	repoFieldParallelExperts
 	repoFieldExpertPRs
 	repoFieldExpertMaxB
@@ -97,20 +98,21 @@ type Model struct {
 	timeout     textinput.Model
 
 	// Repo context tab (structured form; persisted as repo-context.json).
-	repoRoots       textarea.Model
-	repoMaxBytes    textinput.Model
-	repoTTL         textinput.Model
-	repoPRHistLimit textinput.Model
-	repoExpertPRs   textinput.Model
-	repoExpertMaxB  textinput.Model
-	repoExpertTTL   textinput.Model
-	repoIncludePR   bool
-	repoCultureSum  bool
-	repoCtxVsChange bool
-	repoExpertPanel     bool
-	repoParallelSpecs   bool
-	repoParallelExperts bool
-	repoFocus           int
+	repoRoots            textarea.Model
+	repoMaxBytes         textinput.Model
+	repoTTL              textinput.Model
+	repoPRHistLimit      textinput.Model
+	repoExpertPRs        textinput.Model
+	repoExpertMaxB       textinput.Model
+	repoExpertTTL        textinput.Model
+	repoIncludePR        bool
+	repoCultureSum       bool
+	repoCtxVsChange      bool
+	repoExpertPanel      bool
+	repoParallelSpecs    bool
+	repoParallelPRAgents bool
+	repoParallelExperts  bool
+	repoFocus            int
 
 	// panelTab 0 = Review strictness + AI fields; 1 = repo context form;
 	// 2 = theme palette.
@@ -316,6 +318,7 @@ func (m *Model) initRepoFieldsFromDisk() {
 	m.repoCtxVsChange = c.ContextVersusChangeSummary
 	m.repoExpertPanel = c.RepoExpertPanel
 	m.repoParallelSpecs = c.ParallelSpecialists
+	m.repoParallelPRAgents = c.ParallelPRAgents
 	m.repoParallelExperts = c.ParallelRepoExperts
 }
 
@@ -434,7 +437,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case key.Matches(msg, saveKeys):
 				return m, m.submitRepoSave()
 			case msg.String() == "esc":
-				return m, func() tea.Msg { return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Cancelled: true}} }
+				return m, func() tea.Msg {
+					return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Cancelled: true}}
+				}
 			case msg.String() == "[":
 				m.setPanelTab(0)
 				return m, textinput.Blink
@@ -479,7 +484,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, saveKeys):
 			return m, m.submitSave()
 		case msg.String() == "esc":
-			return m, func() tea.Msg { return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Cancelled: true}} }
+			return m, func() tea.Msg {
+				return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Cancelled: true}}
+			}
 		case msg.String() == "[":
 			m.setPanelTab(0)
 			return m, textinput.Blink
@@ -612,7 +619,9 @@ func (m *Model) updateThemeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "esc":
-		return m, func() tea.Msg { return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Cancelled: true}} }
+		return m, func() tea.Msg {
+			return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Cancelled: true}}
+		}
 	case "[":
 		m.setPanelTab(m.panelTab - 1)
 		return m, textinput.Blink
@@ -698,7 +707,7 @@ func (m *Model) advanceRepoFocus(delta int) {
 func (m *Model) isRepoBoolFocus() bool {
 	switch m.repoFocus {
 	case repoFieldIncludePR, repoFieldCultureSum, repoFieldCtxVsChange, repoFieldExpertPanel,
-		repoFieldParallelSpecs, repoFieldParallelExperts:
+		repoFieldParallelSpecs, repoFieldParallelPRAgents, repoFieldParallelExperts:
 		return true
 	default:
 		return false
@@ -717,6 +726,8 @@ func (m *Model) toggleRepoBoolAtFocus() {
 		m.repoExpertPanel = !m.repoExpertPanel
 	case repoFieldParallelSpecs:
 		m.repoParallelSpecs = !m.repoParallelSpecs
+	case repoFieldParallelPRAgents:
+		m.repoParallelPRAgents = !m.repoParallelPRAgents
 	case repoFieldParallelExperts:
 		m.repoParallelExperts = !m.repoParallelExperts
 	}
@@ -930,6 +941,7 @@ func (m *Model) submitRepoSave() tea.Cmd {
 			ContextVersusChangeSummary: m.repoCtxVsChange,
 			RepoExpertPanel:            m.repoExpertPanel,
 			ParallelSpecialists:        m.repoParallelSpecs,
+			ParallelPRAgents:           m.repoParallelPRAgents,
 			ParallelRepoExperts:        m.repoParallelExperts,
 			RepoExpertReviewPRs:        exPR,
 			RepoExpertMaxBytes:         exMax,
@@ -1192,6 +1204,8 @@ func (m *Model) renderRepoPanel() string {
 	b.WriteString(m.renderRepoToggle("Run repo arbiter (suppresses noisy findings, may override verdict)", m.repoExpertPanel, ZoneRepoToggleExpert) + "\n")
 	b.WriteString(writeFocus(repoFieldParallelSpecs))
 	b.WriteString(m.renderRepoToggle("Run specialists in parallel (faster; may hit rate limits)", m.repoParallelSpecs, ZoneRepoToggleParallelSpecs) + "\n")
+	b.WriteString(writeFocus(repoFieldParallelPRAgents))
+	b.WriteString(m.renderRepoToggle("Run PR agents in parallel with the specialists (faster; may hit rate limits)", m.repoParallelPRAgents, ZoneRepoToggleParallelPRAgents) + "\n")
 	b.WriteString(writeFocus(repoFieldParallelExperts))
 	b.WriteString(m.renderRepoToggle("[deprecated] parallel repo experts (no effect — repo agents replaced this)", m.repoParallelExperts, ZoneRepoToggleParallelExperts) + "\n")
 	b.WriteString(dimStyle.Render("Repo-agent generation reuses these review-history digest knobs:") + "\n")

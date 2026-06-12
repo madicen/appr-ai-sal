@@ -25,12 +25,19 @@ func buildSpecialistDigestForRepoExperts(specialists []SpecialistResult) string 
 			continue
 		}
 		if s.Summary != "" {
-			b.WriteString("Summary: " + s.Summary + "\n")
+			b.WriteString("Summary (CONTEXT ONLY — what this specialist observed; NOT a finding and NOT actionable): " + s.Summary + "\n")
 		}
 		for _, f := range s.Findings {
 			side := f.Side
 			if side == "" {
 				side = "RIGHT"
+			}
+			if strings.TrimSpace(f.Path) == "" || f.Line <= 0 {
+				// PR-wide / whole-PR finding (the PR agents' usual output).
+				// It has no diff anchor; reference it in suppress/demote with
+				// path "" and line 0.
+				fmt.Fprintf(&b, "  [%s] (PR-wide, no diff anchor — use path \"\" line 0) side=%s — %s\n", f.Severity, side, f.Comment)
+				continue
 			}
 			fmt.Fprintf(&b, "  [%s] %s:%d side=%s — %s\n", f.Severity, f.Path, f.Line, side, f.Comment)
 		}
@@ -118,8 +125,12 @@ func parseRepoArbiterJSON(s string) (*repoArbiterJSON, error) {
 }
 
 // FinalizeRepoArbiter validates suppressions and demotions against the
-// draft's inline findings, then fills suppressKeySet, demoteKeySet, and
-// EffectiveVerdict. Demotions mutate Finding.Severity in place on
+// draft's findings, then fills suppressKeySet, demoteKeySet, and
+// EffectiveVerdict. It matches both inline findings (path + line) and
+// PR-wide / general findings (empty path, line 0 — the PR agents' usual
+// output); a PR-wide ref is matched per (specialist, side) and applies to
+// every PR-wide finding that agent emitted under that side. Demotions
+// mutate Finding.Severity in place on
 // d.Specialists and re-run the strictness floor on each specialist's
 // findings, so a demoted-to-info finding can naturally disappear under
 // non-strict review intensities.
@@ -155,11 +166,41 @@ func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 		}
 		index[suppressionKey(f.Specialist, f.Finding.Path, f.Finding.Line, side)] = f
 	}
+	// PR-wide / general findings (path "", line 0) — the PR agents' usual
+	// output. They have no unique path:line, so they're indexed per
+	// (specialist, side); an arbiter ref with an empty path / line 0 matches
+	// every PR-wide finding the agent emitted under that side. Multiple
+	// PR-wide findings from one agent are rare, but when present a suppress
+	// or demote applies to all of them together.
+	generalIndex := make(map[string][]FlatFinding)
+	for _, f := range d.flatGeneralFindings() {
+		side := f.Finding.Side
+		if side == "" {
+			side = "RIGHT"
+		}
+		k := suppressionKey(f.Specialist, "", 0, side)
+		generalIndex[k] = append(generalIndex[k], f)
+	}
 	var keptSup []SuppressedFindingRef
 	for _, sup := range ar.Suppressed {
 		side := sup.Side
 		if side == "" {
 			side = "RIGHT"
+		}
+		if isGeneralRef(sup.Path, sup.Line) {
+			k := suppressionKey(sup.Specialist, "", 0, side)
+			matches := generalIndex[k]
+			if len(matches) == 0 {
+				ar.DroppedSuppressions = append(ar.DroppedSuppressions, "no matching PR-wide finding: "+k)
+				continue
+			}
+			if reason := suppressGuardForGeneral(matches); reason != "" {
+				ar.DroppedSuppressions = append(ar.DroppedSuppressions, reason+": "+k)
+				continue
+			}
+			ar.suppressKeySet[k] = struct{}{}
+			keptSup = append(keptSup, sup)
+			continue
 		}
 		k := suppressionKey(sup.Specialist, sup.Path, sup.Line, side)
 		ff, ok := index[k]
@@ -185,6 +226,26 @@ func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 		side := dem.Side
 		if side == "" {
 			side = "RIGHT"
+		}
+		if isGeneralRef(dem.Path, dem.Line) {
+			k := suppressionKey(dem.Specialist, "", 0, side)
+			matches := generalIndex[k]
+			if len(matches) == 0 {
+				ar.DroppedDemotions = append(ar.DroppedDemotions, "no matching PR-wide finding: "+k)
+				continue
+			}
+			if _, suppressed := ar.suppressKeySet[k]; suppressed {
+				ar.DroppedDemotions = append(ar.DroppedDemotions, "already suppressed; demote would be a no-op: "+k)
+				continue
+			}
+			applied, orig, reason := demoteGeneralFindings(d, matches, dem, side)
+			if reason != "" {
+				ar.DroppedDemotions = append(ar.DroppedDemotions, reason+": "+k)
+				continue
+			}
+			ar.demoteKeySet[k] = orig
+			keptDem = append(keptDem, applied...)
+			continue
 		}
 		k := suppressionKey(dem.Specialist, dem.Path, dem.Line, side)
 		ff, ok := index[k]
@@ -260,14 +321,44 @@ func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 
 	// Re-apply the strictness floor across all specialists so a demoted
 	// finding that fell below the floor (e.g. demoted to info under
-	// balanced) is dropped before rendering.
+	// balanced) is dropped before rendering. A specialist's findings were
+	// already filtered to the floor before the arbiter ran, so anything
+	// below it here was pushed there by a demotion this pass. Both inline
+	// and PR-wide ones are retained on d.DemotedHidden (full data) so the
+	// approval overlay / agent tabs can offer them as opt-in, post-anyway
+	// items; they stay out of Specialists[].Findings so the verdict,
+	// summary body, and vibe-coach never see them — the arbiter's "don't
+	// block on this" intent holds. (Inline vs PR-wide is derivable from the
+	// retained Finding via findingIsInlinePostable.)
 	floor := d.severityFloor()
 	if floor != "" && floor != SeverityInfo {
+		min := severityRank(floor)
 		for i := range d.Specialists {
 			if d.Specialists[i].Err != nil {
 				continue
 			}
-			d.Specialists[i].Findings = FilterFindingsBySeverity(d.Specialists[i].Findings, floor)
+			kept := make([]Finding, 0, len(d.Specialists[i].Findings))
+			for _, f := range d.Specialists[i].Findings {
+				r := severityRank(f.Severity)
+				if r == 0 {
+					r = severityRank(SeverityWarning)
+				}
+				if r >= min {
+					kept = append(kept, f)
+					continue
+				}
+				// Retain anything that carries a comment — inline-postable
+				// findings and PR-wide (body-only) findings alike — so a
+				// demoted-below-floor finding is never silently lost.
+				if strings.TrimSpace(f.Comment) != "" {
+					d.DemotedHidden = append(d.DemotedHidden, FlatFinding{
+						Specialist: d.Specialists[i].Specialist,
+						SpecIndex:  i,
+						Finding:    f,
+					})
+				}
+			}
+			d.Specialists[i].Findings = kept
 		}
 	}
 
@@ -280,6 +371,91 @@ func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 	} else {
 		ar.EffectiveVerdict = orig
 	}
+}
+
+// isGeneralRef reports whether an arbiter suppress/demote ref targets a
+// PR-wide (body-only) finding rather than an inline one. PR-wide findings
+// carry an empty path / line 0; the arbiter prompt instructs the model to
+// reference them that way.
+func isGeneralRef(path string, line int) bool {
+	return strings.TrimSpace(path) == "" || line <= 0
+}
+
+// suppressGuardForGeneral returns a non-empty drop reason when any of the
+// PR-wide findings matched by a single ref must not be suppressed (a
+// security finding, or error/critical severity). It mirrors the inline
+// suppression guards and is conservative: one disallowed match rejects the
+// whole ref so a coarse (specialist, side) key can't sneak a blocking
+// finding out of the review.
+func suppressGuardForGeneral(matches []FlatFinding) string {
+	for _, ff := range matches {
+		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
+			return "cannot suppress security finding"
+		}
+		if ff.Finding.Severity == SeverityError || ff.Finding.Severity == SeverityCritical {
+			return "cannot suppress error-or-critical-severity finding"
+		}
+	}
+	return ""
+}
+
+// demoteGeneralFindings validates and applies an arbiter demote to every
+// PR-wide finding matched by a single ref. It is atomic: if any matched
+// finding fails a guard (security, critical, no-lower-rank, non-downward,
+// unknown target) the whole ref is rejected with a reason and nothing is
+// mutated. On success it mutates each finding's Severity in place on the
+// draft and returns the applied refs plus the (first) original severity for
+// demoteKeySet bookkeeping. The empty-To one-rank-drop default matches the
+// inline path.
+func demoteGeneralFindings(d *Draft, matches []FlatFinding, dem DemotedFindingRef, side string) ([]DemotedFindingRef, Severity, string) {
+	type plan struct {
+		ff   FlatFinding
+		next Severity
+	}
+	plans := make([]plan, 0, len(matches))
+	for _, ff := range matches {
+		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
+			return nil, "", "cannot demote security finding"
+		}
+		if ff.Finding.Severity == SeverityCritical {
+			return nil, "", "cannot demote critical-severity finding"
+		}
+		var next Severity
+		if dem.To == "" {
+			n, ok := demotedSeverity(ff.Finding.Severity)
+			if !ok {
+				return nil, "", "no lower severity to demote into"
+			}
+			next = n
+		} else {
+			next = dem.To
+			if severityRank(next) == 0 {
+				return nil, "", "unknown target severity"
+			}
+			if severityRank(next) >= severityRank(ff.Finding.Severity) {
+				return nil, "", "demote must move strictly downward"
+			}
+			if next == SeverityCritical {
+				return nil, "", "cannot demote into critical"
+			}
+		}
+		plans = append(plans, plan{ff: ff, next: next})
+	}
+	orig := matches[0].Finding.Severity
+	applied := make([]DemotedFindingRef, 0, len(plans))
+	for _, p := range plans {
+		applied = append(applied, DemotedFindingRef{
+			Specialist: dem.Specialist,
+			Path:       p.ff.Finding.Path,
+			Line:       p.ff.Finding.Line,
+			Side:       side,
+			From:       p.ff.Finding.Severity,
+			To:         p.next,
+			Reason:     dem.Reason,
+		})
+		d.Specialists[p.ff.SpecIndex].Findings[p.ff.FindIndex].Severity = p.next
+	}
+	return applied, orig, ""
 }
 
 // demotedSeverity returns the next-lower rank for one-step demotion. info has

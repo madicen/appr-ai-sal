@@ -33,9 +33,9 @@ func (m *Model) rebuildBody() {
 	}
 }
 
-// tabStatusGlyph returns a one-cell status glyph for an agent tab based
-// on the matching overlayAgentRow's phase, plus a findings-count hint
-// once it's done. Overview and summary tabs get their own markers.
+// tabStatusGlyph returns a one-cell status glyph for a tab. Agent tabs
+// delegate to tabAgentGlyph (which flags findings/actions with a
+// severity-coloured dot); overview and summary tabs get their own markers.
 func (m *Model) tabStatusGlyph(t reviewTab) string {
 	switch t.kind {
 	case tabOverview:
@@ -53,9 +53,107 @@ func (m *Model) tabStatusGlyph(t reviewTab) string {
 		if i < 0 {
 			return styles.DimStyle.Render("◌")
 		}
-		return agentStatusIcon(&m.agents[i])
+		return m.tabAgentGlyph(&m.agents[i])
 	}
 	return " "
+}
+
+// tabAgentGlyph picks the one-cell tab-strip marker for an agent tab.
+// Unlike agentStatusIcon (used by the running-view rows, where a separate
+// detail column already says "N finding(s)" vs "clean"), a completed agent
+// that actually produced findings or took an action gets a severity-coloured
+// "●" so the user can scan the strip for the tabs worth reading. A
+// completed-but-clean agent gets a dim "✓" so it recedes into the bar.
+func (m *Model) tabAgentGlyph(a *overlayAgentRow) string {
+	switch a.phase {
+	case oaRunning:
+		return styles.BoldStyle.Render("⏱")
+	case oaErr:
+		return styles.ErrStyle.Render("✗")
+	case oaSkipped:
+		return styles.DimStyle.Render("⊘")
+	case oaDone:
+		if sev, ok := agentNotableSeverity(a); ok {
+			return severityDot(sev)
+		}
+		return styles.DimStyle.Render("✓")
+	}
+	return styles.DimStyle.Render("◌")
+}
+
+// agentNotableSeverity reports whether a completed agent has something worth
+// flagging in the tab strip, and at what severity. Specialists and PR agents
+// are flagged by their most severe finding; the repo arbiter by whether it
+// took any suppress/demote action; the vibe coach by its verdict (or
+// surviving paste-ready prompts). A clean agent returns ("", false) so the
+// strip shows a dim check instead of a coloured dot.
+func agentNotableSeverity(a *overlayAgentRow) (review.Severity, bool) {
+	switch {
+	case a.name == review.SpecVibeCoach:
+		if review.NormalizeVibeVerdict(a.verdict) == review.VibeVerdictRequestChanges {
+			return review.SeverityError, true
+		}
+		if a.findingsN > 0 { // paste-ready author prompts
+			return review.SeverityWarning, true
+		}
+		return "", false
+	case a.name == overlayAgentRepoArbiter:
+		if a.findingsN > 0 { // suppress/demote actions
+			return review.SeverityInfo, true
+		}
+		return "", false
+	case a.stage == stageGroupContextInjection:
+		// Injected-brief counts aren't findings; keep these quiet.
+		return "", false
+	case a.findingsN > 0:
+		return maxFindingSeverity(a.findings), true
+	}
+	return "", false
+}
+
+// maxFindingSeverity returns the highest severity among the findings, or
+// info when the list is empty (or carries no recognised severity).
+func maxFindingSeverity(fs []review.Finding) review.Severity {
+	best := review.SeverityInfo
+	bestRank := 0
+	for _, f := range fs {
+		if r := findingSeverityRank(f.Severity); r > bestRank {
+			bestRank = r
+			best = f.Severity
+		}
+	}
+	return best
+}
+
+// findingSeverityRank orders severities for "highest wins" comparisons in
+// the tab strip. Unknown values rank 0 so they never outrank a real one.
+func findingSeverityRank(s review.Severity) int {
+	switch s {
+	case review.SeverityCritical:
+		return 4
+	case review.SeverityError:
+		return 3
+	case review.SeverityWarning:
+		return 2
+	case review.SeverityInfo:
+		return 1
+	}
+	return 0
+}
+
+// severityDot renders the filled tab-strip marker in the matching severity
+// colour from the active theme.
+func severityDot(s review.Severity) string {
+	switch s {
+	case review.SeverityCritical:
+		return styles.SevCritical.Render("●")
+	case review.SeverityError:
+		return styles.SevError.Render("●")
+	case review.SeverityWarning:
+		return styles.SevWarning.Render("●")
+	default:
+		return styles.SevInfo.Render("●")
+	}
 }
 
 // renderTabBar draws the single-line tab strip shown above the viewport.
@@ -181,7 +279,10 @@ func (m *Model) renderAgentTab(name string) string {
 	}
 
 	idxs := m.agentCardIndices(name)
-	if len(idxs) > 0 {
+	inline, general := m.agentFindingBreakdown(name)
+	demotedPRWide := m.agentDemotedPRWideFindings(name)
+	switch {
+	case len(idxs) > 0:
 		// Per-agent progress strip + focused interactive card.
 		onPR, posted, skipped := m.agentCardTally(name)
 		pos := positionOf(idxs, m.idx)
@@ -192,10 +293,36 @@ func (m *Model) renderAgentTab(name string) string {
 		b.WriteString(styles.BoldStyle.Render(fmt.Sprintf("Finding %d of %d", pos+1, len(idxs))) +
 			styles.DimStyle.Render(fmt.Sprintf("  ·  %d already on PR  ·  %d posted  ·  %d skipped", onPR, posted, skipped)) + "\n\n")
 		b.WriteString(m.renderCardDetail(rowW))
-	} else if hasAnyFinding(row) {
-		b.WriteString(styles.DimStyle.Render("All of this agent's findings were suppressed by the repo arbiter (see below).") + "\n")
-	} else {
+	case name == review.SpecVibeCoach:
+		// The vibe coach never files findings; its merge recommendation
+		// (shown above) and author prompts live on the Summary tab. It runs
+		// last, so nothing here is ever "suppressed by the repo arbiter".
+		b.WriteString(styles.DimStyle.Render("The vibe coach doesn't file individual findings. See the Summary tab for its merge recommendation and author prompts.") + "\n")
+	case name == overlayAgentRepoArbiter:
+		// The arbiter doesn't file its own findings — it adjusts the
+		// specialists' findings. Suppressions / demotions are shown on the
+		// affected specialist's tab.
+		b.WriteString(styles.DimStyle.Render("The repo arbiter doesn't file findings; it suppresses or demotes the specialists' findings. Those adjustments appear on each affected agent's tab.") + "\n")
+	case inline > 0 && m.agentHasArbiterActions(name):
+		b.WriteString(styles.DimStyle.Render("All of this agent's inline findings were suppressed by the repo arbiter (see below).") + "\n")
+	case general > 0:
+		// PR-level / general feedback isn't tied to a diff line, so it has
+		// no interactive card — it's posted in the review summary body.
+		// Render it read-only here so the agent's tab isn't empty.
+		b.WriteString(styles.DimStyle.Render("This agent's feedback is PR-level (not tied to a diff line); it's included in the review summary.") + "\n\n")
+		b.WriteString(m.renderAgentGeneralFindings(name, rowW))
+	case len(demotedPRWide) > 0:
+		// The agent's only surviving output is a PR-wide finding the arbiter
+		// demoted below the floor. Don't claim the tab is clean — the
+		// read-only demoted block below shows it and offers the opt-in.
+		b.WriteString(styles.DimStyle.Render("This agent's PR-wide feedback was demoted below the review threshold by the repo arbiter (see below). It is not posted unless you include it.") + "\n")
+	default:
 		b.WriteString(styles.OkStyle.Render("No findings from this agent.") + "\n")
+	}
+
+	// Demoted PR-wide findings (read-only + opt-in to include in the body).
+	if dem := m.renderAgentDemotedPRWide(name, rowW); dem != "" {
+		b.WriteString("\n" + dem)
 	}
 
 	// Suppressed / demoted findings for this agent (read-only context).
@@ -287,10 +414,13 @@ func (m *Model) renderAgentSuppressions(name string, rowW int) string {
 		if d.Specialist != name {
 			continue
 		}
-		loc := d.Path
-		if d.Line > 0 {
-			loc = fmt.Sprintf("%s:%d", d.Path, d.Line)
+		// PR-wide demotions (no diff anchor) are surfaced with their full
+		// text and opt-in toggle by renderAgentDemotedPRWide; don't also
+		// list them here as a bare "warning → info" with an empty location.
+		if strings.TrimSpace(d.Path) == "" || d.Line <= 0 {
+			continue
 		}
+		loc := fmt.Sprintf("%s:%d", d.Path, d.Line)
 		b.WriteString(styles.DimStyle.Render(fmt.Sprintf("▾ demoted %s → %s ", string(d.From), string(d.To))) + styles.BoldStyle.Render(loc) + "\n")
 	}
 	out := b.String()
@@ -303,7 +433,15 @@ func (m *Model) renderAgentSuppressions(name string, rowW int) string {
 // agentCardTally counts already-on-PR / posted / skipped cards for one agent.
 func (m *Model) agentCardTally(name string) (onPR, posted, skipped int) {
 	for _, gi := range m.agentCardIndices(name) {
-		switch m.cards[gi].state {
+		c := m.cards[gi]
+		// A demoted card sits at its default skipped state until the
+		// reviewer acts; only count it once they post it (a real action).
+		// Leaving it out of the skipped count keeps the strip honest about
+		// what the reviewer actually did.
+		if c.demoted && c.state != cardPosted {
+			continue
+		}
+		switch c.state {
 		case cardAlreadyOnPR:
 			onPR++
 		case cardPosted:
@@ -315,11 +453,136 @@ func (m *Model) agentCardTally(name string) (onPR, posted, skipped int) {
 	return onPR, posted, skipped
 }
 
-// hasAnyFinding reports whether the agent produced any finding at all
-// (streamed during the run), used to distinguish "all suppressed" from
-// "genuinely clean".
-func hasAnyFinding(row *overlayAgentRow) bool {
-	return len(row.findings) > 0 || row.findingsN > 0
+// agentFindingBreakdown counts an agent's inline (diff-anchored) vs
+// PR-level / general (body-only) findings as recorded on the adopted
+// draft. Used to explain, on an agent tab with no interactive cards, why
+// there are none: all-suppressed vs PR-level-only vs genuinely clean.
+// Synthetic agents that don't appear in d.Specialists (vibe-coach, repo
+// arbiter) return (0, 0).
+func (m *Model) agentFindingBreakdown(name string) (inline, general int) {
+	if m.draft == nil {
+		return 0, 0
+	}
+	for _, s := range m.draft.Specialists {
+		if s.Specialist != name || s.Err != nil {
+			continue
+		}
+		for _, f := range s.Findings {
+			if strings.TrimSpace(f.Path) != "" && f.Line > 0 {
+				inline++
+			} else if strings.TrimSpace(f.Comment) != "" {
+				general++
+			}
+		}
+	}
+	return inline, general
+}
+
+// agentDemotedPRWideFindings returns the agent's PR-wide (body-only)
+// findings the repo arbiter demoted below the strictness floor. They were
+// pulled out of d.Specialists into d.DemotedHidden, so they would otherwise
+// vanish from the agent's tab entirely; we surface them read-only with an
+// opt-in "include in the body" toggle. Inline demoted findings are excluded
+// here — those flow through the opt-in card path instead.
+func (m *Model) agentDemotedPRWideFindings(name string) []review.Finding {
+	if m.draft == nil {
+		return nil
+	}
+	var out []review.Finding
+	for _, ff := range m.draft.DemotedHidden {
+		if ff.Specialist != name {
+			continue
+		}
+		if strings.TrimSpace(ff.Finding.Path) != "" && ff.Finding.Line > 0 {
+			continue // inline demoted → handled as a card
+		}
+		if strings.TrimSpace(ff.Finding.Comment) == "" {
+			continue
+		}
+		out = append(out, ff.Finding)
+	}
+	return out
+}
+
+// renderAgentDemotedPRWide renders the agent's demoted PR-wide findings
+// read-only, with the demotion reason and an opt-in affordance so the
+// reviewer can include them in the posted body despite the demotion.
+func (m *Model) renderAgentDemotedPRWide(name string, rowW int) string {
+	findings := m.agentDemotedPRWideFindings(name)
+	if len(findings) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(styles.DimStyle.Render("Demoted below the review threshold by the repo arbiter") + "\n")
+	for _, f := range findings {
+		included := m.draft.DemotedPostingEnabled(name, f)
+		orig, _ := m.draft.FindingOriginalSeverity(name, f)
+		head := styles.WarnStyle.Render("⊘ demoted")
+		if strings.TrimSpace(string(orig)) != "" {
+			head += styles.DimStyle.Render(fmt.Sprintf(" (from %s)", string(orig)))
+		}
+		b.WriteString(head + "\n")
+		for _, wl := range strings.Split(util.WrapForViewport("    "+strings.TrimSpace(f.Comment), rowW), "\n") {
+			b.WriteString(styles.DimStyle.Render(wl) + "\n")
+		}
+		if included {
+			b.WriteString("  " + styles.OkStyle.Render("✓ will be included in the posted review body — press y to exclude") + "\n")
+		} else {
+			b.WriteString("  " + styles.DimStyle.Render("not in the posted review — press y to include it anyway") + "\n")
+		}
+	}
+	return b.String()
+}
+
+// agentHasArbiterActions reports whether the repo arbiter suppressed or
+// demoted any of this agent's findings, so the "see below" suppression
+// section will actually have content to show. The arbiter only ever acts
+// on the code specialists, so this is always false for the PR agents,
+// vibe-coach, and the arbiter row itself.
+func (m *Model) agentHasArbiterActions(name string) bool {
+	if m.draft == nil || m.draft.RepoArbiter == nil {
+		return false
+	}
+	for _, s := range m.draft.RepoArbiter.Suppressed {
+		if s.Specialist == name {
+			return true
+		}
+	}
+	for _, d := range m.draft.RepoArbiter.Demoted {
+		if d.Specialist == name {
+			return true
+		}
+	}
+	return false
+}
+
+// renderAgentGeneralFindings lists an agent's PR-level (body-only)
+// findings read-only. PR agents (description / checks / discussion /
+// scope) typically emit only these, so without this their tab would be
+// empty even though they had useful feedback.
+func (m *Model) renderAgentGeneralFindings(name string, rowW int) string {
+	if m.draft == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, s := range m.draft.Specialists {
+		if s.Specialist != name || s.Err != nil {
+			continue
+		}
+		for _, f := range s.Findings {
+			if strings.TrimSpace(f.Path) != "" && f.Line > 0 {
+				continue
+			}
+			if strings.TrimSpace(f.Comment) == "" {
+				continue
+			}
+			b.WriteString("  " + styles.BoldStyle.Render("(PR-wide)") + "  " + styles.RenderSeverity(string(f.Severity)) + "\n")
+			for _, wl := range strings.Split(util.WrapForViewport("    "+strings.TrimSpace(f.Comment), rowW), "\n") {
+				b.WriteString(styles.DimStyle.Render(wl) + "\n")
+			}
+		}
+	}
+	return b.String()
 }
 
 // renderGeneratingSummaryBody is the brief interstitial shown while
@@ -656,6 +919,15 @@ func agentStatusDetail(a *overlayAgentRow) string {
 			} else {
 				count = styles.OkStyle.Render(fmt.Sprintf("%d action(s)", a.findingsN))
 			}
+		case a.name == review.SpecVibeCoach:
+			// The vibe coach files no findings — findingsN holds its
+			// paste-ready author-prompt count. Label it as such so it isn't
+			// mistaken for findings; its verdict lives on the Summary tab.
+			if a.findingsN > 0 {
+				count = styles.OkStyle.Render(fmt.Sprintf("%d prompt(s)", a.findingsN))
+			} else {
+				count = styles.OkStyle.Render("no prompts")
+			}
 		case a.stage == stageGroupContextInjection:
 			if a.findingsN > 0 {
 				count = styles.OkStyle.Render(fmt.Sprintf("injected %d", a.findingsN))
@@ -864,6 +1136,10 @@ func (m *Model) renderCardDetail(rowW int) string {
 		}
 	}
 	b.WriteString("\n")
+	if cur.demoted {
+		b.WriteString(styles.WarnStyle.Render("⊘ Demoted below the review threshold by the repo arbiter — it won't post and doesn't affect the verdict.") + "\n")
+		b.WriteString(styles.DimStyle.Render("Press y to post it anyway as a normal inline comment.") + "\n")
+	}
 	// Anchor auto-correction notes. Two independent code paths can move
 	// a finding off its model-reported line, and we surface each so the
 	// reviewer can sanity-check the new position before posting:
@@ -908,6 +1184,11 @@ func (m *Model) renderCardDetail(rowW int) string {
 	if note := strings.TrimSpace(cur.finding.Finding.ActionabilityNote); note != "" {
 		b.WriteString("  " + styles.DimStyle.Render("("+note+")") + "\n")
 	}
+	if cur.finding.Finding.SuggestionSynthesized {
+		b.WriteString("  " + styles.DimStyle.Render("(suggestion derived from the comment by appr-ai-sal — verify before posting)") + "\n")
+	} else if cur.finding.Finding.SuggestionRepaired {
+		b.WriteString("  " + styles.DimStyle.Render("(suggestion generated by appr-ai-sal's repair pass — verify before posting)") + "\n")
+	}
 	b.WriteString("\n")
 
 	// Status badge for current card
@@ -921,7 +1202,11 @@ func (m *Model) renderCardDetail(rowW int) string {
 			b.WriteString(styles.OkStyle.Render("✓ posted") + "\n\n")
 		}
 	case cardSkipped:
-		b.WriteString(styles.DimStyle.Render("— skipped") + "\n\n")
+		if cur.demoted {
+			b.WriteString(styles.DimStyle.Render("— not posting (demoted); press y to post anyway") + "\n\n")
+		} else {
+			b.WriteString(styles.DimStyle.Render("— skipped") + "\n\n")
+		}
 	case cardError:
 		if cur.err != nil {
 			b.WriteString(renderPostErrorBlock(cur.err, rowW))

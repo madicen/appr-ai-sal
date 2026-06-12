@@ -255,6 +255,13 @@ func (m *Model) renderPostedBody() string {
 
 func (m *Model) tallyCardKinds() (onPR, posted, skipped int) {
 	for _, c := range m.cards {
+		// Demoted (opt-in) cards aren't part of the AI's at-floor finding
+		// set: they start skipped by default, so counting them here would
+		// distort the summary routing (e.g. "skipped every objection →
+		// offer approve") and the verdict the arbiter/vibe-coach settled on.
+		if c.demoted {
+			continue
+		}
 		switch c.state {
 		case cardAlreadyOnPR:
 			onPR++

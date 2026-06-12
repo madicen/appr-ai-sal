@@ -1,6 +1,7 @@
 package styles
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -41,6 +42,57 @@ func TestRenderTagHonoursThemeOverride(t *testing.T) {
 	}
 	if !strings.Contains(langBriefs, wantLang) {
 		t.Errorf("language-briefs tag should encode override RGB %s; got %q", wantLang, langBriefs)
+	}
+}
+
+// The PR-agent rows (description / checks / discussion / scope) get their
+// own coloured pills rather than falling through to the uncoloured default.
+func TestRenderTagColoursPRAgents(t *testing.T) {
+	forceTrueColor(t)
+	original := theme.Current()
+	defer theme.Apply(original)
+	theme.Apply(nil)
+
+	cases := []struct {
+		name string
+		key  theme.Key
+	}{
+		{"description", theme.KeyTagDescription},
+		{"checks", theme.KeyTagChecks},
+		{"discussion", theme.KeyTagDiscussion},
+		{"scope", theme.KeyTagScope},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := RenderTag(tc.name)
+			r, g, b, ok := parseHex(theme.DefaultColor(tc.key))
+			if !ok {
+				t.Fatalf("default colour for %s is not parseable", tc.key)
+			}
+			wantBG := fmt.Sprintf("48;2;%d;%d;%d", r, g, b)
+			if !strings.Contains(got, wantBG) {
+				t.Errorf("RenderTag(%q) should encode background %s; got %q", tc.name, wantBG, got)
+			}
+		})
+	}
+}
+
+// The tech specialist gets its own coloured pill like the other
+// specialists rather than falling through to the uncoloured default.
+func TestRenderTagColoursTechSpecialist(t *testing.T) {
+	forceTrueColor(t)
+	original := theme.Current()
+	defer theme.Apply(original)
+	theme.Apply(nil)
+
+	got := RenderTag("tech")
+	r, g, b, ok := parseHex(theme.DefaultColor(theme.KeyTagTech))
+	if !ok {
+		t.Fatalf("default colour for %s is not parseable", theme.KeyTagTech)
+	}
+	wantBG := fmt.Sprintf("48;2;%d;%d;%d", r, g, b)
+	if !strings.Contains(got, wantBG) {
+		t.Errorf("RenderTag(%q) should encode background %s; got %q", "tech", wantBG, got)
 	}
 }
 

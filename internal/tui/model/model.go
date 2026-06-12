@@ -415,13 +415,28 @@ type repoAgentsFreshnessEntry struct {
 	computed time.Time
 }
 
-func repoParallelExecutionFlags() (specialistsParallel, repoExpertsParallel bool) {
+func repoParallelExecutionFlags() (specialistsParallel, repoExpertsParallel, prAgentsParallel bool) {
 	rc, err := repoconfig.Load()
 	if err != nil || rc == nil {
-		return false, false
+		return false, false, false
 	}
 	repoconfig.ApplyParallelExecutionEnv(rc)
-	return rc.ParallelSpecialists, rc.ParallelRepoExperts
+	return rc.ParallelSpecialists, rc.ParallelRepoExperts, rc.ParallelPRAgents
+}
+
+// techExpertsConfigured reports whether the current PR's repo has usable
+// technology-expert briefs. It drives whether the tech specialist (and its
+// overlay tab) is surfaced for this run; a load error or missing config
+// resolves to false (no tech specialist), matching the runner's own gating.
+func (m *Model) techExpertsConfigured() bool {
+	if m.currentPR == nil {
+		return false
+	}
+	rc, err := repoconfig.Load()
+	if err != nil {
+		rc = nil
+	}
+	return review.HasUsableTechExperts(m.currentPR, rc)
 }
 
 // New constructs a fresh model in the list-loading state.

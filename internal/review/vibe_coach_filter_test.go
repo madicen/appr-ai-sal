@@ -325,6 +325,47 @@ func TestSpecialistsForVibeCoachPreservesPRWideFindings(t *testing.T) {
 	}
 }
 
+// TestSpecialistsForVibeCoachClearsDemotedSpecialistSummary regresses the
+// demote-only leak: the arbiter demoted a scope finding to info, which the
+// balanced strictness floor then dropped from Findings — but the scope
+// agent's Summary still described it ("mixes unrelated concerns, split it").
+// With no suppressions or skips on the draft, SpecialistsForVibeCoach used to
+// short-circuit and pass that stale summary straight to the vibe-coach, which
+// re-blocked on a finding that had been demoted out of existence. The summary
+// of any demoted specialist must be cleared so the vibe-coach reasons from the
+// effective (post-arbiter, post-floor) finding set only.
+func TestSpecialistsForVibeCoachClearsDemotedSpecialistSummary(t *testing.T) {
+	// scope's finding was demoted to info and already dropped by the floor
+	// refilter, so it isn't present here — only the stale summary remains.
+	specialists := []SpecialistResult{
+		{Specialist: SpecScope, Summary: "This PR mixes the new integration with unrelated refactors; split it.", Findings: nil},
+		{Specialist: SpecDocs, Summary: "Docs look fine.", Findings: []Finding{
+			{Path: "a.go", Line: 1, Side: "RIGHT", Severity: SeverityWarning, Comment: "doc nit"},
+		}},
+	}
+	d := &Draft{
+		Specialists: specialists,
+		RepoArbiter: &RepoArbiterResult{
+			Demoted: []DemotedFindingRef{
+				{Specialist: SpecScope, From: SeverityWarning, To: SeverityInfo, Reason: "balanced floor"},
+			},
+		},
+	}
+	out := SpecialistsForVibeCoach(d, specialists)
+	if len(out) != 2 {
+		t.Fatalf("expected 2 specialists, got %d", len(out))
+	}
+	if strings.TrimSpace(out[0].Summary) != "" {
+		t.Errorf("demoted scope specialist summary should be cleared, got %q", out[0].Summary)
+	}
+	if out[1].Summary != "Docs look fine." {
+		t.Errorf("untouched specialist summary should be preserved, got %q", out[1].Summary)
+	}
+	if len(out[1].Findings) != 1 || out[1].Findings[0].Comment != "doc nit" {
+		t.Errorf("untouched specialist findings should be preserved, got %+v", out[1].Findings)
+	}
+}
+
 // TestSpecialistsForVibeCoachShortCircuitsWhenNoFilters confirms the
 // fast path: when neither arbiter suppressions nor user skips exist,
 // the original slice is returned untouched (cheap pointer-identity

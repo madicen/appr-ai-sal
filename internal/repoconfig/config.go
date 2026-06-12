@@ -49,6 +49,13 @@ type Config struct {
 	ParallelSpecialists bool `json:"parallel_specialists,omitempty"`
 	// ParallelRepoExperts runs repo code expert and repo history expert concurrently before the arbiter. Default false (sequential).
 	ParallelRepoExperts bool `json:"parallel_repo_experts,omitempty"`
+	// ParallelPRAgents runs the PR-level agents (description, checks,
+	// discussion, scope) concurrently with the code specialists phase — they
+	// share no data dependency, so overlapping them shortens wall-clock time
+	// — and concurrently among themselves. Default false (sequential, after
+	// the specialists) to reduce API rate-limit bursts, mirroring
+	// ParallelSpecialists.
+	ParallelPRAgents bool `json:"parallel_pr_agents,omitempty"`
 	// IncludeRepoEvidence injects per-PR static evidence (sibling tests,
 	// doc.go, exported-symbol coverage) and a path-history aggregate into the
 	// testing/docs specialists and into the testing/docs repo-agent generators.
@@ -67,6 +74,10 @@ type Config struct {
 	// stored briefs are left on disk but not injected at review time.
 	// Default true.
 	TechAgents bool `json:"tech_agents,omitempty"`
+	// PRAgents enables the PR-level review agents (description, checks,
+	// discussion, scope) that evaluate the pull request as a whole and post
+	// their feedback alongside the code specialists. Default true.
+	PRAgents bool `json:"pr_agents,omitempty"`
 }
 
 // Default returns defaults suitable for merging.
@@ -86,6 +97,7 @@ func Default() *Config {
 		RepoArbiterDemotions:       true,
 		ConventionWitness:          true,
 		TechAgents:                 true,
+		PRAgents:                   true,
 	}
 }
 
@@ -134,6 +146,9 @@ func Load() (*Config, error) {
 	if bytes.Contains(b, []byte(`"parallel_repo_experts"`)) {
 		c.ParallelRepoExperts = fileCfg.ParallelRepoExperts
 	}
+	if bytes.Contains(b, []byte(`"parallel_pr_agents"`)) {
+		c.ParallelPRAgents = fileCfg.ParallelPRAgents
+	}
 	if bytes.Contains(b, []byte(`"include_repo_evidence"`)) {
 		c.IncludeRepoEvidence = fileCfg.IncludeRepoEvidence
 	} else {
@@ -154,12 +169,18 @@ func Load() (*Config, error) {
 	} else {
 		c.TechAgents = true
 	}
+	if bytes.Contains(b, []byte(`"pr_agents"`)) {
+		c.PRAgents = fileCfg.PRAgents
+	} else {
+		c.PRAgents = true
+	}
 	c.Normalize()
 	return c, nil
 }
 
-// ApplyParallelExecutionEnv overrides parallel_specialists / parallel_repo_experts
-// when APPR_AI_SAL_PARALLEL_SPECIALISTS or APPR_AI_SAL_PARALLEL_REPO_EXPERTS is set
+// ApplyParallelExecutionEnv overrides parallel_specialists /
+// parallel_repo_experts / parallel_pr_agents when the matching
+// APPR_AI_SAL_PARALLEL_SPECIALISTS / _REPO_EXPERTS / _PR_AGENTS env var is set
 // (truthy: 1/true/yes/on; falsy otherwise).
 func ApplyParallelExecutionEnv(c *Config) {
 	if c == nil {
@@ -170,6 +191,9 @@ func ApplyParallelExecutionEnv(c *Config) {
 	}
 	if v, ok := os.LookupEnv("APPR_AI_SAL_PARALLEL_REPO_EXPERTS"); ok {
 		c.ParallelRepoExperts = parseBoolEnv(v)
+	}
+	if v, ok := os.LookupEnv("APPR_AI_SAL_PARALLEL_PR_AGENTS"); ok {
+		c.ParallelPRAgents = parseBoolEnv(v)
 	}
 }
 

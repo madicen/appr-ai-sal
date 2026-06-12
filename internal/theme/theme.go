@@ -4,7 +4,7 @@
 //
 //   - Tag colours (one per row label rendered in the running view: the five
 //     code-review specialists, the vibe-coach, the four context-injection
-//     rows, and the repo arbiter).
+//     rows, the repo arbiter, and the four PR agents).
 //   - Severity colours (one per finding severity in the comment list).
 //
 // Defaults match the historical hardcoded palette in internal/tui/styles.go
@@ -27,6 +27,7 @@ const (
 	KeyTagTesting    Key = "tag_testing"
 	KeyTagDocs       Key = "tag_docs"
 	KeyTagSecurity   Key = "tag_security"
+	KeyTagTech       Key = "tag_tech"
 	KeyTagVibeCoach  Key = "tag_vibe_coach"
 
 	// Context-injection row tags (shown above specialists in the running view).
@@ -34,6 +35,12 @@ const (
 	KeyTagTechExperts Key = "tag_tech_experts"
 	KeyTagRepoExperts Key = "tag_repo_experts"
 	KeyTagRepoArbiter Key = "tag_repo_arbiter"
+
+	// PR-agent tags (whole-PR review group shown after the specialists).
+	KeyTagDescription Key = "tag_description"
+	KeyTagChecks      Key = "tag_checks"
+	KeyTagDiscussion  Key = "tag_discussion"
+	KeyTagScope       Key = "tag_scope"
 
 	// Severity colours (foreground for finding lines).
 	KeySevInfo     Key = "sev_info"
@@ -61,6 +68,7 @@ func Slots() []Slot {
 		{KeyTagTesting, "testing", "code-review testing specialist"},
 		{KeyTagDocs, "docs", "code-review documentation specialist"},
 		{KeyTagSecurity, "security", "code-review security specialist"},
+		{KeyTagTech, "tech", "code-review technology-conventions specialist"},
 		{KeyTagVibeCoach, "vibe-coach", "post-arbiter vibe-coach pass"},
 
 		// Context injection — supporting rows shown above specialists.
@@ -68,6 +76,12 @@ func Slots() []Slot {
 		{KeyTagTechExperts, "tech experts", "technology brief row"},
 		{KeyTagRepoExperts, "repo experts", "repo-agent brief row"},
 		{KeyTagRepoArbiter, "repo arbiter", "post-specialist arbiter row"},
+
+		// PR agents — whole-PR review rows shown after the specialists.
+		{KeyTagDescription, "description", "PR description agent"},
+		{KeyTagChecks, "checks", "PR CI-checks agent"},
+		{KeyTagDiscussion, "discussion", "PR discussion agent"},
+		{KeyTagScope, "scope", "PR scope agent"},
 
 		// Severities — foreground colours for the inline finding list.
 		{KeySevInfo, "info", "lowest-severity findings"},
@@ -98,6 +112,7 @@ func defaultColors() map[Key]string {
 		KeyTagTesting:    "#9ECE6A", // green
 		KeyTagDocs:       "#E0AF68", // yellow
 		KeyTagSecurity:   "#F7768E", // red
+		KeyTagTech:       "#2AC3DE", // sky / electric teal
 		KeyTagVibeCoach:  "#7DCFFF", // cyan
 
 		// Context injection.
@@ -105,6 +120,13 @@ func defaultColors() map[Key]string {
 		KeyTagTechExperts: "#ECB088", // pastel peach
 		KeyTagRepoExperts: "#E5A1B5", // pastel rose
 		KeyTagRepoArbiter: "#A8B5DC", // pastel lavender
+
+		// PR agents — a distinct saturated quartet (teal / orange / violet /
+		// gold) so the whole-PR group reads apart from the specialists above.
+		KeyTagDescription: "#73DACA", // teal
+		KeyTagChecks:      "#FF9E64", // orange
+		KeyTagDiscussion:  "#C792EA", // violet
+		KeyTagScope:       "#FFC777", // gold
 
 		// Severities.
 		KeySevInfo:     "#7AA2F7",

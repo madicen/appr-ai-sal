@@ -228,6 +228,14 @@ func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
 			return m.openSettings(settings.StartRepoContext), true
 		}
 		return nil, true
+	case zoneInBounds(zones.ControlsToggleParallelPRAgents, msg):
+		// Same repoconfig-knob flow as Parallel specialists above: load →
+		// toggle → save → refresh, falling back to the settings tab on a
+		// save failure so the user still has a path to flip the bit.
+		if err := m.toggleParallelPRAgents(); err != nil {
+			return m.openSettings(settings.StartRepoContext), true
+		}
+		return nil, true
 	case zoneInBounds(zones.ControlsToggleDryRun, msg):
 		m.opts.DryRun = !m.opts.DryRun
 		m.refreshDetailViews()
@@ -279,6 +287,22 @@ func (m *Model) toggleParallelSpecialists() error {
 		cfg = repoconfig.Default()
 	}
 	cfg.ParallelSpecialists = !cfg.ParallelSpecialists
+	if err := repoconfig.Save(cfg, ""); err != nil {
+		return err
+	}
+	m.refreshDetailViews()
+	return nil
+}
+
+func (m *Model) toggleParallelPRAgents() error {
+	cfg, err := repoconfig.Load()
+	if err != nil {
+		return err
+	}
+	if cfg == nil {
+		cfg = repoconfig.Default()
+	}
+	cfg.ParallelPRAgents = !cfg.ParallelPRAgents
 	if err := repoconfig.Save(cfg, ""); err != nil {
 		return err
 	}
@@ -567,8 +591,12 @@ func (m *Model) startReviewOverlay() (tea.Model, tea.Cmd) {
 	ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
 	m.draft = nil
 	m.recomputeTreeRows()
-	parallelSpec, parallelRE := repoParallelExecutionFlags()
+	parallelSpec, parallelRE, _ := repoParallelExecutionFlags()
 	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
+	// The tech specialist only runs when this repo has technology-expert
+	// briefs to enforce, so mirror that decision in the overlay: drop its tab
+	// when none are configured rather than show a permanently empty one.
+	ro.SetSpecialists(review.ActiveSpecialists(m.techExpertsConfigured()))
 	m.currentReviewOverlay = ro
 	cfg := reviewWindowConfig()
 	// Consume the "start minimized" preference here so a subsequent
@@ -702,7 +730,7 @@ func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
 	if m.draft == nil {
 		return m, nil
 	}
-	parallelSpec, parallelRE := repoParallelExecutionFlags()
+	parallelSpec, parallelRE, _ := repoParallelExecutionFlags()
 	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
 	adoptCmd := ro.AdoptDraft(m.draft)
 	m.currentReviewOverlay = ro
