@@ -122,6 +122,11 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// wrong for the file's language (e.g. "should be snake_case" on
 		// a .go file). See convention_gate.go.
 		res.Findings = validateNamingConvention(res.Findings)
+		// Strip suggestions and demote findings that tell the author to add
+		// an argument the enclosing Terraform resource type does not accept
+		// (e.g. `tags = var.common_tags` on `aws_s3_bucket_policy`), which
+		// would fail terraform validate. See iac_schema_gate.go.
+		res.Findings = validateTechResourceArguments(res.Findings, parsedFiles, worktree)
 		// Last chance: synthesize a one-click suggestion from the comment
 		// for any inline finding the model left suggestion-less but whose
 		// comment unambiguously names the corrected token. Runs after the
