@@ -957,8 +957,8 @@ type Draft struct {
 	RepoArbiter *RepoArbiterResult
 	// ConventionWitness captures the per-finding verdicts produced by the
 	// convention-witness pass that runs between the specialists and the
-	// arbiter. Currently scoped to testing/docs findings; empty when the
-	// witness is disabled or no findings qualified.
+	// arbiter. Scoped to testing/docs/tech findings; empty when the witness
+	// is disabled or no findings qualified.
 	ConventionWitness []conventionwitness.Witness
 	// UserSkipPostKeys holds suppressionKey entries for inline findings the reviewer chose
 	// not to post (TUI skip). Used when rendering/parsing the summary body and inline batch.

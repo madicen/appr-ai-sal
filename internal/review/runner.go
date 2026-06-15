@@ -474,21 +474,28 @@ func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconf
 }
 
 // runConventionWitnessPhase calls the convention-witness agent for any
-// testing/docs findings the specialists produced and returns the per-finding
-// witness list. Returns nil when there is nothing to classify or when the
-// witness call fails (failure is reported via the progress channel; it
-// never blocks the arbiter).
+// testing/docs/tech findings the specialists produced and returns the
+// per-finding witness list. Returns nil when there is nothing to classify or
+// when the witness call fails (failure is reported via the progress channel;
+// it never blocks the arbiter).
+//
+// Tech findings are included because they are the class most prone to citing
+// a repo convention that doesn't actually exist (e.g. "all resources must set
+// `tags = var.common_tags`"). For them we additionally harvest sibling-file
+// evidence (see BuildTechConventionEvidence) so the witness can judge whether
+// the cited convention is a real repo norm or a hallucination.
 func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, evidence string, out chan<- Progress) []conventionwitness.Witness {
 	_ = rc
 	if pr == nil {
 		return nil
 	}
 	var inputs []conventionwitness.FindingInput
+	var techFindings []Finding
 	for _, s := range specialists {
 		if s.Err != nil {
 			continue
 		}
-		if s.Specialist != SpecTesting && s.Specialist != SpecDocs {
+		if s.Specialist != SpecTesting && s.Specialist != SpecDocs && s.Specialist != SpecTech {
 			continue
 		}
 		for _, f := range s.Findings {
@@ -503,11 +510,18 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 				Severity:   string(f.Severity),
 				Comment:    f.Comment,
 			})
+			if s.Specialist == SpecTech {
+				techFindings = append(techFindings, f)
+			}
 		}
 	}
 	if len(inputs) == 0 {
 		return nil
 	}
+	// Append tech-specific sibling-sampling evidence so tech findings have
+	// repo-grounding signal of their own; the shared prEvidence pack is
+	// testing/docs-oriented and rarely covers IaC findings.
+	evidence = appendTechConventionEvidence(evidence, worktree, techFindings)
 	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("start (%d findings)", len(inputs))}
 	wctx, cancel := context.WithTimeout(ctx, perStageBudget(runCfg))
 	defer cancel()
