@@ -95,6 +95,14 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 		// runs first so we never waste a repair call on a finding we are
 		// about to drop or de-anchor. See constrainPRAgentScope.
 		res.Findings = constrainPRAgentScope(name, res.Findings, in.Threads)
+		if name == SpecDiscussion {
+			// Backstop: when the PR author had the last word in an unresolved
+			// thread (e.g. "it's already there" with a link), the concern is
+			// disputed, not unaddressed. Demote a "not addressed" finding so
+			// it doesn't block on the author's own rebuttal. See
+			// downrankAuthorRebuttedThreads.
+			res.Findings = downrankAuthorRebuttedThreads(pr, res.Findings, in.Threads)
+		}
 		parsedFiles := ParseDiff(diff)
 		res.Findings = validateAndPruneSuggestions(res.Findings, parsedFiles)
 		res.Findings = validateAnchorKind(res.Findings, parsedFiles)
@@ -155,6 +163,131 @@ func constrainPRAgentScope(name string, findings []Finding, threads []gh.ReviewT
 	default:
 		return findings
 	}
+}
+
+// downrankAuthorRebuttedThreads demotes discussion findings that track an
+// unresolved thread in which the PR author already had the last word —
+// replying that the ask is already satisfied (e.g. "already there" with a
+// link), done elsewhere, or otherwise disputing it — without a reviewer
+// pushing back afterwards.
+//
+// This is the provider-agnostic backstop for the false positive where the
+// discussion agent judges "addressed" strictly from the diff and ignores the
+// author's textual reply: the reviewer asked to update CODEOWNERS, the author
+// replied that it already exists (so nothing shows in the diff), yet the agent
+// still filed a "not addressed" finding. The author's reply is always in the
+// agent's text context, but an HTTP-only provider (e.g. Gemini) can't open the
+// referenced file to confirm, and the prompt's diff-centric framing leads the
+// model to disregard the rebuttal — so we enforce the calibration here.
+//
+// The thread is genuinely unresolved on GitHub, so we do NOT drop the finding
+// outright (the reviewer may still want to confirm and click Resolve); we
+// demote it to info with an explanatory note. Under balanced/strict floors the
+// info finding falls away on its own; at the lowest floor it stays visible as
+// an "awaiting resolution" nudge rather than a blocking "unaddressed" claim.
+//
+// Matching is deliberately conservative — a finding is only demoted when it
+// clearly references a rebutted thread:
+//   - an inline finding anchored to the thread's (path, line), or
+//   - a finding whose comment contains the thread's "path:line" location, or
+//   - a finding whose comment @-mentions the reviewer who opened the thread.
+//
+// A thread only counts as rebutted when its opening comment is from someone
+// OTHER than the PR author (a real reviewer ask) and its most recent comment
+// is from the PR author. Resolved threads and author-opened threads are
+// ignored. Returns the same slice for ergonomics.
+func downrankAuthorRebuttedThreads(pr *gh.PR, findings []Finding, threads []gh.ReviewThread) []Finding {
+	if pr == nil {
+		return findings
+	}
+	author := normalizeLogin(pr.Author)
+	if author == "" {
+		return findings
+	}
+	var marks []rebuttedThread
+	for _, t := range threads {
+		if t.IsResolved || len(t.Comments) < 2 {
+			continue
+		}
+		opener := normalizeLogin(t.Comments[0].Author)
+		last := normalizeLogin(t.Comments[len(t.Comments)-1].Author)
+		if opener == "" || opener == author || last != author {
+			continue
+		}
+		path, line := threadAnchor(t)
+		loc := path
+		if path != "" && line > 0 {
+			loc = path + ":" + strconv.Itoa(line)
+		}
+		marks = append(marks, rebuttedThread{path: path, line: line, loc: loc, opener: opener})
+	}
+	if len(marks) == 0 {
+		return findings
+	}
+	for i := range findings {
+		f := &findings[i]
+		if f.Severity != SeverityWarning && f.Severity != SeverityError {
+			continue
+		}
+		if !findingReferencesRebutted(*f, marks) {
+			continue
+		}
+		f.Severity = SeverityInfo
+		f.ActionabilityNote = "PR author replied in this thread asserting the request is already satisfied; treat as awaiting resolution, not unaddressed"
+	}
+	return findings
+}
+
+// rebuttedThread is one unresolved thread the PR author had the last word in.
+// It carries the anchor (path/line and the rendered "path:line" location) and
+// the reviewer who opened it, so findingReferencesRebutted can match a finding
+// to it by anchor, by location string, or by @-mention of the opener.
+type rebuttedThread struct {
+	path   string
+	line   int
+	loc    string // "path:line" when line > 0, else path
+	opener string // normalized login of the reviewer who opened the thread
+}
+
+// findingReferencesRebutted reports whether a discussion finding clearly maps
+// to one of the author-rebutted threads. See downrankAuthorRebuttedThreads for
+// the matching rules.
+func findingReferencesRebutted(f Finding, marks []rebuttedThread) bool {
+	comment := strings.ToLower(f.Comment)
+	for _, m := range marks {
+		if findingIsInlinePostable(f) && m.path != "" && m.line > 0 &&
+			filepathToSlashEqual(f.Path, m.path) && f.Line == m.line {
+			return true
+		}
+		if m.loc != "" && strings.Contains(comment, strings.ToLower(m.loc)) {
+			return true
+		}
+		if m.opener != "" && strings.Contains(comment, "@"+m.opener) {
+			return true
+		}
+	}
+	return false
+}
+
+func filepathToSlashEqual(a, b string) bool {
+	return strings.EqualFold(strings.TrimSpace(a), strings.TrimSpace(b))
+}
+
+// normalizeLogin lowercases a GitHub login and strips a leading "@" so author
+// comparisons are stable regardless of how the login was captured.
+func normalizeLogin(s string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(s), "@"))
+}
+
+// threadAnchor returns the (path, line) the thread is anchored to, taking the
+// first comment that carries a path. Line is 0 when none is known.
+func threadAnchor(t gh.ReviewThread) (string, int) {
+	for _, c := range t.Comments {
+		if strings.TrimSpace(c.Path) != "" {
+			return c.Path, c.Line
+		}
+	}
+	return "", 0
 }
 
 // unresolvedThreadAnchors returns the set of "path:line" anchors that belong to

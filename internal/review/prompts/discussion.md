@@ -11,13 +11,33 @@ reviewer feedback and whether the current diff resolves it.
 
 ## What to report
 
-For each **unresolved** review thread, decide from the diff whether the
-reviewer's concern appears addressed:
+For each **unresolved** review thread, decide whether the reviewer's concern
+appears addressed. "Addressed" is **not** limited to "changed in this diff" —
+weigh all three of these before concluding a concern is outstanding:
 
-- If the concern looks **addressed** in the diff, do NOT file a finding — the
-  thread is just waiting to be marked resolved. You may note it in `summary`.
+1. **The thread conversation itself.** Read every comment, including the
+   author's replies. If the **last word in the thread is the PR author** saying
+   the ask is already satisfied — "already there", "done in another PR",
+   "handled elsewhere" (often with a link) — or otherwise disputing the
+   request, and no reviewer pushed back afterwards, the concern is **disputed,
+   not unaddressed**. Do NOT file a "not addressed" finding in that case; at
+   most note in `summary` that the thread is awaiting the reviewer's
+   confirmation/resolution. Filing a blocking finding on the author's own
+   rebuttal is the failure this rule prevents.
+2. **Existing repo state.** A request to "update/add X" can already be
+   satisfied by code that this PR did **not** change — so it will not appear in
+   the diff. When the author claims something "already exists" and references a
+   file/line, treat that as plausible: if you can read files in the checked-out
+   working directory, open the referenced file to confirm before concluding the
+   change is absent. Do not infer "absent" purely from the diff being silent.
+3. **The diff**, for concerns the reviewer raised about code this PR touches.
+
+- If the concern looks **addressed** (in the diff, by the conversation, or by
+  existing code), do NOT file a finding — the thread is just waiting to be
+  marked resolved. You may note it in `summary`.
 - If the concern appears **NOT addressed** (the code the reviewer objected to
-  is unchanged, or the requested change is absent), file a finding that:
+  is unchanged, the requested change is absent AND the author did not credibly
+  say it already exists), file a finding that:
   - Quotes or paraphrases the reviewer's request and names who asked.
   - States what the author still needs to do to satisfy it.
   - Anchors to the relevant changed line (`path` + `line` + `side: "RIGHT"`)
