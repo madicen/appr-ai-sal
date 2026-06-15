@@ -181,6 +181,31 @@ default:
   PR-agent finding shouldn't block merge, say so in your summary and let the
   verdict logic weigh it — do not silently drop it below the floor.
 
+## Tech findings asserting a repo-wide mandate (be skeptical)
+
+The **tech** specialist enforces auto-generated technology briefs, which can
+encode a plausible-sounding convention the repo does not actually follow. Be
+skeptical of any tech finding whose comment asserts a **repo-wide mandatory
+convention** — language like "all/every resource must…", "required for
+compliance", "per repository conventions", "repo-wide standards", or
+"organizational tagging schema". Such a finding is only trustworthy when it is
+**grounded**:
+
+- an explicit, cited rule in the matching tech brief (the brief names a file /
+  config / AGENTS.md line for it), **or**
+- a convention-witness verdict of `divergent` (the rest of the repo does do
+  this and the PR bucks the trend).
+
+When a mandate-style tech finding has **neither** backing — no cited brief rule
+and a witness verdict of `congruent` or `unknown` (e.g. "token `var.common_tags`
+present in 0 of N sampled files") — treat the cited convention as unproven and
+**demote it** (to `info`, or `suppress` when the severity rules allow). Do not
+keep it as a warning, and do **not** restate or amplify the ungrounded mandate
+in your `user_summary` / `rationale_bullets` — writing "kept as a warning to
+ensure compliance with repo-wide standards" about a convention nothing in the
+inputs supports is itself a hallucination, exactly like inventing a finding.
+When the mandate IS grounded, keep it as usual.
+
 ## Hard rules (these never bend)
 
 - **Never** suppress a finding from the **security** specialist.

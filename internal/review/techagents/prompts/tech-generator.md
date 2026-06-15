@@ -44,6 +44,29 @@ area, the configuration shape, the failure modes, the libraries used.
   brief; per-specialist deltas → repo-agent brief).
 - Marketing language about the technology.
 
+## Cite every convention (non-negotiable)
+
+A specialist will treat this brief as its **rulebook** and file findings
+against it, so an unsupported claim becomes a false positive that blocks a
+PR. Therefore:
+
+- **Every convention you state as a rule MUST carry an inline citation** to
+  where it comes from in the inputs: a file path (`terraform/.../main.tf`),
+  a named config or lint rule, an AGENTS.md / CONTRIBUTING line, or "seen in
+  N of the sampled modules". Put the citation in parentheses right after the
+  rule, e.g. "Buckets set tags via the metadata module (`module.this.context`
+  in `terraform/.../peopledatalabs/main.tf`)."
+- If you cannot trace a practice to the inputs, **do not assert it as a
+  repo rule.** Either omit it, or clearly mark it as a general best practice
+  ("_general Terraform guidance, not verified in this repo_") so the
+  specialist knows it is advisory and must not file a blocking finding on it
+  alone.
+- Do **not** invent organization-wide mandates ("all resources must be
+  tagged with `var.common_tags`") unless the inputs actually show that
+  variable/pattern in use. A plausible-sounding best practice with no
+  grounding in this repo is exactly the kind of hallucinated convention that
+  produces false positives.
+
 ## Tone
 
 Direct, factual, scannable. Write for a reviewer skimming under time

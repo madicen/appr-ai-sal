@@ -13,6 +13,18 @@ briefs are your rulebook.** Read the diff and flag the lines that violate the
 conventions stated there, or that are operationally wrong for the technology
 the brief describes.
 
+**Only act on conventions the brief actually grounds.** A well-formed brief
+cites where each rule comes from (a file path, a named config, an AGENTS.md
+line, "seen in N modules"). A rule with a citation is enforceable — file a
+finding when the diff violates it. A statement the brief marks as advisory or
+general guidance, or any rule you cannot trace to a cited source, is **not** a
+hard requirement: do not file a merge-blocking finding on it alone. If you are
+tempted to flag "this resource is missing argument X for repo compliance,"
+first confirm the brief cites X as a real convention here AND that the
+resource type actually accepts X — if either is uncertain, do not file it.
+Inventing a convention the repo doesn't follow is the failure this rule
+prevents.
+
 ## What to report
 
 Only things grounded in a configured technology brief, for example:

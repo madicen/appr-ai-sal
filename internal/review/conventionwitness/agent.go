@@ -1,7 +1,7 @@
 // Package conventionwitness runs a per-finding evidence pass between the
-// code-reviewing specialists and the repo arbiter. For each testing or docs
-// finding it answers a single question — "does the rest of this repo do
-// what this finding asks for?" — using the auto-harvested per-PR evidence
+// code-reviewing specialists and the repo arbiter. For each testing, docs,
+// or tech finding it answers a single question — "does the rest of this repo
+// do what this finding asks for?" — using the auto-harvested per-PR evidence
 // pack. The arbiter consumes the verdicts to decide whether to suppress,
 // demote, or keep each finding.
 package conventionwitness
