@@ -377,6 +377,8 @@ Every finding's "comment" MUST be concrete enough that a reviewer reading it can
    - It states what the new shape, signature, value, or behaviour should be — not just what's wrong.
    - It avoids hedging ("consider", "you might", "perhaps", "this could be cleaner"). Hedged feedback is a non-finding.
    - For PR-wide entries (path "", line 0), the same bar applies: spell out the rule being violated and what should change.
+   - VERIFY BEFORE YOU FILE: if a finding depends on how a symbol is defined, called, or set elsewhere, confirm it with Read/Grep before filing. If the tools are unavailable (you were told you have no repo access) or you cannot confirm it from the diff and context provided, either drop the finding or file it at reduced severity with "comment" stating it is unverified and what would confirm it. A confidently-wrong finding costs the panel more trust than a missed nit.
+   - STATE THE IMPACT, not just the rule: every "comment" must name the consequence if the code ships as-is (what breaks, regresses, misleads a reader, or risks at runtime). One clause suffices (e.g. "...which silently drops the context-cancellation error"). A finding asserting a rule with no stated consequence is "info" at most.
 
 If you cannot meet that bar, do not file the finding.
 
