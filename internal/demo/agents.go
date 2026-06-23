@@ -29,6 +29,8 @@ func FakeComplete(ctx context.Context, cfg *aiconfig.Config, system, user, workt
 
 	hint := classifyPrompt(system, user)
 	switch hint {
+	case "tech-suggest":
+		return demoTechSuggestions, nil
 	case "language":
 		return demoLangBrief, nil
 	case "tech":
@@ -47,6 +49,8 @@ func FakeComplete(ctx context.Context, cfg *aiconfig.Config, system, user, workt
 func classifyPrompt(system, user string) string {
 	all := strings.ToLower(system + " " + user)
 	switch {
+	case strings.Contains(all, "technology suggester") || strings.Contains(all, "propose the technologies"):
+		return "tech-suggest"
 	case strings.Contains(all, "language brief") || strings.Contains(all, "lang brief"):
 		return "language"
 	case strings.Contains(all, "technology") || strings.Contains(all, "tech brief"):
@@ -114,6 +118,13 @@ The TUI uses Bubble Tea's Elm-style update loop. Keep these in mind:
 - Mouse zones use ` + "`bubblezone`" + `; register zones inside the view
   function so re-renders rebuild fresh hit boxes.
 `
+
+const demoTechSuggestions = `[
+  {"tech": "bubble-tea", "label": "Bubble Tea", "seed": "TUI built on Bubble Tea's Elm-style update loop; models under internal/tui.", "rationale": "charmbracelet/bubbletea in go.mod"},
+  {"tech": "lipgloss", "label": "Lip Gloss", "seed": "Terminal styling via Lip Gloss; shared styles per tab.", "rationale": "charmbracelet/lipgloss in go.mod"},
+  {"tech": "bubblezone", "label": "BubbleZone", "seed": "Mouse hit-testing via bubblezone; zones registered in view functions.", "rationale": "lrstanley/bubblezone in go.mod"},
+  {"tech": "github-actions", "label": "GitHub Actions", "seed": "CI + release automation under .github/workflows.", "rationale": "release.yml workflow"}
+]`
 
 const demoWitnessBrief = `# Convention witness verdict
 

@@ -98,3 +98,19 @@ type techSavedMsg struct {
 	Tech  string
 	Err   error
 }
+
+// techSuggestStartedMsg is emitted when a suggest-technologies command is
+// dispatched so the panel can show its "analyzing…" state immediately.
+type techSuggestStartedMsg struct {
+	Owner string
+	Repo  string
+}
+
+// techSuggestDoneMsg delivers the suggested technology candidates for
+// owner/repo (or an error, e.g. ta.ErrNoRepoAccess).
+type techSuggestDoneMsg struct {
+	Owner      string
+	Repo       string
+	Candidates []ta.Candidate
+	Err        error
+}

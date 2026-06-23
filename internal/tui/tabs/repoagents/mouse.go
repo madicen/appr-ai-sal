@@ -6,6 +6,7 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 
 	ra "github.com/madicen/appr-ai-sal/internal/review/repoagents"
+	ta "github.com/madicen/appr-ai-sal/internal/review/techagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
 )
 
@@ -87,7 +88,33 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 			m.openAddTech()
 			return nil
 		}
+		if z := zone.Get(ZoneSuggestTech); z != nil && z.InBounds(msg) {
+			return m.startSuggestTechs()
+		}
 	}
+
+	// Suggested-technology candidate panel.
+	if len(m.candidates) > 0 {
+		if z := zone.Get(ZoneGenApproved); z != nil && z.InBounds(msg) {
+			return m.generateApprovedCmd()
+		}
+		if z := zone.Get(ZoneDismissSuggest); z != nil && z.InBounds(msg) {
+			m.dismissSuggestions()
+			return nil
+		}
+		for _, c := range m.candidates {
+			canonical := ta.CanonicalTech(c.Tech)
+			if z := zone.Get(zoneCandApprove(canonical)); z != nil && z.InBounds(msg) {
+				m.setCandidateApproval(canonical, true)
+				return nil
+			}
+			if z := zone.Get(zoneCandDeny(canonical)); z != nil && z.InBounds(msg) {
+				m.setCandidateApproval(canonical, false)
+				return nil
+			}
+		}
+	}
+
 	if z := zone.Get(ZoneRegenAll); z != nil && z.InBounds(msg) {
 		return m.regenerateAllForCurrentRepo()
 	}

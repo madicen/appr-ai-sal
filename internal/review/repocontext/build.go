@@ -18,6 +18,12 @@ type Options struct {
 	LocalRoot string
 	// MaxBytes is the hard cap for returned text (including headers).
 	MaxBytes int
+	// IncludeManifests, when true, also harvests dependency/build manifests
+	// (go.mod, package.json, Dockerfile, root *.tf, CI workflows, etc.) so
+	// callers analysing which technologies a repo uses get richer evidence.
+	// Off by default to keep the convention bundle tight for the
+	// per-specialist briefs that don't need it.
+	IncludeManifests bool
 }
 
 const perFileReadCap = 256 * 1024
@@ -44,6 +50,27 @@ var conventionRelPaths = []string{
 	".golangci.yml",
 	".golangci.yaml",
 	"golangci.yml",
+}
+
+// manifestRelPaths are dependency/build manifests harvested only when
+// Options.IncludeManifests is set. They name the technologies a repo
+// depends on far more directly than convention files do.
+var manifestRelPaths = []string{
+	"go.mod",
+	"package.json",
+	"requirements.txt",
+	"pyproject.toml",
+	"Pipfile",
+	"Gemfile",
+	"pom.xml",
+	"build.gradle",
+	"build.gradle.kts",
+	"Cargo.toml",
+	"composer.json",
+	"Dockerfile",
+	"docker-compose.yml",
+	"docker-compose.yaml",
+	"Makefile",
 }
 
 // deniedPath reports true if rel or any parent segment must not be read.
@@ -123,6 +150,26 @@ func Build(ctx context.Context, opts Options) (string, error) {
 		}
 	}
 
+	if opts.IncludeManifests && b.Len() < opts.MaxBytes-200 {
+		for _, rel := range manifestPaths(root) {
+			if deniedPath(rel) {
+				continue
+			}
+			text, src := readConventionPair(root, local, rel)
+			if text == "" {
+				continue
+			}
+			title := rel
+			if src != "" {
+				title = fmt.Sprintf("%s (from %s)", rel, src)
+			}
+			write(title, headLines(text, 120))
+			if b.Len() >= opts.MaxBytes {
+				break
+			}
+		}
+	}
+
 	if b.Len() < opts.MaxBytes-200 {
 		if tree := treeSummary(root, opts.MaxBytes-b.Len()-120); tree != "" {
 			write("Repository tree (depth 1, file counts by extension)", tree)
@@ -170,6 +217,50 @@ func headLines(s string, n int) string {
 		return s
 	}
 	return strings.Join(lines[:n], "\n") + "\n…"
+}
+
+// manifestPaths returns manifestRelPaths plus dynamically-discovered
+// root-level Terraform files and CI workflow definitions under root. The
+// dynamic entries are capped so a repo with hundreds of *.tf / workflow
+// files can't blow the byte budget before the harvester's own cap kicks in.
+func manifestPaths(root string) []string {
+	out := append([]string(nil), manifestRelPaths...)
+
+	const maxDynamic = 6
+	if ents, err := os.ReadDir(root); err == nil {
+		n := 0
+		for _, e := range ents {
+			if n >= maxDynamic {
+				break
+			}
+			if e.IsDir() {
+				continue
+			}
+			if strings.EqualFold(filepath.Ext(e.Name()), ".tf") {
+				out = append(out, e.Name())
+				n++
+			}
+		}
+	}
+
+	wfDir := filepath.Join(".github", "workflows")
+	if ents, err := os.ReadDir(filepath.Join(root, wfDir)); err == nil {
+		n := 0
+		for _, e := range ents {
+			if n >= maxDynamic {
+				break
+			}
+			if e.IsDir() {
+				continue
+			}
+			ext := strings.ToLower(filepath.Ext(e.Name()))
+			if ext == ".yml" || ext == ".yaml" {
+				out = append(out, filepath.Join(wfDir, e.Name()))
+				n++
+			}
+		}
+	}
+	return out
 }
 
 func treeSummary(root string, budget int) string {

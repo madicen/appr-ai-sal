@@ -66,6 +66,47 @@ func TestBuildLocalRootFallback(t *testing.T) {
 	}
 }
 
+func TestBuildHarvestsManifestsWhenEnabled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/x\n\nrequire github.com/segmentio/kafka-go v0.4.0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.tf"), []byte("provider \"aws\" {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wf := filepath.Join(dir, ".github", "workflows")
+	if err := os.MkdirAll(wf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wf, "ci.yml"), []byte("name: CI\non: [push]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	// Without IncludeManifests, manifests are not harvested.
+	off, err := Build(ctx, Options{Worktree: dir, MaxBytes: 16000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(off, "kafka-go") {
+		t.Fatalf("manifests should not appear when IncludeManifests is off: %q", off)
+	}
+
+	on, err := Build(ctx, Options{Worktree: dir, MaxBytes: 16000, IncludeManifests: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(on, "kafka-go") {
+		t.Fatalf("expected go.mod content with IncludeManifests: %q", on)
+	}
+	if !strings.Contains(on, "provider \"aws\"") {
+		t.Fatalf("expected root *.tf content with IncludeManifests: %q", on)
+	}
+	if !strings.Contains(on, "ci.yml") {
+		t.Fatalf("expected CI workflow harvested with IncludeManifests: %q", on)
+	}
+}
+
 func TestTreeSummary(t *testing.T) {
 	dir := t.TempDir()
 	_ = os.Mkdir(filepath.Join(dir, "cmd"), 0o755)

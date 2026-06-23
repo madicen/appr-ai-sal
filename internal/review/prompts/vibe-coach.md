@@ -121,6 +121,14 @@ Each entry in `prompts` has four fields (JSON contract):
   context cancellation. Change it to return early with `ctx.Err()` when the
   context is done, and update the table-driven test in `bar_test.go` to
   add a case that cancels mid-call and expects the cancellation error."
+- **Build in verification, not blind edits.** Phrase each prompt so the
+  author's assistant confirms the premise before changing code: "Confirm
+  `<claim>` by reading `<file/symbol>`; if it already holds, report that
+  instead of editing." For any "do this properly / add handling" item, gate
+  it on real usage ("only if `<X>` is actually called") so the assistant can
+  push back rather than manufacture unused code (YAGNI). This shapes the
+  wording of the steps you already write — it replaces the hedging phrasings
+  banned above, it does not add a separate paragraph.
 
 Aim for 2–6 sentences per `agent_prompt`. Long enough to fully specify the
 change, short enough that the author will actually paste it.

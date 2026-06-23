@@ -20,6 +20,11 @@ const (
 	ZoneAddTechSave   = "zone:repoagents:tech:add:save"
 	ZoneAddTechCancel = "zone:repoagents:tech:add:cancel"
 
+	// Suggest-technologies flow.
+	ZoneSuggestTech    = "zone:repoagents:tech:suggest"
+	ZoneGenApproved    = "zone:repoagents:tech:suggest:generate"
+	ZoneDismissSuggest = "zone:repoagents:tech:suggest:dismiss"
+
 	// Add-form text-field zones — clicking a field focuses it (the
 	// click equivalent of tab between fields). Typing still needs the
 	// keyboard.
@@ -67,4 +72,16 @@ func zoneTechDelete(tech string) string {
 // zoneTechRow returns the click zone id for the per-tech row body.
 func zoneTechRow(tech string) string {
 	return fmt.Sprintf("zone:repoagents:tech:%s:row", tech)
+}
+
+// zoneCandApprove returns the click zone id for a suggested candidate's
+// Approve toggle.
+func zoneCandApprove(tech string) string {
+	return fmt.Sprintf("zone:repoagents:tech:cand:%s:approve", tech)
+}
+
+// zoneCandDeny returns the click zone id for a suggested candidate's Deny
+// toggle.
+func zoneCandDeny(tech string) string {
+	return fmt.Sprintf("zone:repoagents:tech:cand:%s:deny", tech)
 }
