@@ -112,6 +112,16 @@ type Model struct {
 	// (false = name, true = seed). Tab cycles between them.
 	techSeedFocus bool
 
+	// Suggest-technologies flow. suggestBusy is true while the suggester
+	// LLM call is in flight; candidates holds the proposed technologies for
+	// the current repo (cleared when the repo changes); candidateApproved
+	// tracks the user's per-candidate decision keyed by canonical tech
+	// (true = approved, absent/false = not approved). Generating approved
+	// candidates reuses the per-tech regenerate pipeline.
+	suggestBusy       bool
+	candidates        []ta.Candidate
+	candidateApproved map[string]bool
+
 	statusMsg string
 	err       error
 
@@ -183,23 +193,24 @@ func New(o Opts) *Model {
 	vp.MouseWheelEnabled = true
 
 	m := &Model{
-		width:         w,
-		bodyH:         bodyH,
-		contentW:      max(1, w),
-		aiCfg:         o.AICfg,
-		rc:            o.RC,
-		complete:      o.Complete,
-		history:       o.History,
-		pathHistory:   o.PathHistory,
-		addInput:      ti,
-		techNameInput: techNameTI,
-		techSeedInput: techSeedTI,
-		editArea:      taArea,
-		agents:        map[string]*ra.RepoAgents{},
-		techs:         map[string]*ta.TechAgents{},
-		busy:          map[string]bool{},
-		repos:         sanitizeRepos(o.InitialRepos),
-		vp:            vp,
+		width:             w,
+		bodyH:             bodyH,
+		contentW:          max(1, w),
+		aiCfg:             o.AICfg,
+		rc:                o.RC,
+		complete:          o.Complete,
+		history:           o.History,
+		pathHistory:       o.PathHistory,
+		addInput:          ti,
+		techNameInput:     techNameTI,
+		techSeedInput:     techSeedTI,
+		editArea:          taArea,
+		agents:            map[string]*ra.RepoAgents{},
+		techs:             map[string]*ta.TechAgents{},
+		busy:              map[string]bool{},
+		candidateApproved: map[string]bool{},
+		repos:             sanitizeRepos(o.InitialRepos),
+		vp:                vp,
 	}
 	// Honour FocusRepo by adding it to the seed list (so it always shows up
 	// even when no PRs in the list use it) and selecting it as the active
@@ -295,6 +306,9 @@ func (m *Model) SelectRepo(repoKey string) bool {
 	}
 	for i, r := range m.repos {
 		if r == k {
+			if m.repoIdx != i {
+				m.resetSuggestions()
+			}
 			m.repoIdx = i
 			return true
 		}
@@ -302,6 +316,7 @@ func (m *Model) SelectRepo(repoKey string) bool {
 	m.repos = sanitizeRepos(append(m.repos, k))
 	for i, r := range m.repos {
 		if r == k {
+			m.resetSuggestions()
 			m.repoIdx = i
 			return true
 		}
@@ -539,6 +554,31 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMsg = fmt.Sprintf("saved %s/%s · tech %s (manual)", msg.Owner, msg.Repo, msg.Tech)
 		owner, repo := splitRepoKey(msg.Owner + "/" + msg.Repo)
 		return m, loadTechsCmd(owner, repo)
+
+	case techSuggestStartedMsg:
+		m.suggestBusy = true
+		m.statusMsg = fmt.Sprintf("analyzing %s/%s for technologies …", msg.Owner, msg.Repo)
+		return m, nil
+
+	case techSuggestDoneMsg:
+		m.suggestBusy = false
+		// Ignore results that arrived after the user moved to another repo.
+		if msg.Owner+"/"+msg.Repo != m.currentRepoKey() {
+			return m, nil
+		}
+		if msg.Err != nil {
+			m.err = msg.Err
+			m.statusMsg = ""
+			return m, nil
+		}
+		m.candidates = msg.Candidates
+		m.candidateApproved = map[string]bool{}
+		if len(msg.Candidates) == 0 {
+			m.statusMsg = fmt.Sprintf("no new technologies suggested for %s/%s", msg.Owner, msg.Repo)
+		} else {
+			m.statusMsg = fmt.Sprintf("suggested %d technologies for %s/%s — approve the ones to generate", len(msg.Candidates), msg.Owner, msg.Repo)
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -612,6 +652,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "t":
 		m.openAddTech()
 		return m, textinput.Blink
+	case "s":
+		return m, m.startSuggestTechs()
+	case "g":
+		if len(m.candidates) > 0 {
+			return m, m.generateApprovedCmd()
+		}
 	case "A":
 		return m, m.regenerateAllForCurrentRepo()
 	}
@@ -623,6 +669,7 @@ func (m *Model) movePrevRepo() {
 		return
 	}
 	m.repoIdx = (m.repoIdx - 1 + len(m.repos)) % len(m.repos)
+	m.resetSuggestions()
 }
 
 func (m *Model) moveNextRepo() {
@@ -630,6 +677,15 @@ func (m *Model) moveNextRepo() {
 		return
 	}
 	m.repoIdx = (m.repoIdx + 1) % len(m.repos)
+	m.resetSuggestions()
+}
+
+// resetSuggestions clears any in-progress suggestion state. Candidates are
+// repo-specific, so switching repos must drop a stale list.
+func (m *Model) resetSuggestions() {
+	m.suggestBusy = false
+	m.candidates = nil
+	m.candidateApproved = map[string]bool{}
 }
 
 func (m *Model) openAddRepo() {
@@ -1077,6 +1133,128 @@ func (m *Model) startDeleteTech(tech string) tea.Cmd {
 	return deleteTechCmd(owner, repo, tech)
 }
 
+// Suggest-technologies flow ──────────────────────────────────────────────────
+
+// startSuggestTechs dispatches an LLM pass that proposes technologies for the
+// current repo. Already-configured techs are excluded so the user only sees
+// new candidates. Returns nil (with m.err set) when prerequisites are missing.
+func (m *Model) startSuggestTechs() tea.Cmd {
+	owner, repo := splitRepoKey(m.currentRepoKey())
+	if owner == "" || repo == "" {
+		m.err = fmt.Errorf("no repo selected")
+		return nil
+	}
+	if m.complete == nil {
+		m.err = fmt.Errorf("LLM completion is not configured")
+		return nil
+	}
+	if m.suggestBusy {
+		return nil
+	}
+	existing := []string{}
+	if cur := m.currentTechs(); cur != nil {
+		existing = cur.SortedTechs()
+	}
+	m.err = nil
+	m.candidates = nil
+	m.candidateApproved = map[string]bool{}
+	m.suggestBusy = true
+	m.statusMsg = fmt.Sprintf("analyzing %s/%s for technologies …", owner, repo)
+	return tea.Batch(
+		func() tea.Msg { return techSuggestStartedMsg{Owner: owner, Repo: repo} },
+		suggestTechsCmd(ta.CompleteFunc(m.complete), m.aiCfg, m.rc, owner, repo, existing),
+	)
+}
+
+func suggestTechsCmd(complete ta.CompleteFunc, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo string, existing []string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		cands, err := ta.Suggest(ctx, ta.SuggestOpts{
+			AICfg:    aiCfg,
+			RC:       rc,
+			Owner:    owner,
+			Repo:     repo,
+			Complete: complete,
+			Existing: existing,
+		})
+		return techSuggestDoneMsg{Owner: owner, Repo: repo, Candidates: cands, Err: err}
+	}
+}
+
+// setCandidateApproval records the user's approve/deny decision for a
+// candidate keyed by canonical tech.
+func (m *Model) setCandidateApproval(tech string, approved bool) {
+	c := ta.CanonicalTech(tech)
+	if c == "" {
+		return
+	}
+	if m.candidateApproved == nil {
+		m.candidateApproved = map[string]bool{}
+	}
+	m.candidateApproved[c] = approved
+}
+
+// approvedCandidateCount returns how many current candidates are approved.
+func (m *Model) approvedCandidateCount() int {
+	n := 0
+	for _, c := range m.candidates {
+		if m.candidateApproved[ta.CanonicalTech(c.Tech)] {
+			n++
+		}
+	}
+	return n
+}
+
+// dismissSuggestions clears the candidate panel without generating anything.
+func (m *Model) dismissSuggestions() {
+	m.resetSuggestions()
+	m.statusMsg = "dismissed suggestions"
+}
+
+// generateApprovedCmd kicks off brief generation for every approved
+// candidate, reusing the per-tech regenerate pipeline (and its done/save
+// handling). Clears the candidate panel after dispatch.
+func (m *Model) generateApprovedCmd() tea.Cmd {
+	owner, repo := splitRepoKey(m.currentRepoKey())
+	if owner == "" || repo == "" {
+		m.err = fmt.Errorf("no repo selected")
+		return nil
+	}
+	if m.complete == nil {
+		m.err = fmt.Errorf("LLM completion is not configured")
+		return nil
+	}
+	approved := make([]ta.Candidate, 0, len(m.candidates))
+	for _, c := range m.candidates {
+		if m.candidateApproved[ta.CanonicalTech(c.Tech)] {
+			approved = append(approved, c)
+		}
+	}
+	if len(approved) == 0 {
+		m.err = fmt.Errorf("no candidates approved; click Approve on the technologies to generate")
+		return nil
+	}
+	cmds := make([]tea.Cmd, 0, len(approved)*2)
+	for _, c := range approved {
+		canonical := ta.CanonicalTech(c.Tech)
+		label := strings.TrimSpace(c.Label)
+		if label == "" {
+			label = canonical
+		}
+		seed := c.Seed
+		m.busy[techBusyKey(owner, repo, canonical)] = true
+		cmds = append(cmds,
+			func() tea.Msg { return techRegenStartedMsg{Owner: owner, Repo: repo, Tech: canonical} },
+			regenerateTechCmd(ta.CompleteFunc(m.complete), nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
+		)
+	}
+	m.err = nil
+	m.statusMsg = fmt.Sprintf("generating %d approved technologies for %s/%s …", len(approved), owner, repo)
+	m.resetSuggestions()
+	return tea.Batch(cmds...)
+}
+
 func max(a, b int) int {
 	if a > b {
 		return a
@@ -1257,6 +1435,15 @@ func (m *Model) renderTechList() string {
 		}
 	}
 
+	if m.suggestBusy {
+		b.WriteString(sectionRule.Render(strings.Repeat("─", max(8, m.contentW-2))))
+		b.WriteString("\n")
+		b.WriteString(chipBusy.Render(" analyzing repo for technologies … "))
+		b.WriteString("\n")
+	} else if len(m.candidates) > 0 {
+		b.WriteString(m.renderCandidatePanel())
+	}
+
 	if m.addingTech {
 		b.WriteString(sectionRule.Render(strings.Repeat("─", max(8, m.contentW-2))))
 		b.WriteString("\n")
@@ -1274,8 +1461,69 @@ func (m *Model) renderTechList() string {
 		b.WriteString("\n")
 	} else {
 		b.WriteString(zone.Mark(ZoneAddTechOpen, chipStyle.Render(" + Add tech ")))
+		if !m.suggestBusy && len(m.candidates) == 0 {
+			b.WriteString("  ")
+			b.WriteString(zone.Mark(ZoneSuggestTech, chipPrimary.Render(" Suggest technologies ")))
+		}
 		b.WriteString("\n")
 	}
+	return b.String()
+}
+
+// renderCandidatePanel renders the suggested-technology approve/deny list
+// plus the Generate-approved / Dismiss footer.
+func (m *Model) renderCandidatePanel() string {
+	var b strings.Builder
+	b.WriteString(sectionRule.Render(strings.Repeat("─", max(8, m.contentW-2))))
+	b.WriteString("\n")
+	b.WriteString(boldStyle.Render("Suggested technologies") + "  ")
+	b.WriteString(dimStyle.Render("· approve the ones to generate, then Generate approved") + "\n\n")
+
+	for _, c := range m.candidates {
+		canonical := ta.CanonicalTech(c.Tech)
+		approved := m.candidateApproved[canonical]
+
+		header := boldStyle.Render(c.Label)
+		if !strings.EqualFold(c.Label, canonical) {
+			header += " " + dimStyle.Render("("+canonical+")")
+		}
+		if approved {
+			header += "  " + okStyle.Render("approved")
+		} else {
+			header += "  " + dimStyle.Render("not approved")
+		}
+		b.WriteString(zone.Mark(zoneTechRow("cand:"+canonical), header))
+		b.WriteString("\n")
+		if s := strings.TrimSpace(c.Seed); s != "" {
+			b.WriteString(dimStyle.Render(trimPreview(s, 240)))
+			b.WriteString("\n")
+		}
+		if r := strings.TrimSpace(c.Rationale); r != "" {
+			b.WriteString(dimStyle.Render("Evidence: " + trimPreview(r, 160)))
+			b.WriteString("\n")
+		}
+		approveChip := chipStyle.Render(" Approve ")
+		if approved {
+			approveChip = chipPrimary.Render(" Approved ✓ ")
+		}
+		b.WriteString(zone.Mark(zoneCandApprove(canonical), approveChip))
+		b.WriteString("  ")
+		b.WriteString(zone.Mark(zoneCandDeny(canonical), chipStyle.Render(" Deny ")))
+		b.WriteString("\n")
+		b.WriteString(sectionRule.Render(strings.Repeat("─", max(8, m.contentW-2))))
+		b.WriteString("\n")
+	}
+
+	n := m.approvedCandidateCount()
+	genLabel := fmt.Sprintf(" Generate approved (%d) ", n)
+	if n == 0 {
+		b.WriteString(chipBusy.Render(genLabel))
+	} else {
+		b.WriteString(zone.Mark(ZoneGenApproved, okStyle.Render(genLabel)))
+	}
+	b.WriteString("  ")
+	b.WriteString(zone.Mark(ZoneDismissSuggest, errStyle.Render(" Dismiss ")))
+	b.WriteString("\n")
 	return b.String()
 }
 
