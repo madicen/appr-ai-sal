@@ -28,6 +28,9 @@ func (m *Model) openSettings(start settings.StartSection) tea.Cmd {
 		BodyHeight:   m.chromeBodyHeight(),
 		StartSection: start,
 	})
+	// Tell settings where its body begins on screen (below the chrome
+	// header) so an open dropdown's geometric mouse hit-test lines up.
+	m.settings.SetContentOrigin(m.headerHeight())
 	return m.settings.Init()
 }
 
@@ -94,6 +97,7 @@ func (m *Model) openRepoAgents(focusRepo string, autoRegen bool) tea.Cmd {
 		FocusRepo:    strings.ToLower(strings.TrimSpace(focusRepo)),
 		AutoRegenAll: autoRegen,
 	})
+	m.repoAgents.SetContentOrigin(m.headerHeight())
 	return m.repoAgents.Init()
 }
 

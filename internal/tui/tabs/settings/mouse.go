@@ -5,7 +5,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
 
-	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
 )
 
@@ -61,44 +60,23 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 			}
 		}
 	}
-	if z := zone.Get(ZoneStrictCriticalOnly); z != nil && z.InBounds(msg) {
-		m.strictIdx = 0
-		m.draft.ReviewStrictness = aiconfig.ReviewCriticalOnly
-		m.focus = fieldStrictness
-		m.blurInputs()
-		return nil
-	}
-	if z := zone.Get(ZoneStrictLenient); z != nil && z.InBounds(msg) {
-		m.strictIdx = 1
-		m.draft.ReviewStrictness = aiconfig.ReviewLenient
-		m.focus = fieldStrictness
-		m.blurInputs()
-		return nil
-	}
-	if z := zone.Get(ZoneStrictBalanced); z != nil && z.InBounds(msg) {
-		m.strictIdx = 2
-		m.draft.ReviewStrictness = aiconfig.ReviewBalanced
-		m.focus = fieldStrictness
-		m.blurInputs()
-		return nil
-	}
-	if z := zone.Get(ZoneStrictStrict); z != nil && z.InBounds(msg) {
-		m.strictIdx = 3
-		m.draft.ReviewStrictness = aiconfig.ReviewStrict
-		m.focus = fieldStrictness
-		m.blurInputs()
-		return nil
-	}
 	if m.panelTab == 0 {
-		// Profile row clicks: select that row.
-		for i := range m.draft.Profiles {
-			if z := zone.Get(ZoneProfileRow(i)); z != nil && z.InBounds(msg) {
-				m.commitEditorToSelectedProfile()
-				m.selectedProfileIdx = i
-				m.loadEditorFromSelectedProfile()
-				m.focus = fieldProfilePicker
+		// Dropdown trigger clicks: focus and open the panel. The dropdown
+		// trusts the zone hit (zoneManager is set), so forwarding the press
+		// opens it regardless of geometric coordinates.
+		for _, dt := range []struct {
+			zoneID string
+			kind   int
+		}{
+			{ZoneStrictnessDD, ddStrictness},
+			{ZoneProfileDD, ddProfile},
+			{ZoneProviderDD, ddProvider},
+		} {
+			if z := zone.Get(dt.zoneID); z != nil && z.InBounds(msg) {
 				m.blurInputs()
-				return nil
+				m.focus = fieldForDropdown(dt.kind)
+				m.syncDropdownFocus()
+				return m.forwardToDropdown(dt.kind, msg)
 			}
 		}
 		if z := zone.Get(ZoneProfileSetActive); z != nil && z.InBounds(msg) {
@@ -121,7 +99,6 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 			field int
 		}{
 			{ZoneAIFieldName, fieldProfileName},
-			{ZoneAIFieldProvider, fieldProvider},
 			{ZoneAIFieldBaseURL, fieldBaseURL},
 			{ZoneAIFieldModel, fieldModel},
 			{ZoneAIFieldAPIKey, fieldAPIKey},

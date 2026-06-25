@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
+	bubbledropdown "github.com/madicen/bubble-dropdown"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
@@ -51,8 +52,9 @@ func TestControlsClickStrictnessUpdatesConfig(t *testing.T) {
 	}
 }
 
-// Clicking the profile "next" arrow cycles ActiveProfile.
-func TestControlsClickProfileNextCycles(t *testing.T) {
+// Clicking the profile dropdown trigger opens the panel; choosing an option
+// switches the active profile.
+func TestControlsProfileDropdownOpensAndSelects(t *testing.T) {
 	m := detailFixtureModel(t)
 	m.opts.AIConfig = aiconfig.DefaultConfig()
 	if err := m.opts.AIConfig.AddProfile(aiconfig.Profile{
@@ -64,11 +66,22 @@ func TestControlsClickProfileNextCycles(t *testing.T) {
 	}
 	m.refreshDetailViews()
 	_ = m.View()
-	msg := clickCenterOfZone(t, zones.ControlsProfileNext)
+
+	// Clicking the trigger opens the dropdown panel.
+	msg := clickCenterOfZone(t, zones.ControlsProfileDD)
 	out, _ := m.detailHandleMouse(msg, false)
 	m2 := out.(*Model)
+	if !m2.controlsProfileDropdownOpen() {
+		t.Fatal("clicking the profile trigger should open the dropdown panel")
+	}
+
+	// Choosing the "fast" profile (index 1) makes it active.
+	_ = m2.forwardControlsProfileDropdown(bubbledropdown.ItemChosenMsg{Index: 1})
 	if m2.opts.AIConfig.ActiveProfile != "fast" {
-		t.Fatalf("after click next: active profile got %q, want fast", m2.opts.AIConfig.ActiveProfile)
+		t.Fatalf("after choosing index 1: active profile got %q, want fast", m2.opts.AIConfig.ActiveProfile)
+	}
+	if m2.controlsProfileDropdownOpen() {
+		t.Fatal("choosing an item should close the dropdown panel")
 	}
 }
 

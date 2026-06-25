@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
 	bubblepicker "github.com/madicen/bubble-color-picker"
+	bubbledropdown "github.com/madicen/bubble-dropdown"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
@@ -81,7 +82,25 @@ type Model struct {
 	draft *aiconfig.Config
 	focus int
 
-	strictIdx int
+	// Review & AI tab dropdowns (bubble-dropdown). strictnessDD and
+	// providerDD have static options; profileDD is recreated when the
+	// profile list changes (the component has no runtime SetOptions).
+	strictnessDD *bubbledropdown.Dropdown
+	profileDD    *bubbledropdown.Dropdown
+	providerDD   *bubbledropdown.Dropdown
+
+	// Recorded content-line indices of each dropdown trigger, populated
+	// while buildForm assembles the body so SetBounds can be applied after
+	// the viewport scroll offset is known. col is shared (triggers render
+	// at column 0).
+	ddStrictRow   int
+	ddProfileRow  int
+	ddProviderRow int
+
+	// contentTop is the absolute terminal row where the settings body
+	// begins (the chrome header height). Mouse events are translated by
+	// this offset before reaching an open dropdown's geometric hit-test.
+	contentTop int
 
 	// Profile editor state. selectedProfileIdx is the index of the
 	// profile in draft.Profiles whose fields are currently shown in the
@@ -91,7 +110,6 @@ type Model struct {
 	selectedProfileIdx int
 
 	profileName textinput.Model
-	provider    textinput.Model
 	baseURL     textinput.Model
 	model       textinput.Model
 	apiKey      textinput.Model
@@ -160,15 +178,24 @@ func New(o Opts) *Model {
 		contentW:    max(1, w),
 		fieldWidth:  fieldW,
 		draft:       draft,
-		strictIdx:   strictnessIndex(draft.ReviewStrictness),
 		profileName: mk("profile name (e.g. sonnet, fast, ollama)", textinput.EchoNormal),
-		provider:    mk("claude | gemini | ollama | openai_compatible", textinput.EchoNormal),
 		baseURL:     mk("optional; Ollama default if empty", textinput.EchoNormal),
 		model:       mk("model id", textinput.EchoNormal),
 		apiKey:      mk("optional for Ollama", textinput.EchoPassword),
 		timeout:     mk("seconds (default 300)", textinput.EchoNormal),
 	}
 	m.selectedProfileIdx = m.indexOfActiveProfile()
+
+	// Build dropdowns before loading the editor so loadEditorFromSelected
+	// Profile can sync the provider dropdown's index.
+	selProv := aiconfig.ProviderClaude
+	if m.selectedProfileIdx >= 0 && m.selectedProfileIdx < len(draft.Profiles) {
+		selProv = draft.Profiles[m.selectedProfileIdx].Provider
+	}
+	m.strictnessDD = newSettingsDropdown(strictnessDDLabels, strictnessIndex(draft.ReviewStrictness), "strictness")
+	m.providerDD = newSettingsDropdown(providerDDLabels, providerDDIndex(selProv), "provider")
+	m.profileDD = m.newProfileDropdown()
+
 	m.loadEditorFromSelectedProfile()
 
 	rr := textarea.New()
@@ -215,6 +242,7 @@ func New(o Opts) *Model {
 		m.focus = fieldStrictness
 		m.blurInputs()
 	}
+	m.syncDropdownFocus()
 	return m
 }
 
@@ -244,7 +272,9 @@ func (m *Model) loadEditorFromSelectedProfile() {
 	if len(m.draft.Profiles) == 0 {
 		// Should not happen after Load() / DefaultConfig(); guard anyway.
 		m.profileName.SetValue("")
-		m.provider.SetValue("")
+		if m.providerDD != nil {
+			m.providerDD.SetSelectedIndex(0)
+		}
 		m.baseURL.SetValue("")
 		m.model.SetValue("")
 		m.apiKey.SetValue("")
@@ -253,7 +283,9 @@ func (m *Model) loadEditorFromSelectedProfile() {
 	}
 	p := m.draft.Profiles[m.selectedProfileIdx]
 	m.profileName.SetValue(p.Name)
-	m.provider.SetValue(string(p.Provider))
+	if m.providerDD != nil {
+		m.providerDD.SetSelectedIndex(providerDDIndex(p.Provider))
+	}
 	m.baseURL.SetValue(p.BaseURL)
 	m.model.SetValue(p.Model)
 	if p.APIKey != "" {
@@ -283,9 +315,7 @@ func (m *Model) commitEditorToSelectedProfile() {
 	if prof.Name == "" {
 		prof.Name = m.draft.Profiles[m.selectedProfileIdx].Name
 	}
-	if p, err := aiconfig.ParseProvider(strings.TrimSpace(m.provider.Value())); err == nil {
-		prof.Provider = p
-	}
+	prof.Provider = m.editedProvider()
 	prof.BaseURL = strings.TrimSpace(m.baseURL.Value())
 	prof.Model = strings.TrimSpace(m.model.Value())
 	prof.APIKey = m.apiKey.Value()
@@ -359,7 +389,6 @@ func (m *Model) Resize(width, bodyHeight int) {
 	m.contentW = max(1, m.width)
 	m.fieldWidth = max(20, m.width-4)
 	m.profileName.Width = m.fieldWidth
-	m.provider.Width = m.fieldWidth
 	m.baseURL.Width = m.fieldWidth
 	m.model.Width = m.fieldWidth
 	m.apiKey.Width = m.fieldWidth
@@ -412,6 +441,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	}
+
+	// Dropdown result messages (emitted as commands on a later tick) close
+	// the open dropdown and apply the choice to the draft.
+	switch msg.(type) {
+	case bubbledropdown.ItemChosenMsg, bubbledropdown.ItemCanceledMsg:
+		return m, m.handleDropdownResult(msg)
+	}
+
+	// When a Review & AI dropdown panel is open, route every key/mouse event
+	// to it (it owns its own list navigation and geometric hit-testing).
+	if m.panelTab == 0 && m.anyDropdownOpen() {
+		switch msg.(type) {
+		case tea.KeyMsg, tea.MouseMsg:
+			return m, m.forwardToDropdown(m.openDropdownKind(), msg)
+		case zone.MsgZoneInBounds:
+			// Swallow stray zone-release dispatches so background zones
+			// (tab strip, Save) don't fire while the panel is open.
+			return m, nil
+		}
 	}
 
 	// When a swatch modal is open, route every key/mouse event to it so the
@@ -500,53 +549,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.advanceFocus(-1)
 			return m, textinput.Blink
 		}
-		if m.focus == fieldStrictness {
-			switch msg.String() {
-			case "up", "k":
-				m.strictIdx = (m.strictIdx + 3) % 4
-				m.draft.ReviewStrictness = strictnessAt(m.strictIdx)
-				return m, nil
-			case "down", "j":
-				m.strictIdx = (m.strictIdx + 1) % 4
-				m.draft.ReviewStrictness = strictnessAt(m.strictIdx)
-				return m, nil
-			case "1":
-				m.strictIdx, m.draft.ReviewStrictness = 0, aiconfig.ReviewCriticalOnly
-				return m, nil
-			case "2":
-				m.strictIdx, m.draft.ReviewStrictness = 1, aiconfig.ReviewLenient
-				return m, nil
-			case "3":
-				m.strictIdx, m.draft.ReviewStrictness = 2, aiconfig.ReviewBalanced
-				return m, nil
-			case "4":
-				m.strictIdx, m.draft.ReviewStrictness = 3, aiconfig.ReviewStrict
-				return m, nil
-			}
-		}
-		if m.focus == fieldProfilePicker {
-			switch msg.String() {
-			case "up", "k":
-				m.commitEditorToSelectedProfile()
-				if m.selectedProfileIdx > 0 {
-					m.selectedProfileIdx--
+		// When focus is on a dropdown field, forward navigation/open keys to
+		// it. The profile dropdown keeps the add/delete shortcuts so the
+		// list can still be managed from the keyboard.
+		if dk := m.focusedDropdownKind(); dk != ddNone {
+			if dk == ddProfile {
+				switch msg.String() {
+				case "n":
+					return m, m.addNewProfile()
+				case "d":
+					return m, m.deleteSelectedProfile()
 				}
-				m.loadEditorFromSelectedProfile()
-				return m, nil
-			case "down", "j":
-				m.commitEditorToSelectedProfile()
-				if m.selectedProfileIdx < len(m.draft.Profiles)-1 {
-					m.selectedProfileIdx++
-				}
-				m.loadEditorFromSelectedProfile()
-				return m, nil
-			case "enter":
-				return m, m.activateSelectedProfile()
-			case "n":
-				return m, m.addNewProfile()
-			case "d":
-				return m, m.deleteSelectedProfile()
 			}
+			return m, m.forwardToDropdown(dk, msg)
 		}
 		var cmd tea.Cmd
 		if ti := m.focusedInput(); ti != nil {
@@ -575,11 +590,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) advanceFocus(delta int) {
 	m.blurInputs()
 	m.focus = (m.focus + delta + fieldAICount) % fieldAICount
-	if m.focus != fieldStrictness && m.focus != fieldProfilePicker {
-		if ti := m.focusedInput(); ti != nil {
-			ti.Focus()
-		}
+	if ti := m.focusedInput(); ti != nil {
+		ti.Focus()
 	}
+	m.syncDropdownFocus()
 }
 
 func (m *Model) setPanelTab(tab int) {
@@ -608,6 +622,7 @@ func (m *Model) setPanelTab(tab int) {
 	default:
 		m.focus = fieldStrictness
 	}
+	m.syncDropdownFocus()
 }
 
 // updateThemeKey handles key events while the Theme tab is focused (and no
@@ -654,7 +669,6 @@ func (m *Model) updateThemeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) blurInputs() {
 	m.profileName.Blur()
-	m.provider.Blur()
 	m.baseURL.Blur()
 	m.model.Blur()
 	m.apiKey.Blur()
@@ -755,8 +769,6 @@ func (m *Model) focusedInput() *textinput.Model {
 	switch m.focus {
 	case fieldProfileName:
 		return &m.profileName
-	case fieldProvider:
-		return &m.provider
 	case fieldBaseURL:
 		return &m.baseURL
 	case fieldModel:
@@ -787,6 +799,7 @@ func (m *Model) activateSelectedProfile() tea.Cmd {
 	m.draft.Model = m.draft.Profiles[m.selectedProfileIdx].Model
 	m.draft.APIKey = m.draft.Profiles[m.selectedProfileIdx].APIKey
 	m.draft.TimeoutSec = m.draft.Profiles[m.selectedProfileIdx].TimeoutSec
+	m.refreshProfileDropdown()
 	return nil
 }
 
@@ -821,9 +834,11 @@ func (m *Model) addNewProfile() tea.Cmd {
 	})
 	m.selectedProfileIdx = len(m.draft.Profiles) - 1
 	m.loadEditorFromSelectedProfile()
+	m.refreshProfileDropdown()
 	m.focus = fieldProfileName
 	m.blurInputs()
 	m.profileName.Focus()
+	m.syncDropdownFocus()
 	return textinput.Blink
 }
 
@@ -848,6 +863,7 @@ func (m *Model) deleteSelectedProfile() tea.Cmd {
 		m.selectedProfileIdx = len(m.draft.Profiles) - 1
 	}
 	m.loadEditorFromSelectedProfile()
+	m.refreshProfileDropdown()
 	return nil
 }
 
@@ -871,7 +887,7 @@ func (m *Model) submitSave() tea.Cmd {
 		}
 		rs := m.draft.ReviewStrictness
 		if _, err := aiconfig.ParseReviewStrictness(string(rs)); err != nil {
-			rs = strictnessAt(m.strictIdx)
+			rs = strictnessAt(m.strictnessDD.SelectedIndex())
 		}
 		m.draft.ReviewStrictness = rs
 		if err := aiconfig.Save(m.draft, ""); err != nil {
@@ -971,59 +987,6 @@ func (m *Model) renderTabStrip() string {
 	return row + "\n" + dimStyle.Render("click tabs or [ ] to switch") + "\n"
 }
 
-// renderProfileList draws the profile-row table + action buttons.
-func (m *Model) renderProfileList() string {
-	var b strings.Builder
-	b.WriteString(boldStyle.Render("AI profiles") + "\n")
-	hint := "click row · ↑/↓ select · enter set active · n add · d delete"
-	if m.focus == fieldProfilePicker {
-		b.WriteString(boldStyle.Render(hint) + "\n\n")
-	} else {
-		b.WriteString(dimStyle.Render(hint) + "\n\n")
-	}
-	if m.draft == nil || len(m.draft.Profiles) == 0 {
-		b.WriteString(dimStyle.Render("(no profiles)") + "\n\n")
-		return b.String()
-	}
-	for i, p := range m.draft.Profiles {
-		marker := "  "
-		if i == m.selectedProfileIdx && m.focus == fieldProfilePicker {
-			marker = boldStyle.Render("> ")
-		} else if i == m.selectedProfileIdx {
-			marker = "> "
-		}
-		active := "( )"
-		if strings.EqualFold(strings.TrimSpace(p.Name), strings.TrimSpace(m.draft.ActiveProfile)) {
-			active = okStyle.Render("(●)")
-		}
-		row := fmt.Sprintf("%s%s  %-16s  %s", marker, active, truncRight(p.Name, 16), dimStyle.Render(p.Summary()))
-		b.WriteString(zone.Mark(ZoneProfileRow(i), row) + "\n")
-	}
-	b.WriteString("\n")
-	b.WriteString(zone.Mark(ZoneProfileSetActive, okStyle.Render(" Set active ")) + "  ")
-	b.WriteString(zone.Mark(ZoneProfileAdd, okStyle.Render(" + Add ")) + "  ")
-	b.WriteString(zone.Mark(ZoneProfileDelete, errStyle.Render(" Delete ")))
-	b.WriteString("\n")
-	return b.String()
-}
-
-// truncRight pads (or truncates) s to w cells with trailing spaces.
-func truncRight(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	if len(s) > w {
-		if w <= 1 {
-			return "…"
-		}
-		return s[:w-1] + "…"
-	}
-	for len(s) < w {
-		s += " "
-	}
-	return s
-}
-
 // fieldLabel renders a label, bolded when the field is currently focused.
 func (m *Model) fieldLabel(label string, field int) string {
 	if m.focus == field {
@@ -1032,50 +995,37 @@ func (m *Model) fieldLabel(label string, field int) string {
 	return label
 }
 
-func (m *Model) renderStrictnessRows() string {
-	var b strings.Builder
-	b.WriteString(boldStyle.Render("Review strictness") + "\n")
-	b.WriteString(dimStyle.Render("click row · ↑/↓ or j/k · 1–4") + "\n\n")
-
-	rows := []struct {
-		zoneID string
-		idx    int
-		title  string
-		desc   string
-	}{
-		{ZoneStrictCriticalOnly, 0, "critical-only", "only merge-blocking (critical) findings"},
-		{ZoneStrictLenient, 1, "lenient", "error + critical only"},
-		{ZoneStrictBalanced, 2, "balanced", "warning and above (default)"},
-		{ZoneStrictStrict, 3, "strict", "info-level nits included"},
-	}
-	for _, r := range rows {
-		mark := " "
-		if m.strictIdx == r.idx {
-			mark = "●"
-		}
-		line := fmt.Sprintf("%s  %-10s  %s", mark, r.title, dimStyle.Render(r.desc))
-		row := lipgloss.NewStyle().Padding(0, 0).Render(line)
-		b.WriteString(zone.Mark(r.zoneID, row))
-		b.WriteString("\n")
-	}
-	return b.String()
-}
-
 func (m *Model) buildForm() string {
 	var b strings.Builder
 	b.WriteString(boldStyle.Render("Settings") + "\n\n")
 	b.WriteString(m.renderTabStrip())
 	b.WriteString("\n")
 	if m.panelTab == 0 {
-		b.WriteString(dimStyle.Render("tab / shift+tab fields · ctrl+s save · esc cancel · [ ] repo tab") + "\n\n")
-		b.WriteString(m.renderStrictnessRows())
-		b.WriteString("\n")
-		b.WriteString(m.renderProfileList())
-		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("tab / shift+tab fields · enter open menu · ctrl+s save · esc cancel · [ ] repo tab") + "\n\n")
+
+		// Review strictness dropdown.
+		b.WriteString(m.fieldLabel("Review strictness", fieldStrictness) + "\n")
+		m.ddStrictRow = strings.Count(b.String(), "\n")
+		b.WriteString(zone.Mark(ZoneStrictnessDD, m.strictnessDD.TriggerView()) + "\n")
+		b.WriteString(dimStyle.Render(strictnessHint(m.strictnessDD.SelectedIndex())) + "\n\n")
+
+		// AI profile dropdown + action buttons.
+		b.WriteString(m.fieldLabel("AI profile", fieldProfilePicker) + "\n")
+		m.ddProfileRow = strings.Count(b.String(), "\n")
+		b.WriteString(zone.Mark(ZoneProfileDD, m.profileDD.TriggerView()) + "\n")
+		b.WriteString(zone.Mark(ZoneProfileSetActive, okStyle.Render(" Set active ")) + "  ")
+		b.WriteString(zone.Mark(ZoneProfileAdd, okStyle.Render(" + Add ")) + "  ")
+		b.WriteString(zone.Mark(ZoneProfileDelete, errStyle.Render(" Delete ")) + "\n\n")
+
 		b.WriteString(boldStyle.Render("Edit profile") + "\n")
-		b.WriteString(dimStyle.Render("changes apply to the selected row above; click 'Set active' to use it for reviews") + "\n\n")
+		b.WriteString(dimStyle.Render("changes apply to the selected profile; click 'Set active' to use it for reviews") + "\n\n")
 		b.WriteString(zone.Mark(ZoneAIFieldName, m.fieldLabel("name", fieldProfileName)+"\n"+m.profileName.View()) + "\n\n")
-		b.WriteString(zone.Mark(ZoneAIFieldProvider, m.fieldLabel("provider", fieldProvider)+"\n"+m.provider.View()) + "\n\n")
+
+		// Provider dropdown.
+		b.WriteString(m.fieldLabel("provider", fieldProvider) + "\n")
+		m.ddProviderRow = strings.Count(b.String(), "\n")
+		b.WriteString(zone.Mark(ZoneProviderDD, m.providerDD.TriggerView()) + "\n\n")
+
 		b.WriteString(zone.Mark(ZoneAIFieldBaseURL, m.fieldLabel("base URL", fieldBaseURL)+"\n"+m.baseURL.View()) + "\n\n")
 		b.WriteString(zone.Mark(ZoneAIFieldModel, m.fieldLabel("model", fieldModel)+"\n"+m.model.View()) + "\n\n")
 		b.WriteString(zone.Mark(ZoneAIFieldAPIKey, m.fieldLabel("API key (masked)", fieldAPIKey)+"\n"+m.apiKey.View()) + "\n\n")
@@ -1091,6 +1041,33 @@ func (m *Model) buildForm() string {
 	return b.String()
 }
 
+// applyDropdownBounds sets each Review & AI dropdown's trigger bounds in
+// settings-body-local coordinates, accounting for the viewport scroll offset
+// (the trigger's on-screen row = its content line index minus YOffset).
+func (m *Model) applyDropdownBounds() {
+	off := m.vp.YOffset
+	set := func(d *bubbledropdown.Dropdown, row int) {
+		if d == nil {
+			return
+		}
+		tw, th := d.TriggerSize()
+		d.SetBounds(row-off, 0, tw, th)
+	}
+	set(m.strictnessDD, m.ddStrictRow)
+	set(m.profileDD, m.ddProfileRow)
+	set(m.providerDD, m.ddProviderRow)
+}
+
+// composeDropdownOverlays composites any open dropdown panel onto body.
+func (m *Model) composeDropdownOverlays(body string) string {
+	for _, d := range []*bubbledropdown.Dropdown{m.strictnessDD, m.profileDD, m.providerDD} {
+		if d != nil && d.Open() {
+			body = d.ViewWithOverlay(body, m.width, m.bodyH)
+		}
+	}
+	return body
+}
+
 // View renders the scrollable settings body (no header/status — root adds those).
 func (m *Model) View() string {
 	// The Theme tab bypasses the viewport so each swatch's row index lines
@@ -1101,9 +1078,31 @@ func (m *Model) View() string {
 		panel = m.theme.applyOverlays(panel, m.width, m.bodyH)
 		return lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(m.bodyH).Render(panel)
 	}
+	if m.panelTab == 0 {
+		// Keep the profile dropdown's labels/selection fresh (no-op while
+		// its panel is open, which is the only time labels can't change).
+		m.refreshProfileDropdown()
+	}
 	// Rebuild each frame so textinput cursor blink and zones stay aligned with layout.
 	m.vp.SetContent(m.buildForm())
-	return lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(m.bodyH).Render(m.vp.View())
+	if m.panelTab == 0 {
+		m.applyDropdownBounds()
+	}
+	body := lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(m.bodyH).Render(m.vp.View())
+	if m.panelTab == 0 {
+		body = m.composeDropdownOverlays(body)
+	}
+	return body
+}
+
+// SetContentOrigin records the absolute terminal row where the settings body
+// is drawn (the chrome header height). The root calls this so an open
+// dropdown's geometric mouse hit-testing lines up with the rendered panel.
+func (m *Model) SetContentOrigin(top int) {
+	if top < 0 {
+		top = 0
+	}
+	m.contentTop = top
 }
 
 // buildThemeView assembles the Theme tab body (header + tab strip + panel).

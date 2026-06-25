@@ -1,14 +1,13 @@
 package settings
 
-import "strconv"
-
 // bubblezone IDs for the settings pane (must match Mark calls in View).
 const (
-	ZoneStrictCriticalOnly = "zone:settings:strict:critical_only"
-	ZoneStrictLenient      = "zone:settings:strict:lenient"
-	ZoneStrictBalanced     = "zone:settings:strict:balanced"
-	ZoneStrictStrict       = "zone:settings:strict:strict"
-	ZoneSettingsSave       = "zone:settings:save"
+	// Review & AI dropdown triggers (bubble-dropdown).
+	ZoneStrictnessDD = "zone:settings:dd:strictness"
+	ZoneProfileDD    = "zone:settings:dd:profile"
+	ZoneProviderDD   = "zone:settings:dd:provider"
+
+	ZoneSettingsSave   = "zone:settings:save"
 	ZoneSettingsCancel     = "zone:settings:cancel"
 	ZoneSettingsTabReview  = "zone:settings:tab:review-ai"
 	ZoneSettingsTabRepoCtx = "zone:settings:tab:repo-context"
@@ -21,9 +20,7 @@ const (
 	ZoneRepoToggleParallelPRAgents = "zone:settings:repo:toggle:parallel_pr_agents"
 	ZoneRepoToggleParallelExperts  = "zone:settings:repo:toggle:parallel_repo_experts"
 
-	// AI profile editor zones. Profile rows get a per-index zone so click
-	// selection works for any number of profiles; the action buttons sit
-	// below the row list.
+	// AI profile action buttons (sit below the profile dropdown).
 	ZoneProfileAdd       = "zone:settings:profile:add"
 	ZoneProfileDelete    = "zone:settings:profile:delete"
 	ZoneProfileSetActive = "zone:settings:profile:set-active"
@@ -31,12 +28,11 @@ const (
 	// AI profile text-field zones — clicking a field focuses it (the
 	// click equivalent of tab/shift+tab cycling), so the form is fully
 	// mouse-navigable. Typing still needs the keyboard.
-	ZoneAIFieldName     = "zone:settings:ai:field:name"
-	ZoneAIFieldProvider = "zone:settings:ai:field:provider"
-	ZoneAIFieldBaseURL  = "zone:settings:ai:field:base-url"
-	ZoneAIFieldModel    = "zone:settings:ai:field:model"
-	ZoneAIFieldAPIKey   = "zone:settings:ai:field:api-key"
-	ZoneAIFieldTimeout  = "zone:settings:ai:field:timeout"
+	ZoneAIFieldName    = "zone:settings:ai:field:name"
+	ZoneAIFieldBaseURL = "zone:settings:ai:field:base-url"
+	ZoneAIFieldModel   = "zone:settings:ai:field:model"
+	ZoneAIFieldAPIKey  = "zone:settings:ai:field:api-key"
+	ZoneAIFieldTimeout = "zone:settings:ai:field:timeout"
 
 	// Repo-context text-field zones — same click-to-focus treatment for
 	// the repo-context tab's text/number inputs (the toggles already
@@ -49,8 +45,3 @@ const (
 	ZoneRepoFieldExpertMaxB  = "zone:settings:repo:field:expert-max-bytes"
 	ZoneRepoFieldExpertTTL   = "zone:settings:repo:field:expert-ttl"
 )
-
-// ZoneProfileRow returns the bubblezone ID for the profile row at idx.
-func ZoneProfileRow(idx int) string {
-	return "zone:settings:profile:row:" + strconv.Itoa(idx)
-}
