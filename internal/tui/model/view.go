@@ -43,8 +43,19 @@ func (m *Model) View() string {
 	body := m.renderBody()
 	status := m.renderStatus()
 	main := lipgloss.JoinVertical(lipgloss.Left, header, body, status)
+	// Composite the PR-detail controls profile dropdown (if open) onto the
+	// full-screen view before the overlay stack so it anchors to its
+	// trigger using absolute coordinates.
+	main = m.overlayControlsProfile(main)
 	out := m.overlayStack.View(main, m.width, m.height)
 	return zone.Scan(out)
+}
+
+// headerHeight is the rendered row count of the chrome header bar. Used as
+// the settings body's content origin so an open dropdown's geometric mouse
+// hit-test aligns with the on-screen panel.
+func (m *Model) headerHeight() int {
+	return lipgloss.Height(m.renderHeader())
 }
 
 func (m *Model) renderHeader() string {

@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
+	bubbledropdown "github.com/madicen/bubble-dropdown"
 	overlay "github.com/madicen/bubble-overlay"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
@@ -233,6 +234,14 @@ type Model struct {
 
 	langAgents         *langagentstui.Model
 	langAgentsPrevMode mode
+
+	// controlsProfileDD is the AI-profile dropdown in the PR-detail
+	// "Review controls" pane. It is positioned from the trigger's
+	// bubblezone-scanned (absolute) coordinates, cached here so the panel
+	// stays put while open even though the trigger sits under the overlay.
+	controlsProfileDD    *bubbledropdown.Dropdown
+	controlsProfileDDRow int
+	controlsProfileDDCol int
 
 	width  int
 	height int
@@ -567,6 +576,24 @@ func (m *Model) shouldPassMouseToBackground(msg tea.MouseMsg) bool {
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// PR-detail "Review controls" profile dropdown: while its panel is open
+	// (and no modal overlay is active) it owns key/mouse input. ctrl+c still
+	// quits. Result messages close it and apply the chosen profile.
+	if m.mode == modeDetail && m.overlayStack.Top() == nil {
+		switch typed := msg.(type) {
+		case bubbledropdown.ItemChosenMsg, bubbledropdown.ItemCanceledMsg:
+			return m, m.handleControlsProfileResult(msg)
+		case tea.KeyMsg:
+			if m.controlsProfileDropdownOpen() && typed.String() != "ctrl+c" {
+				return m, m.forwardControlsProfileDropdown(msg)
+			}
+		case tea.MouseMsg:
+			if m.controlsProfileDropdownOpen() {
+				return m, m.forwardControlsProfileDropdown(msg)
+			}
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -574,9 +601,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.relayout()
 		if m.mode == modeSettings && m.settings != nil {
 			m.settings.Resize(m.width, m.chromeBodyHeight())
+			m.settings.SetContentOrigin(m.headerHeight())
 		}
 		if m.mode == modeRepoAgents && m.repoAgents != nil {
 			m.repoAgents.Resize(m.width, m.chromeBodyHeight())
+			m.repoAgents.SetContentOrigin(m.headerHeight())
 		}
 		if m.mode == modeLangAgents && m.langAgents != nil {
 			m.langAgents.Resize(m.width, m.chromeBodyHeight())

@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
+	bubbledropdown "github.com/madicen/bubble-dropdown"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
@@ -89,32 +90,50 @@ func TestMouseClickCloseSendsNavigateMsg(t *testing.T) {
 	}
 }
 
-func TestMouseClickPrevNextRotatesRepoIdx(t *testing.T) {
+func TestArrowKeysRotateRepoIdx(t *testing.T) {
 	m := newTestModel(t, []string{"a/b", "c/d", "e/f"})
 	renderAndScan(m)
 	if m.repoIdx != 0 {
 		t.Fatalf("initial repoIdx should be 0, got %d", m.repoIdx)
 	}
 
-	// Click "next →" twice.
 	for i := 0; i < 2; i++ {
-		_ = m.handleMouse(clickCenter(t, ZoneNextRepo))
+		m.moveNextRepo()
 		renderAndScan(m)
 	}
 	if m.repoIdx != 2 {
-		t.Fatalf("after 2 next clicks repoIdx=%d want 2", m.repoIdx)
+		t.Fatalf("after 2 next steps repoIdx=%d want 2", m.repoIdx)
 	}
-	// Wrap-around with one more next.
-	_ = m.handleMouse(clickCenter(t, ZoneNextRepo))
+	m.moveNextRepo()
 	renderAndScan(m)
 	if m.repoIdx != 0 {
 		t.Fatalf("wraparound: repoIdx=%d want 0", m.repoIdx)
 	}
-	// Prev wraps to last.
-	_ = m.handleMouse(clickCenter(t, ZonePrevRepo))
+	m.movePrevRepo()
 	renderAndScan(m)
 	if m.repoIdx != 2 {
 		t.Fatalf("prev-wraparound: repoIdx=%d want 2", m.repoIdx)
+	}
+}
+
+// TestRepoDropdownClickOpensPanel: clicking the repo dropdown trigger opens
+// its panel, and choosing an item switches the active repo.
+func TestRepoDropdownClickOpensAndSelects(t *testing.T) {
+	m := newTestModel(t, []string{"a/b", "c/d", "e/f"})
+	renderAndScan(m)
+
+	_ = m.handleMouse(clickCenter(t, ZoneRepoDD))
+	if !m.repoDropdownOpen() {
+		t.Fatal("clicking the repo trigger should open the dropdown panel")
+	}
+
+	// Choosing index 2 switches the active repo to e/f.
+	_ = m.forwardToRepoDropdown(bubbledropdown.ItemChosenMsg{Index: 2})
+	if m.repoIdx != 2 {
+		t.Fatalf("after choosing index 2, repoIdx=%d want 2", m.repoIdx)
+	}
+	if m.repoDropdownOpen() {
+		t.Fatal("choosing an item should close the dropdown panel")
 	}
 }
 

@@ -37,13 +37,10 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 	if z := zone.Get(ZoneClose); z != nil && z.InBounds(msg) {
 		return state.NavigateTarget{Kind: state.NavBack}.Cmd()
 	}
-	if z := zone.Get(ZonePrevRepo); z != nil && z.InBounds(msg) {
-		m.movePrevRepo()
-		return m.maybeLoadAgentsCmd()
-	}
-	if z := zone.Get(ZoneNextRepo); z != nil && z.InBounds(msg) {
-		m.moveNextRepo()
-		return m.maybeLoadAgentsCmd()
+	// Repo dropdown trigger: open the panel (the dropdown trusts the zone
+	// hit, so forwarding the press opens it regardless of coordinates).
+	if z := zone.Get(ZoneRepoDD); z != nil && z.InBounds(msg) {
+		return m.forwardToRepoDropdown(msg)
 	}
 	if m.addingRepo {
 		if z := zone.Get(ZoneAddRepoSave); z != nil && z.InBounds(msg) {

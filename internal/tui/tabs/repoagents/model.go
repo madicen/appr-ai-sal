@@ -20,6 +20,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
+	bubbledropdown "github.com/madicen/bubble-dropdown"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
@@ -74,6 +75,17 @@ type Model struct {
 
 	repos   []string // lowercased owner/repo
 	repoIdx int
+
+	// Active-repository dropdown (bubble-dropdown). Recreated when the repo
+	// list or selection changes (the component has no runtime SetOptions).
+	repoDD *bubbledropdown.Dropdown
+	// ddRepoRow is the content-line index of the dropdown trigger, recorded
+	// while buildContent runs so View can apply scroll-adjusted bounds.
+	ddRepoRow int
+	// contentTop is the absolute terminal row where the tab body begins
+	// (chrome header height); mouse events are translated by it before
+	// reaching an open dropdown's geometric hit-test.
+	contentTop int
 
 	// addingRepo true while the user is typing into the inline owner/repo input.
 	addingRepo bool
@@ -363,8 +375,19 @@ func (m *Model) View() string {
 	footerH := lipgloss.Height(footer)
 	vpH := max(1, m.bodyH-footerH-1)
 	m.vp.Height = vpH
+	// Keep the repo dropdown's options/selection fresh (no-op while open).
+	m.refreshRepoDropdown()
 	m.vp.SetContent(m.buildContent())
+	if m.repoDD != nil {
+		tw, th := m.repoDD.TriggerSize()
+		m.repoDD.SetBounds(m.ddRepoRow-m.vp.YOffset, 0, tw, th)
+	}
 	body := m.vp.View()
+	if m.repoDropdownOpen() {
+		// Composite the panel onto the scrollable body only; clamping to the
+		// viewport height keeps it from bleeding into the sticky footer.
+		body = m.repoDD.ViewWithOverlay(body, m.width, vpH)
+	}
 	return lipgloss.NewStyle().
 		Width(m.width).
 		MaxWidth(m.width).
@@ -374,6 +397,23 @@ func (m *Model) View() string {
 
 // Update implements tea.Model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Dropdown result messages (emitted as commands on a later tick) close
+	// the open dropdown and apply the choice.
+	switch msg.(type) {
+	case bubbledropdown.ItemChosenMsg, bubbledropdown.ItemCanceledMsg:
+		if m.repoDropdownOpen() {
+			return m, m.forwardToRepoDropdown(msg)
+		}
+		return m, nil
+	}
+	// When the repo dropdown panel is open, route all key/mouse input to it.
+	if m.repoDropdownOpen() {
+		switch msg.(type) {
+		case tea.KeyMsg, tea.MouseMsg:
+			return m, m.forwardToRepoDropdown(msg)
+		}
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -1276,7 +1316,7 @@ func (m *Model) buildContent() string {
 	b.WriteString(boldStyle.Render("Repo Agents") + "  ")
 	b.WriteString(dimStyle.Render("· per-specialist briefs that get injected into reviews for this repo") + "\n\n")
 
-	b.WriteString(m.renderRepoSelector())
+	b.WriteString(m.renderRepoSelector(strings.Count(b.String(), "\n")))
 	b.WriteString("\n")
 	if m.editing {
 		b.WriteString(m.renderEditPane())
@@ -1298,19 +1338,19 @@ func (m *Model) buildContent() string {
 	return b.String()
 }
 
-func (m *Model) renderRepoSelector() string {
+func (m *Model) renderRepoSelector(base int) string {
 	var b strings.Builder
 	b.WriteString(boldStyle.Render("Repository") + "\n")
-	if len(m.repos) == 0 {
+	if len(m.repos) == 0 || m.repoDD == nil {
 		b.WriteString(dimStyle.Render("no repos yet — paste an owner/repo to start"))
 		b.WriteString("\n")
 	} else {
-		cur := m.currentRepoKey()
-		nav := zone.Mark(ZonePrevRepo, chipStyle.Render(" ← prev ")) + " " +
-			boldStyle.Render(cur) + " " +
-			dimStyle.Render(fmt.Sprintf("(%d/%d)", m.repoIdx+1, len(m.repos))) + " " +
-			zone.Mark(ZoneNextRepo, chipStyle.Render(" next → "))
-		b.WriteString(nav + "\n")
+		// Record the trigger's content-line index so View can position the
+		// overlay panel after the viewport scroll offset is known.
+		m.ddRepoRow = base + strings.Count(b.String(), "\n")
+		b.WriteString(zone.Mark(ZoneRepoDD, m.repoDD.TriggerView()) + " ")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("(%d/%d)", m.repoIdx+1, len(m.repos))) + " ")
+		b.WriteString(dimStyle.Render("←/→ to cycle") + "\n")
 	}
 	if m.addingRepo {
 		b.WriteString(zone.Mark(ZoneAddRepoField, m.addInput.View()))

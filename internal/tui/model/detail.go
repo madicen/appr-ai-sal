@@ -190,12 +190,10 @@ func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
 	case zoneInBounds(zones.ControlsStrictStrict, msg):
 		m.setStrictness(aiconfig.ReviewStrict)
 		return nil, true
-	case zoneInBounds(zones.ControlsProfilePrev, msg):
-		m.cycleAIProfile(-1)
-		return nil, true
-	case zoneInBounds(zones.ControlsProfileNext, msg):
-		m.cycleAIProfile(+1)
-		return nil, true
+	case zoneInBounds(zones.ControlsProfileDD, msg):
+		// Open the profile dropdown panel; the dropdown trusts the zone
+		// hit, so forwarding the press opens it regardless of coordinates.
+		return m.forwardControlsProfileDropdown(msg), true
 	case zoneInBounds(zones.ControlsProfileEdit, msg):
 		return m.openSettings(settings.StartAI), true
 	case zoneInBounds(zones.ControlsRepoAgents, msg):
@@ -256,14 +254,6 @@ func (m *Model) setStrictness(level aiconfig.ReviewStrictness) {
 		m.opts.AIConfig = aiconfig.DefaultConfig()
 	}
 	m.opts.AIConfig.ReviewStrictness = level
-	m.refreshDetailViews()
-}
-
-func (m *Model) cycleAIProfile(delta int) {
-	if m.opts.AIConfig == nil {
-		return
-	}
-	m.opts.AIConfig.CycleActive(delta)
 	m.refreshDetailViews()
 }
 
