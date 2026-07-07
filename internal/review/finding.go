@@ -157,6 +157,31 @@ func SuggestionPostsToGitHub(f Finding) bool {
 	return true
 }
 
+// SpecialistOutcome distinguishes how a specialist/PR-agent stage ended, so
+// the run summary can tell partial-degradation apart from a clean run (R4):
+//   - OutcomeOK: the stage ran to completion (it may still have zero findings).
+//   - OutcomeFailed: the stage ran but errored after exhausting its retries.
+//   - OutcomeSkipped: the stage never ran because the run's circuit breaker
+//     aborted the remaining stages (or it was otherwise intentionally bypassed).
+type SpecialistOutcome int
+
+const (
+	OutcomeOK SpecialistOutcome = iota
+	OutcomeFailed
+	OutcomeSkipped
+)
+
+func (o SpecialistOutcome) String() string {
+	switch o {
+	case OutcomeFailed:
+		return "failed-after-retries"
+	case OutcomeSkipped:
+		return "skipped"
+	default:
+		return "ok"
+	}
+}
+
 // SpecialistResult is the output of one specialist over the PR.
 type SpecialistResult struct {
 	Specialist string    `json:"specialist"`
@@ -165,6 +190,15 @@ type SpecialistResult struct {
 	// Err is non-nil if the specialist failed to run; Summary/Findings will be
 	// empty in that case.
 	Err error `json:"-"`
+	// Outcome distinguishes a clean run from a failed-after-retries run and a
+	// skipped (circuit-breaker-aborted) stage. Zero value is OutcomeOK, so
+	// results built without setting it behave as before; the runner sets
+	// OutcomeFailed on a retry-exhausted stage and OutcomeSkipped on an aborted
+	// one. Never posted to GitHub.
+	Outcome SpecialistOutcome `json:"-"`
+	// OutcomeReason explains a non-OK Outcome (e.g. the circuit-breaker reason
+	// a stage was skipped). Never posted to GitHub.
+	OutcomeReason string `json:"-"`
 	// RepairFired / RepairSucceeded record the suggestion-repair pass's
 	// hidden second LLM call: how many suggestion-less findings were sent to
 	// the repair model and how many came back with a re-validated one-click
@@ -172,6 +206,27 @@ type SpecialistResult struct {
 	// observable. Never posted to GitHub.
 	RepairFired     int `json:"-"`
 	RepairSucceeded int `json:"-"`
+}
+
+// EffectiveOutcome resolves the stage's outcome robustly: an explicit Outcome
+// wins, otherwise a non-nil Err is treated as OutcomeFailed. This lets callers
+// that set only Err (the pre-R4 convention, and much of the test corpus) still
+// be classified correctly as failed-after-retries.
+func (r SpecialistResult) EffectiveOutcome() SpecialistOutcome {
+	if r.Outcome != OutcomeOK {
+		return r.Outcome
+	}
+	if r.Err != nil {
+		return OutcomeFailed
+	}
+	return OutcomeOK
+}
+
+// skippedSpecialistResult builds a placeholder result for a stage the circuit
+// breaker aborted before it ran, so the summary can list it as degraded
+// (skipped, not failed) without a spurious Err.
+func skippedSpecialistResult(name, reason string) SpecialistResult {
+	return SpecialistResult{Specialist: name, Outcome: OutcomeSkipped, OutcomeReason: reason}
 }
 
 // SpecialistsHaveAnyFindings reports whether any specialist produced at least

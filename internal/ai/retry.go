@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net"
 	"net/http"
@@ -17,7 +18,15 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 )
 
-// IsRetryableCompleteError returns true for timeouts, rate limits, and common transient failures.
+// IsRetryableCompleteError returns true for timeouts, rate limits, and common
+// transient failures. Classification is TYPE-BASED: it inspects error types
+// (context errors, *APIHTTPError, *ClaudeExecError, net.Error, url.Error, and
+// sentinel syscall/io errors via errors.Is) rather than scanning the whole
+// error message for magic substrings like "eof" or "429". The old
+// substring-anywhere scan produced false positives (e.g. any message
+// containing "eof", such as a JS "beforeEach"-adjacent stack, was treated as
+// retryable); the typed Claude error (parsed once from the subprocess exit +
+// stderr) and the existing HTTP APIHTTPError taxonomy replace it.
 func IsRetryableCompleteError(err error) bool {
 	if err == nil {
 		return false
@@ -28,6 +37,12 @@ func IsRetryableCompleteError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	// Claude subprocess: retry only transient classes (rate-limit / network).
+	var ce *ClaudeExecError
+	if errors.As(err, &ce) {
+		return ce.Retryable()
+	}
+	// HTTP providers: the APIHTTPError taxonomy owns 429/5xx/Retry-After.
 	var he *APIHTTPError
 	if errors.As(err, &he) && he.Retryable() {
 		return true
@@ -40,42 +55,31 @@ func IsRetryableCompleteError(err error) bool {
 	if errors.As(err, &ue) && ue.Timeout() {
 		return true
 	}
-	if errors.Is(err, syscall.ECONNRESET) || errors.Is(err, syscall.EPIPE) {
+	// Sentinel transport failures, matched by type/identity (not substring):
+	// connection reset/refused/broken pipe/timed-out and stream truncation.
+	if errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ETIMEDOUT) {
 		return true
 	}
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "timeout"),
-		strings.Contains(msg, "timed out"),
-		strings.Contains(msg, "deadline exceeded"),
-		strings.Contains(msg, "connection reset"),
-		strings.Contains(msg, "connection refused"),
-		strings.Contains(msg, "eof"),
-		strings.Contains(msg, "broken pipe"):
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
-	case strings.Contains(msg, "429"),
-		strings.Contains(msg, "rate limit"),
-		strings.Contains(msg, "too many requests"),
-		strings.Contains(msg, "resource exhausted"),
-		strings.Contains(msg, "overloaded"),
-		strings.Contains(msg, "503"),
-		strings.Contains(msg, "502"),
-		strings.Contains(msg, "504"),
-		strings.Contains(msg, "quota"),
-		strings.Contains(msg, "insufficient_quota"),
-		strings.Contains(msg, "rate_limit"),
-		strings.Contains(msg, "requests per minute"):
-		return true
-	default:
-		return false
 	}
+	return false
 }
 
 // isQuotaOrRateLimitError reports errors where a longer backoff helps (429,
-// quota messages, overloaded APIs). Used to raise minimum wait on retries.
+// quota messages, overloaded APIs). Used to raise the minimum wait on retries.
+// Type-based: it keys off *APIHTTPError (status + provider error body) and the
+// typed *ClaudeExecError class rather than scanning the whole error string.
 func isQuotaOrRateLimitError(err error) bool {
 	if err == nil {
 		return false
+	}
+	var ce *ClaudeExecError
+	if errors.As(err, &ce) && ce != nil && ce.Class == ClaudeClassRateLimited {
+		return true
 	}
 	var he *APIHTTPError
 	if errors.As(err, &he) && he != nil {
@@ -83,6 +87,8 @@ func isQuotaOrRateLimitError(err error) bool {
 			return true
 		}
 		if he.Retryable() {
+			// Inspecting the provider's own error BODY (a bounded, structured
+			// field) is fine; this is not a scan of the whole wrapped message.
 			low := strings.ToLower(he.Body)
 			if strings.Contains(low, "quota") ||
 				strings.Contains(low, "rate_limit") ||
@@ -95,14 +101,7 @@ func isQuotaOrRateLimitError(err error) bool {
 			}
 		}
 	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "quota") ||
-		strings.Contains(msg, "insufficient_quota") ||
-		strings.Contains(msg, "rate_limit") ||
-		strings.Contains(msg, "rate limit") ||
-		strings.Contains(msg, "too many requests") ||
-		strings.Contains(msg, "resource exhausted") ||
-		strings.Contains(msg, "429")
+	return false
 }
 
 // parseRetryAfterHeader interprets Retry-After as delta-seconds or HTTP-date.
@@ -256,13 +255,27 @@ func completeWithRetry(ctx context.Context, cfg *aiconfig.Config, fn func(contex
 	max := cfg.InferenceRetryMaxAttempts()
 	base := cfg.InferenceRetryBase()
 	maxWait := cfg.InferenceRetryMaxBackoff()
+	// R4: draw every provider call from the stage's shared attempt budget (when
+	// one is installed) so this inner loop and the stage-level retry loop can't
+	// multiply. Each call — including the first — claims one unit; when the pool
+	// is empty we stop even if this loop's own max hasn't been reached.
+	budget := AttemptBudgetFromContext(ctx)
 
 	var lastErr error
-	for attempt := 0; attempt < max; attempt++ {
+	attempt := 0
+	for ; attempt < max; attempt++ {
 		if attempt > 0 {
 			if err := SleepBeforeRetry(ctx, attempt-1, base, maxWait, lastErr); err != nil {
 				return Result{}, attempt, err
 			}
+		}
+		if !budget.tryConsume() {
+			// Shared budget exhausted (a prior sibling call in this stage used
+			// it up). Surface a stable error so the stage loop stops too.
+			if lastErr == nil {
+				lastErr = errors.New("shared attempt budget exhausted")
+			}
+			return Result{}, attempt, fmt.Errorf("AI inference stopped after %d attempt(s): %w", attempt, lastErr)
 		}
 		out, err := fn(ctx)
 		if err == nil {
@@ -276,5 +289,5 @@ func completeWithRetry(ctx context.Context, cfg *aiconfig.Config, fn func(contex
 			break
 		}
 	}
-	return Result{}, max - 1, fmt.Errorf("AI inference failed after %d attempts: %w", max, lastErr)
+	return Result{}, attempt, fmt.Errorf("AI inference failed after %d attempts: %w", attempt+1, lastErr)
 }

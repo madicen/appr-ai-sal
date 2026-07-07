@@ -27,7 +27,7 @@ import (
 // Progress messages are emitted on the channel returned by Run so the TUI can
 // stream updates to the user as specialists complete.
 type Progress struct {
-	Stage   string // "checkout", "diff", "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "pr-agent", "vibe-coach", "repo-arbiter", "usage", "done"; specialist/pr-agent Detail is "<name>:start"/"<name>:done"/"<name>:retry N (...)" (pr-agent also emits "warning: ..." for fetch failures); vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed
+	Stage   string // "checkout", "diff", "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "pr-agent", "vibe-coach", "repo-arbiter", "circuit-breaker", "degraded", "usage", "done"; specialist/pr-agent Detail is "<name>:start"/"<name>:done"/"<name>:retry N (...)"/"<name>:skipped" (pr-agent also emits "warning: ..." for fetch failures); vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed; circuit-breaker/degraded (R4) carry the abort reason / partial-degradation summary in Detail
 	Detail  string // free-form detail about the stage
 	Err     error  // non-nil if this stage hit an error worth surfacing
 	Result  *SpecialistResult
@@ -130,6 +130,14 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// parallel defaults safe. No inference has happened yet at this point
 		// (only gh/git fetches), so no call escapes the cap.
 		ctx = ai.WithConcurrencyLimit(ctx, rc.MaxConcurrentInferenceOrDefault())
+
+		// R4: aggregate run circuit breaker. Trips when too many AI stages fail
+		// in a row OR the whole run exceeds a wall-clock cap; once tripped the
+		// remaining stages are skipped (never interrupted mid-call) and marked
+		// degraded so the summary can disclose the partial review. Both arms are
+		// configurable via repo-context.json (see RunWallClockCap /
+		// MaxConsecutiveStageFailuresOrDefault; a negative value disables an arm).
+		breaker := newRunBreaker(runStart, rc.RunWallClockCap(), rc.MaxConsecutiveStageFailuresOrDefault())
 
 		// R3: shape the diff BEFORE it is inlined into any prompt. The budgeter
 		// drops lockfiles/vendored/generated/minified/binary files (manifest
@@ -275,7 +283,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			go func() {
 				defer prWG.Done()
 				prData := <-prDataCh
-				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, out))
+				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, breaker, out))
 			}()
 		}
 
@@ -283,13 +291,13 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// or parallel when configured / env override — see runSpecialistsPhase.
 		// They receive the shaped diff (R3) so no single call can overflow the
 		// provider context window.
-		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, perAgent, prEvidence, langSection, techSection, out)
+		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, perAgent, prEvidence, langSection, techSection, breaker, out)
 
 		if prParallel {
 			prWG.Wait()
 		} else if prAgentsEnabled {
 			prData := <-prDataCh
-			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, out))
+			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, breaker, out))
 		}
 
 		cv := <-cvCh
@@ -330,7 +338,12 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			final.DiffBudget = &br
 		}
 
-		if skipDownstream {
+		breakerTripped, breakerJust, breakerReason := breaker.check(time.Now())
+		announceBreakerTrip(out, breakerJust, breakerReason)
+		if skipDownstream || breakerTripped {
+			// No findings to synthesize, OR the circuit breaker tripped during
+			// the specialist/PR-agent phases — either way skip the synthesis
+			// stages (don't pile more calls onto a wedged run).
 			out <- Progress{Stage: "vibe-coach", Detail: "skipped"}
 			if rc != nil && rc.RepoExpertPanel {
 				out <- Progress{Stage: "repo-arbiter", Detail: "skipped"}
@@ -375,6 +388,10 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				if arb != nil && arb.Err == nil {
 					FinalizeRepoArbiter(arb, final)
 				}
+				// Feed the arbiter's outcome to the breaker so a synthesis-stage
+				// failure counts toward the consecutive-failure abort too.
+				_, aJust, aReason := breaker.recordStage(arb == nil || arb.Err != nil, time.Now())
+				announceBreakerTrip(out, aJust, aReason)
 				out <- Progress{Stage: "repo-arbiter", Detail: "done", Arbiter: arb}
 			}
 
@@ -383,12 +400,28 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			// the moment they reach the approve phase. The TUI re-runs it
 			// lazily only if the user changes the skip set during approve
 			// (see reviewOverlay.enterSummary + RunVibeCoachForDraft).
-			out <- Progress{Stage: "vibe-coach", Detail: "start"}
-			vibe := RunVibeCoachForDraft(ctx, runCfg, final, func(attempt int, err error) {
-				out <- Progress{Stage: "vibe-coach", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
-			})
-			final.VibeCoach = vibe
-			out <- Progress{Stage: "vibe-coach", Detail: "done", Vibe: vibe}
+			if tripped, just, reason := breaker.check(time.Now()); tripped {
+				announceBreakerTrip(out, just, reason)
+				out <- Progress{Stage: "vibe-coach", Detail: "skipped"}
+			} else {
+				out <- Progress{Stage: "vibe-coach", Detail: "start"}
+				vibe := RunVibeCoachForDraft(ctx, runCfg, final, func(attempt int, err error) {
+					out <- Progress{Stage: "vibe-coach", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
+				})
+				final.VibeCoach = vibe
+				out <- Progress{Stage: "vibe-coach", Detail: "done", Vibe: vibe}
+			}
+		}
+
+		// R4: surface partial-degradation so the user (and the posted body) can
+		// see which stages failed after retries vs which were skipped by the
+		// circuit breaker.
+		if failedStages, skippedStages := final.DegradedStages(); len(failedStages)+len(skippedStages) > 0 {
+			applog.Info("review run degraded",
+				"ref", ref.String(),
+				"failed", strings.Join(failedStages, ","),
+				"skipped", strings.Join(skippedStages, ","))
+			out <- Progress{Stage: "degraded", Detail: degradedDetail(failedStages, skippedStages)}
 		}
 
 		runUsage := usageAcc.snapshot(time.Since(runStart))
@@ -465,7 +498,7 @@ func HasUsableTechExperts(pr *gh.PR, rc *repoconfig.Config) bool {
 //
 // techSection is the rendered technology-experts section (one labelled block
 // per configured tech for this repo); shared across every specialist.
-func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, langSection string, techSection string, out chan<- Progress) []SpecialistResult {
+func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, langSection string, techSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "specialist", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
@@ -506,11 +539,40 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 	parallel := rc != nil && rc.ParallelSpecialists
 	if !parallel {
 		for i, name := range active {
+			// R4: before starting each specialist, honour the circuit breaker.
+			// Once tripped, mark this specialist and every remaining one skipped
+			// (not failed — they never ran) and stop, so a run that's already
+			// wedged doesn't grind through the whole panel.
+			if tripped, just, reason := breaker.check(time.Now()); tripped {
+				announceBreakerTrip(out, just, reason)
+				for j := i; j < len(active); j++ {
+					specialists[j] = skippedSpecialistResult(active[j], "circuit breaker: "+reason)
+					out <- Progress{Stage: "specialist", Detail: active[j] + ":skipped"}
+				}
+				return specialists
+			}
 			specialists[i] = runOne(name)
+			if specialists[i].Err != nil {
+				specialists[i].Outcome = OutcomeFailed
+			}
+			_, just, reason := breaker.recordStage(specialists[i].Err != nil, time.Now())
+			announceBreakerTrip(out, just, reason)
 		}
 		return specialists
 	}
 
+	// Parallel dispatch: the breaker can't abort an in-flight call, so we run
+	// the phase, then feed each result (in slice order, deterministic) to the
+	// breaker so a downstream phase (PR agents / witness / arbiter / vibe) is
+	// aborted if this phase tripped it.
+	if tripped, just, reason := breaker.check(time.Now()); tripped {
+		announceBreakerTrip(out, just, reason)
+		for i, name := range active {
+			specialists[i] = skippedSpecialistResult(name, "circuit breaker: "+reason)
+			out <- Progress{Stage: "specialist", Detail: name + ":skipped"}
+		}
+		return specialists
+	}
 	var wg sync.WaitGroup
 	for i, name := range active {
 		wg.Add(1)
@@ -521,6 +583,13 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 		}()
 	}
 	wg.Wait()
+	for i := range specialists {
+		if specialists[i].Err != nil {
+			specialists[i].Outcome = OutcomeFailed
+		}
+		_, just, reason := breaker.recordStage(specialists[i].Err != nil, time.Now())
+		announceBreakerTrip(out, just, reason)
+	}
 	return specialists
 }
 
@@ -530,7 +599,7 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 // run sequentially by default, or concurrently among themselves when
 // rc.ParallelPRAgents is set. Results are returned in AllPRAgents order;
 // callers may re-sort with sortedPRAgentResults after parallel runs.
-func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, in PRAgentInput, out chan<- Progress) []SpecialistResult {
+func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, in PRAgentInput, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "pr-agent", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
@@ -558,11 +627,32 @@ func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconf
 	parallel := rc != nil && rc.ParallelPRAgents
 	if !parallel {
 		for i, name := range AllPRAgents {
+			if tripped, just, reason := breaker.check(time.Now()); tripped {
+				announceBreakerTrip(out, just, reason)
+				for j := i; j < len(AllPRAgents); j++ {
+					results[j] = skippedSpecialistResult(AllPRAgents[j], "circuit breaker: "+reason)
+					out <- Progress{Stage: "pr-agent", Detail: AllPRAgents[j] + ":skipped"}
+				}
+				return results
+			}
 			results[i] = runOne(name)
+			if results[i].Err != nil {
+				results[i].Outcome = OutcomeFailed
+			}
+			_, just, reason := breaker.recordStage(results[i].Err != nil, time.Now())
+			announceBreakerTrip(out, just, reason)
 		}
 		return results
 	}
 
+	if tripped, just, reason := breaker.check(time.Now()); tripped {
+		announceBreakerTrip(out, just, reason)
+		for i, name := range AllPRAgents {
+			results[i] = skippedSpecialistResult(name, "circuit breaker: "+reason)
+			out <- Progress{Stage: "pr-agent", Detail: name + ":skipped"}
+		}
+		return results
+	}
 	var wg sync.WaitGroup
 	for i, name := range AllPRAgents {
 		wg.Add(1)
@@ -573,7 +663,22 @@ func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconf
 		}()
 	}
 	wg.Wait()
+	for i := range results {
+		if results[i].Err != nil {
+			results[i].Outcome = OutcomeFailed
+		}
+		_, just, reason := breaker.recordStage(results[i].Err != nil, time.Now())
+		announceBreakerTrip(out, just, reason)
+	}
 	return results
+}
+
+// announceBreakerTrip emits the one-time circuit-breaker Progress event when a
+// recordStage/check call is the one that tripped the breaker.
+func announceBreakerTrip(out chan<- Progress, justTripped bool, reason string) {
+	if justTripped {
+		out <- Progress{Stage: "circuit-breaker", Detail: "aborting remaining stages: " + reason}
+	}
 }
 
 // runConventionWitnessPhase calls the convention-witness agent for any
@@ -646,6 +751,20 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 	}
 	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("done (%d witnesses)", len(res.Witnesses))}
 	return res.Witnesses
+}
+
+// degradedDetail formats a one-line summary of degraded stages for the
+// Stage="degraded" Progress event, e.g. "failed after retries: security;
+// skipped: docs, tech".
+func degradedDetail(failed, skipped []string) string {
+	var parts []string
+	if len(failed) > 0 {
+		parts = append(parts, "failed after retries: "+strings.Join(failed, ", "))
+	}
+	if len(skipped) > 0 {
+		parts = append(parts, "skipped: "+strings.Join(skipped, ", "))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // retryReason produces a short, log-friendly label for the cause of a retry.

@@ -15,6 +15,14 @@ import (
 
 const defaultMaxBytes = 24576
 const defaultMaxConcurrentInference = 3
+
+// Circuit-breaker defaults (R4). The run aborts the remaining AI stages when
+// EITHER trips: too many consecutive stage failures, or the whole-run
+// wall-clock cap is exceeded. Both are "abort before starting the next stage"
+// checks — an in-flight stage is never interrupted mid-call. A configured
+// value <= 0 disables that arm of the breaker (see the OrDefault accessors).
+const defaultMaxConsecutiveStageFailures = 4
+const defaultRunWallClockCap = 30 * time.Minute
 const defaultTTL = 24 * time.Hour
 const defaultPRHistoryLimit = 30
 const defaultRepoExpertReviewPRs = 8
@@ -149,6 +157,17 @@ type Config struct {
 	// omitted" marker (leading lines keep their real line numbers so inline
 	// findings still anchor correctly). 0 (unset) resolves to the default.
 	DiffPerFileLineCap int `json:"diff_per_file_line_cap,omitempty"`
+	// MaxConsecutiveStageFailures is the R4 circuit-breaker limit: after this
+	// many AI stages fail in a row (in result order), the run aborts the
+	// remaining stages instead of grinding through the whole panel. 0 (unset)
+	// resolves to the default (4); a negative value disables this arm.
+	MaxConsecutiveStageFailures int `json:"max_consecutive_stage_failures,omitempty"`
+	// RunWallClockCapSeconds is the R4 whole-run wall-clock cap. Once elapsed,
+	// no further stage is STARTED (in-flight stages finish); the remaining
+	// stages are marked skipped and disclosed. 0 (unset) resolves to the
+	// default (1800s = 30m); a negative value disables the cap. This never
+	// interrupts a running stage mid-call — it only stops starting new ones.
+	RunWallClockCapSeconds int `json:"run_wall_clock_cap_seconds,omitempty"`
 }
 
 // Default returns defaults suitable for merging.
@@ -344,6 +363,14 @@ func (c *Config) Merge(o *Config) {
 	if o.DiffPerFileLineCap > 0 {
 		c.DiffPerFileLineCap = o.DiffPerFileLineCap
 	}
+	// Copy non-zero values so a negative (explicit "disable") survives Merge —
+	// the OrDefault accessors treat 0 as "use default" and <0 as "disabled".
+	if o.MaxConsecutiveStageFailures != 0 {
+		c.MaxConsecutiveStageFailures = o.MaxConsecutiveStageFailures
+	}
+	if o.RunWallClockCapSeconds != 0 {
+		c.RunWallClockCapSeconds = o.RunWallClockCapSeconds
+	}
 	// IncludePRHistory and RepoCultureSummarize are applied in Load() only when keys appear in JSON.
 }
 
@@ -451,6 +478,33 @@ func (c *Config) MaxConcurrentInferenceOrDefault() int {
 		return defaultMaxConcurrentInference
 	}
 	return c.MaxConcurrentInference
+}
+
+// MaxConsecutiveStageFailuresOrDefault returns the circuit-breaker's
+// consecutive-failure limit: the default (4) when unset (0), 0 (disabled) when
+// configured negative, or the configured positive value. A returned 0 means
+// "this arm of the breaker is off".
+func (c *Config) MaxConsecutiveStageFailuresOrDefault() int {
+	if c == nil || c.MaxConsecutiveStageFailures == 0 {
+		return defaultMaxConsecutiveStageFailures
+	}
+	if c.MaxConsecutiveStageFailures < 0 {
+		return 0 // disabled
+	}
+	return c.MaxConsecutiveStageFailures
+}
+
+// RunWallClockCap returns the whole-run wall-clock cap: the default (30m) when
+// unset (0), 0 (disabled) when configured negative, or the configured positive
+// value. A returned 0 duration means "no cap".
+func (c *Config) RunWallClockCap() time.Duration {
+	if c == nil || c.RunWallClockCapSeconds == 0 {
+		return defaultRunWallClockCap
+	}
+	if c.RunWallClockCapSeconds < 0 {
+		return 0 // disabled
+	}
+	return time.Duration(c.RunWallClockCapSeconds) * time.Second
 }
 
 // DiffElisionGlobsOrDefault returns the configured diff-elision globs, or the

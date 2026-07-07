@@ -391,6 +391,9 @@ optional JSON file **`~/.config/appr-ai-sal/ai.json`** (or under
 | `APPR_AI_SAL_AI_API_KEY` | API key for Gemini / OpenAI-compatible; often unused for local Ollama. |
 | `APPR_AI_SAL_AI_TIMEOUT_SEC` | HTTP client timeout and overall review context floor (default `300`). |
 | `APPR_AI_SAL_REVIEW_STRICTNESS` | `lenient` \| `balanced` \| `strict` (plus aliases above). |
+| `APPR_AI_SAL_AI_RETRY_MAX_ATTEMPTS` | Max tries per single `Complete` call, including the first (default `5`; `1` disables inner retry). |
+| `APPR_AI_SAL_AI_RETRY_BASE_MS` / `APPR_AI_SAL_AI_RETRY_MAX_MS` | First backoff delay / backoff cap between retries (defaults `1500` / `120000`). |
+| `APPR_AI_SAL_AI_RETRY_STAGE_BUDGET` | **Shared attempt budget (R4):** total provider invocations allowed for one pipeline stage, across both the stage-level retry and the inner `Complete` retry, so the two can't multiply. Also `retry_stage_attempt_budget` in `ai.json`. Default `5`; floored at 1, capped at 30. |
 
 ### CLI flags
 
@@ -469,6 +472,24 @@ rules as `ai.json` / `$APPR_AI_SAL_CONFIG_DIR`):
 | `diff_elision_globs` | Override the set of file globs the **diff budgeter** drops from the diff before it is inlined into review prompts (each dropped file becomes a one-line manifest entry the agents still see). When unset, sensible defaults apply: `*.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`, `Cargo.lock`, `composer.lock`, `Gemfile.lock`, `poetry.lock`, `vendor/`, `*_generated*`, `*.min.js`, `*.min.css` (plus any binary file). Matching is basename-based for slash-free patterns, prefix-based for patterns ending in `/`, and full-path otherwise. |
 | `diff_byte_cap` | Override the whole-diff byte budget the diff budgeter enforces before inlining the diff. `0` (unset) resolves to a conservative per-provider default (Gemini 768 KiB, Claude 512 KiB, Ollama / OpenAI-compatible 256 KiB) chosen so a large PR never overflows the provider context window / triggers a 400. When the cap is hit, trailing files/hunks are elided and disclosed. |
 | `diff_per_file_line_cap` | Override the per-file unified-diff line cap (default 1500). The **tail** of any single file over the cap is elided with a `…N lines omitted` marker; leading lines keep their real line numbers so inline findings still anchor correctly. `0` (unset) uses the default. |
+| `max_consecutive_stage_failures` | **Circuit breaker (R4):** after this many AI stages fail in a row, the run aborts the remaining stages instead of grinding through the whole panel. Default 4; `0` (unset) uses the default; a **negative** value disables this arm. |
+| `run_wall_clock_cap_seconds` | **Circuit breaker (R4):** whole-run wall-clock cap. Once elapsed, no further stage is *started* (in-flight stages finish); the remaining stages are marked skipped and disclosed. Default 1800 (30 min); `0` (unset) uses the default; a **negative** value disables the cap. It never interrupts a running stage mid-call. |
+
+**Retry sanity & circuit breaker (R4):** stage-level retry (a whole stage
+re-runs on a transient error) and the inner per-`Complete` retry share a single
+**attempt budget** — `retry_stage_attempt_budget` in `ai.json` (default 5) — so
+the two tiers can't multiply into ~25 calls per stage; the total provider calls
+for a stage are bounded by that number. The run also carries an aggregate
+**circuit breaker**: it aborts the remaining stages when either too many stages
+fail consecutively (`max_consecutive_stage_failures`) or the run exceeds
+`run_wall_clock_cap_seconds`, emitting a `circuit-breaker` progress event with
+the reason. When a run is degraded, the final summary and the posted review body
+list which stages **failed after retries** vs which were **skipped**, so a
+partial review is never mistaken for a clean one. Claude subprocess failures are
+now classified from a typed error (process exit code + parsed stderr →
+rate-limited / transient-network / auth / other) rather than by scanning the
+error text for substrings, so a benign message containing `eof`/`429` is no
+longer mistaken for a retryable failure.
 
 **Diff budgeting & truncation disclosure (R3):** the entire diff is no longer
 inlined uncapped into every LLM call. Before any prompt is built, the diff

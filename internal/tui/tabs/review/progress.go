@@ -203,6 +203,12 @@ func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 		if p.Err != nil {
 			m.log = append(m.log, "fetch PR: "+p.Err.Error())
 		}
+	case "circuit-breaker":
+		// R4: the run's circuit breaker tripped; remaining stages are skipped.
+		m.log = append(m.log, "circuit breaker: "+p.Detail)
+	case "degraded":
+		// R4: partial-degradation summary (which stages failed vs were skipped).
+		m.log = append(m.log, "degraded run — "+p.Detail)
 	case "usage":
 		// Running usage/cost total — store the latest snapshot so the overview
 		// and summary can show it climbing live. Totals only grow, so a later

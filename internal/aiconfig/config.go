@@ -60,6 +60,11 @@ type Profile struct {
 	RetryMaxAttempts int      `json:"retry_max_attempts,omitempty"`
 	RetryBaseMS      int      `json:"retry_base_ms,omitempty"`
 	RetryMaxMS       int      `json:"retry_max_ms,omitempty"`
+	// RetryStageAttemptBudget caps the TOTAL provider invocations for one
+	// pipeline stage, shared across the stage-level retry loop and the inner
+	// per-Complete retry loop so the two tiers can't multiply. 0 uses the
+	// default (5).
+	RetryStageAttemptBudget int `json:"retry_stage_attempt_budget,omitempty"`
 }
 
 // Clone returns a deep copy.
@@ -96,6 +101,13 @@ type Config struct {
 	RetryBaseMS int `json:"retry_base_ms,omitempty"`
 	// RetryMaxMS caps exponential backoff growth per wait. 0 uses default (120000).
 	RetryMaxMS int `json:"retry_max_ms,omitempty"`
+	// RetryStageAttemptBudget bounds the TOTAL number of provider invocations
+	// for a single pipeline stage. It is shared between the stage-level retry
+	// (review.stageWithRetry) and the inner per-Complete retry
+	// (internal/ai backoff), so the worst case is this many calls per stage —
+	// not RetryMaxAttempts × stage-retry-attempts (~25 before). 0 uses the
+	// default (5); values are floored at 1 and capped at 30.
+	RetryStageAttemptBudget int `json:"retry_stage_attempt_budget,omitempty"`
 
 	// Profiles is the on-disk list of named (provider, model, ...) presets.
 	// The active profile's fields are mirrored onto the top-level fields.
@@ -171,6 +183,9 @@ func (c *Config) Merge(o *Config) {
 	}
 	if o.RetryMaxMS != 0 {
 		c.RetryMaxMS = o.RetryMaxMS
+	}
+	if o.RetryStageAttemptBudget != 0 {
+		c.RetryStageAttemptBudget = o.RetryStageAttemptBudget
 	}
 }
 
@@ -287,6 +302,11 @@ func mergeEnv(c *Config) {
 			c.RetryMaxMS = n
 		}
 	}
+	if v := strings.TrimSpace(os.Getenv("APPR_AI_SAL_AI_RETRY_STAGE_BUDGET")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.RetryStageAttemptBudget = n
+		}
+	}
 }
 
 func (c *Config) normalize() error {
@@ -321,6 +341,14 @@ func (c *Config) normalize() error {
 	if c.RetryBaseMS > c.RetryMaxMS {
 		c.RetryBaseMS = c.RetryMaxMS
 	}
+	if c.RetryStageAttemptBudget != 0 {
+		if c.RetryStageAttemptBudget < 1 {
+			c.RetryStageAttemptBudget = 1
+		}
+		if c.RetryStageAttemptBudget > 30 {
+			c.RetryStageAttemptBudget = 30
+		}
+	}
 	if len(c.Profiles) == 0 {
 		c.ActiveProfile = DefaultProfileName
 		c.Profiles = []Profile{c.snapshotProfile(DefaultProfileName)}
@@ -341,15 +369,16 @@ func (c *Config) normalize() error {
 // snapshotProfile builds a Profile from the current top-level fields.
 func (c *Config) snapshotProfile(name string) Profile {
 	return Profile{
-		Name:             strings.TrimSpace(name),
-		Provider:         c.Provider,
-		BaseURL:          c.BaseURL,
-		Model:            c.Model,
-		APIKey:           c.APIKey,
-		TimeoutSec:       c.TimeoutSec,
-		RetryMaxAttempts: c.RetryMaxAttempts,
-		RetryBaseMS:      c.RetryBaseMS,
-		RetryMaxMS:       c.RetryMaxMS,
+		Name:                    strings.TrimSpace(name),
+		Provider:                c.Provider,
+		BaseURL:                 c.BaseURL,
+		Model:                   c.Model,
+		APIKey:                  c.APIKey,
+		TimeoutSec:              c.TimeoutSec,
+		RetryMaxAttempts:        c.RetryMaxAttempts,
+		RetryBaseMS:             c.RetryBaseMS,
+		RetryMaxMS:              c.RetryMaxMS,
+		RetryStageAttemptBudget: c.RetryStageAttemptBudget,
 	}
 }
 
@@ -389,6 +418,7 @@ func (c *Config) applyActiveProfile() {
 	c.RetryMaxAttempts = p.RetryMaxAttempts
 	c.RetryBaseMS = p.RetryBaseMS
 	c.RetryMaxMS = p.RetryMaxMS
+	c.RetryStageAttemptBudget = p.RetryStageAttemptBudget
 }
 
 // syncActiveProfileFromFlat copies the top-level fields back into the
@@ -712,6 +742,24 @@ func (c *Config) InferenceRetryBase() time.Duration {
 		ms = c.RetryBaseMS
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// StageAttemptBudget returns the total number of provider invocations allowed
+// for one pipeline stage, shared between the stage-level retry and the inner
+// per-Complete retry so the two tiers cannot multiply. Defaults to 5; floored
+// at 1 and capped at 30.
+func (c *Config) StageAttemptBudget() int {
+	n := 5
+	if c != nil && c.RetryStageAttemptBudget > 0 {
+		n = c.RetryStageAttemptBudget
+	}
+	if n < 1 {
+		n = 1
+	}
+	if n > 30 {
+		n = 30
+	}
+	return n
 }
 
 // InferenceRetryMaxBackoff caps each backoff wait between retries.

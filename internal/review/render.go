@@ -291,14 +291,26 @@ func (d *Draft) RenderBody() string {
 		msg  string
 	}
 	var failures []agentErr
+	var skippedStages []string
 	var prWide []struct {
 		specialist string
 		f          Finding
 	}
 
 	for _, s := range d.Specialists {
-		if s.Err != nil {
-			failures = append(failures, agentErr{s.Specialist, s.Err.Error()})
+		switch s.EffectiveOutcome() {
+		case OutcomeSkipped:
+			// Never ran (circuit breaker aborted the remaining stages). Listed
+			// separately from failures so the reader knows the review is
+			// partial rather than that the agent errored.
+			skippedStages = append(skippedStages, s.Specialist)
+			continue
+		case OutcomeFailed:
+			msg := "failed after retries"
+			if s.Err != nil {
+				msg = s.Err.Error()
+			}
+			failures = append(failures, agentErr{s.Specialist, msg})
 			continue
 		}
 		if len(s.Findings) == 0 {
@@ -316,9 +328,18 @@ func (d *Draft) RenderBody() string {
 	}
 
 	if len(failures) > 0 {
-		b += "### Agent failures\n\n"
+		b += "### Agent failures _(failed after retries)_\n\n"
 		for _, e := range failures {
 			b += "- **" + e.name + ":** _" + e.msg + "_\n"
+		}
+		b += "\n"
+	}
+
+	if len(skippedStages) > 0 {
+		b += "### Stages skipped _(run aborted early)_\n\n"
+		b += "_The run's circuit breaker stopped these agents before they ran, so this review is partial — review the areas they cover manually._\n\n"
+		for _, name := range skippedStages {
+			b += "- **" + name + "**\n"
 		}
 		b += "\n"
 	}

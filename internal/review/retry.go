@@ -27,9 +27,25 @@ func stageWithRetry(ctx context.Context, cfg *aiconfig.Config, name string, noti
 	base := cfg.InferenceRetryBase()
 	maxWait := cfg.InferenceRetryMaxBackoff()
 
+	// R4: install one shared attempt budget for this stage. Every provider
+	// call the stage makes (the specialist call, the hidden repair pass, …)
+	// draws from it via the internal/ai retry loop, so the stage-level retry
+	// here and that inner loop can't multiply into ~25 calls — the total is
+	// bounded by cfg.StageAttemptBudget() (default 5). The budget is installed
+	// on ctx so no signatures change; the child ctx fn builds (WithTimeout /
+	// WithStage) inherits it.
+	budget := ai.NewAttemptBudget(cfg.StageAttemptBudget())
+	ctx = ai.WithAttemptBudget(ctx, budget)
+
 	var lastErr error
 	for attempt := 0; attempt < max; attempt++ {
 		if attempt > 0 {
+			// Don't sleep + re-enter the stage when the shared budget is spent:
+			// the inner loop would immediately bail on an exhausted budget, so
+			// another whole-stage attempt can make no progress.
+			if budget.Remaining() <= 0 {
+				break
+			}
 			if notify != nil {
 				notify(attempt, lastErr)
 			}

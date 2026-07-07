@@ -317,6 +317,26 @@ func SpecialistsForVibeCoach(d *Draft, specialists []SpecialistResult) []Special
 	return out
 }
 
+// DegradedStages returns the specialist/PR-agent stages that did not complete
+// cleanly, split into those that failed after exhausting retries and those the
+// circuit breaker skipped before they ran. Both are surfaced in the run
+// summary so the reviewer can see the review is partial. Order follows
+// d.Specialists (specialist phase first, then PR agents).
+func (d *Draft) DegradedStages() (failed []string, skipped []string) {
+	if d == nil {
+		return nil, nil
+	}
+	for _, s := range d.Specialists {
+		switch s.EffectiveOutcome() {
+		case OutcomeFailed:
+			failed = append(failed, s.Specialist)
+		case OutcomeSkipped:
+			skipped = append(skipped, s.Specialist)
+		}
+	}
+	return failed, skipped
+}
+
 // HasRepoExpertSuppressions reports whether any inline finding was marked suppressed for posting.
 func (d *Draft) HasRepoExpertSuppressions() bool {
 	if d == nil || d.RepoArbiter == nil || d.RepoArbiter.Err != nil {
@@ -367,7 +387,10 @@ func (d *Draft) HasNoFindings() bool {
 		return false
 	}
 	for _, s := range d.Specialists {
-		if s.Err != nil {
+		// A failed-after-retries or circuit-breaker-skipped stage means the
+		// review is degraded/partial: never route to the "no issues found"
+		// auto-approve body, which would imply a clean full review happened.
+		if s.EffectiveOutcome() != OutcomeOK {
 			return false
 		}
 		for _, f := range s.Findings {

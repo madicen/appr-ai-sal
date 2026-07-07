@@ -70,10 +70,29 @@ type Provider interface {
 // previously existed only to dodge an import cycle.
 type CompleteFunc func(ctx context.Context, cfg *aiconfig.Config, system, user, worktree string) (string, error)
 
+// testBaseProviderHook, when non-nil, supplies the base (retry-less) provider
+// instead of the built-in registry. It exists ONLY so tests — including
+// sibling-package tests such as internal/review — can inject a fake backend and
+// exercise the real retry / attempt-budget / concurrency middleware end to end.
+// Production code never sets it. Not safe to mutate concurrently, so callers
+// (via SetBaseProviderForTest) must not run such tests in parallel.
+var testBaseProviderHook func(cfg *aiconfig.Config) (Provider, error)
+
+// SetBaseProviderForTest installs a base-provider factory for tests and returns
+// a restore function. Test-only: see testBaseProviderHook.
+func SetBaseProviderForTest(fn func(cfg *aiconfig.Config) (Provider, error)) func() {
+	prev := testBaseProviderHook
+	testBaseProviderHook = fn
+	return func() { testBaseProviderHook = prev }
+}
+
 // baseProviderFor returns the raw (retry-less, unlogged) provider for cfg.
 func baseProviderFor(cfg *aiconfig.Config) (Provider, error) {
 	if cfg == nil {
 		cfg = aiconfig.DefaultConfig()
+	}
+	if testBaseProviderHook != nil {
+		return testBaseProviderHook(cfg)
 	}
 	switch cfg.Provider {
 	case aiconfig.ProviderClaude:
