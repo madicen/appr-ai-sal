@@ -1,9 +1,10 @@
 package review
 
 import (
-	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/madicen/appr-ai-sal/internal/review/findingkey"
 )
 
 // dedupeRef points at one finding inside a []SpecialistResult.
@@ -104,12 +105,11 @@ func dedupeInlineFindingsAcrossSpecialists(specs []SpecialistResult) []Specialis
 	return specs
 }
 
+// dedupeKey groups findings by diff location, independent of specialist, so
+// near-duplicates filed on the same line by different specialists collapse.
+// It is the specialist-independent Location form of the unified FindingKey.
 func dedupeKey(f Finding) string {
-	side := f.Side
-	if side == "" {
-		side = "RIGHT"
-	}
-	return f.Path + "\x00" + strconv.Itoa(f.Line) + "\x00" + side
+	return findingkey.New("", f.Path, f.Line, f.Side).Location()
 }
 
 // dedupeRefBetterKeeper reports whether a is a better finding to keep than b:

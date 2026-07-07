@@ -21,6 +21,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/appdirs"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/llmjson"
+	"github.com/madicen/appr-ai-sal/internal/review/findingkey"
 )
 
 //go:embed prompts
@@ -141,7 +142,7 @@ func normalizeAndAlign(out []Witness, in []FindingInput) []Witness {
 		if side == "" {
 			side = "RIGHT"
 		}
-		k := strings.ToLower(strings.TrimSpace(w.Specialist)) + "|" + filepath.ToSlash(strings.TrimSpace(w.Path)) + "|" + fmt.Sprintf("%d", w.Line) + "|" + side
+		k := findingkey.New(w.Specialist, w.Path, w.Line, w.Side).String()
 		v := NormalizeVerdict(string(w.Verdict))
 		if v == "" {
 			v = VerdictUnknown
@@ -161,7 +162,7 @@ func normalizeAndAlign(out []Witness, in []FindingInput) []Witness {
 		if side == "" {
 			side = "RIGHT"
 		}
-		k := strings.ToLower(strings.TrimSpace(f.Specialist)) + "|" + filepath.ToSlash(strings.TrimSpace(f.Path)) + "|" + fmt.Sprintf("%d", f.Line) + "|" + side
+		k := findingkey.New(f.Specialist, f.Path, f.Line, f.Side).String()
 		if w, ok := byKey[k]; ok {
 			aligned = append(aligned, w)
 			continue
