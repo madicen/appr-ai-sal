@@ -14,6 +14,7 @@ require (
 	github.com/madicen/bubble-dropdown v0.0.4
 	github.com/madicen/bubble-overlay v0.0.0-20260522055727-98ccf9e2a047
 	github.com/muesli/termenv v0.16.0
+	golang.org/x/sync v0.20.0
 )
 
 require (

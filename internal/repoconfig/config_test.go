@@ -117,6 +117,119 @@ func TestLoadBoolPresenceIgnoresKeyInStringValue(t *testing.T) {
 	}
 }
 
+// R2: the parallel defaults were flipped to true (the concurrency cap now
+// makes parallel dispatch safe). An absent key must resolve to true, while an
+// explicit false in JSON must still be honoured.
+func TestLoadParallelDefaultsFlippedToTrue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repo-context.json")
+	// An empty object: neither parallel_specialists nor parallel_pr_agents is
+	// present, so both must take the new default of true.
+	if err := os.WriteFile(path, []byte(`{}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APPR_AI_SAL_CONFIG_DIR", dir)
+	// Clear any env overrides that could mask the default.
+	t.Setenv("APPR_AI_SAL_PARALLEL_SPECIALISTS", "")
+	os.Unsetenv("APPR_AI_SAL_PARALLEL_SPECIALISTS")
+	t.Setenv("APPR_AI_SAL_PARALLEL_PR_AGENTS", "")
+	os.Unsetenv("APPR_AI_SAL_PARALLEL_PR_AGENTS")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.ParallelSpecialists {
+		t.Errorf("absent parallel_specialists must default to true")
+	}
+	if !c.ParallelPRAgents {
+		t.Errorf("absent parallel_pr_agents must default to true")
+	}
+	// The Default() constructor must agree with the loaded default.
+	d := Default()
+	if !d.ParallelSpecialists || !d.ParallelPRAgents {
+		t.Errorf("Default() must set both parallel toggles true, got specialists=%v prAgents=%v",
+			d.ParallelSpecialists, d.ParallelPRAgents)
+	}
+}
+
+// An explicit false for the now-default-true parallel toggles must still be
+// honoured (the *bool presence loader distinguishes absent from explicit).
+func TestLoadParallelExplicitFalseHonoured(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repo-context.json")
+	if err := os.WriteFile(path, []byte(`{"parallel_specialists":false,"parallel_pr_agents":false}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APPR_AI_SAL_CONFIG_DIR", dir)
+	os.Unsetenv("APPR_AI_SAL_PARALLEL_SPECIALISTS")
+	os.Unsetenv("APPR_AI_SAL_PARALLEL_PR_AGENTS")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.ParallelSpecialists {
+		t.Errorf("explicit parallel_specialists:false must be honoured, got true")
+	}
+	if c.ParallelPRAgents {
+		t.Errorf("explicit parallel_pr_agents:false must be honoured, got true")
+	}
+}
+
+// R2: max_concurrent_inference defaults to 3 when unset, and any <= 0 value
+// resolves to 3 (never unlimited, never zero which would deadlock).
+func TestMaxConcurrentInferenceDefaultResolution(t *testing.T) {
+	t.Parallel()
+	if got := Default().MaxConcurrentInference; got != 3 {
+		t.Errorf("Default().MaxConcurrentInference = %d, want 3", got)
+	}
+	cases := []struct {
+		in   int
+		want int
+	}{
+		{0, 3},
+		{-1, 3},
+		{-100, 3},
+		{1, 1},
+		{3, 3},
+		{10, 10},
+	}
+	for _, tc := range cases {
+		// Getter resolves defensively.
+		c := &Config{MaxConcurrentInference: tc.in}
+		if got := c.MaxConcurrentInferenceOrDefault(); got != tc.want {
+			t.Errorf("MaxConcurrentInferenceOrDefault(%d) = %d, want %d", tc.in, got, tc.want)
+		}
+		// Normalize rewrites <= 0 to the default in place.
+		n := &Config{MaxConcurrentInference: tc.in}
+		n.Normalize()
+		if n.MaxConcurrentInference != tc.want {
+			t.Errorf("Normalize() with in=%d -> %d, want %d", tc.in, n.MaxConcurrentInference, tc.want)
+		}
+	}
+	// A nil config resolves to the default without panicking.
+	var nilCfg *Config
+	if got := nilCfg.MaxConcurrentInferenceOrDefault(); got != 3 {
+		t.Errorf("nil config MaxConcurrentInferenceOrDefault() = %d, want 3", got)
+	}
+}
+
+// max_concurrent_inference set explicitly in JSON is honoured after Load.
+func TestLoadMaxConcurrentInferenceFromJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repo-context.json")
+	if err := os.WriteFile(path, []byte(`{"max_concurrent_inference":7}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APPR_AI_SAL_CONFIG_DIR", dir)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxConcurrentInference != 7 {
+		t.Errorf("explicit max_concurrent_inference:7 not honoured, got %d", c.MaxConcurrentInference)
+	}
+}
+
 func TestFormatParseRepoRootsRoundTrip(t *testing.T) {
 	t.Parallel()
 	in := map[string]string{"z/a": "/p1", "a/b": "/p2"}

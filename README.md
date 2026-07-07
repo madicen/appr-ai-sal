@@ -265,10 +265,12 @@ happen in.
   context briefs, repository tools when running on Claude) and returns
   structured findings inside its lane. They never reach outside their
   specialty in the rendered output, and every comment in the draft is
-  tagged with the specialist that produced it. Sequential by default;
-  toggle **Parallel specialists** in the Review controls pane (or set
-  `parallel_specialists: true` in `repo-context.json`) to run them
-  concurrently.
+  tagged with the specialist that produced it. Parallel by default;
+  toggle **Parallel specialists** off in the Review controls pane (or set
+  `parallel_specialists: false` in `repo-context.json`) to run them
+  sequentially. A client-side cap (`max_concurrent_inference`, default 3)
+  bounds how many inference calls run at once across the whole run, so
+  parallel dispatch never bursts past provider rate limits.
 
 - **Repo agents** (one brief per `(repo, specialist)`). Short markdown
   documents describing how *this* repo handles each topic — e.g. the
@@ -342,9 +344,10 @@ happen in.
    and (for `testing` / `docs`) the per-PR evidence pack. Progress for
    each appears in the **Context injection** group at the top of the
    running overlay.
-3. **Specialists** run with their injected briefs (sequential by
-   default; parallel when configured). Each one is independently
-   retried inside its own per-stage budget.
+3. **Specialists** run with their injected briefs (parallel by
+   default; set `parallel_specialists: false` to serialize). Concurrency
+   across the whole run is capped by `max_concurrent_inference` (default
+   3). Each one is independently retried inside its own per-stage budget.
 4. **Convention witness** (optional) classifies every testing/docs
    finding against the PR evidence pack.
 5. **Repo arbiter** (optional) reconciles the specialist findings with
@@ -460,6 +463,9 @@ rules as `ai.json` / `$APPR_AI_SAL_CONFIG_DIR`):
 | `include_pr_history` | When `true` (default), append recent merged PR titles from GitHub via `gh`. Omit this key in JSON to keep the default `true`; set explicitly to `false` to disable. |
 | `pr_history_limit` | Max merged PR rows to fetch (default 30). |
 | `repo_culture_summarize` | When `true`, one extra AI call turns the title list into short bullets (same provider as reviews). |
+| `parallel_specialists` | Run the code-review specialists concurrently. **Default `true`** — set explicitly to `false` to serialize. |
+| `parallel_pr_agents` | Run the PR-level agents (description / checks / discussion / scope) concurrently with, and among, themselves. **Default `true`** — set explicitly to `false` to serialize after the specialists. |
+| `max_concurrent_inference` | Client-side cap on how many inference calls run at once across the **whole run** (specialists, PR agents, the repair pass, arbiter/witness). Default 3; any value ≤ 0 resolves to 3 (never unlimited). This bound is what makes the parallel defaults above safe against provider rate limits. |
 
 **Security / caps:** only a fixed allowlist of small convention paths is read;
 paths under `.git`, `vendor`, `.env*`, key-like names, and similar are skipped;

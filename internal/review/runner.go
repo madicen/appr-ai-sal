@@ -121,6 +121,16 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		}
 		repoconfig.ApplyParallelExecutionEnv(rc)
 
+		// R2: install a single per-run weighted semaphore on the context so no
+		// more than MaxConcurrentInference (default 3) inference calls run
+		// concurrently across the WHOLE run — every stage goroutine derives
+		// from this ctx, so the cap is shared across specialists, PR agents,
+		// the hidden repair pass, and the arbiter/witness regardless of the
+		// parallel toggles. This is the client-side rate limit that makes the
+		// parallel defaults safe. No inference has happened yet at this point
+		// (only gh/git fetches), so no call escapes the cap.
+		ctx = ai.WithConcurrencyLimit(ctx, rc.MaxConcurrentInferenceOrDefault())
+
 		// PR-level agents (description / checks / discussion / scope) read the
 		// PR's CI checks, review threads, and conversation. Fetch those signals
 		// in the background so they overlap with repo-context composition and the

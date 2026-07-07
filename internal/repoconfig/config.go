@@ -14,6 +14,7 @@ import (
 )
 
 const defaultMaxBytes = 24576
+const defaultMaxConcurrentInference = 3
 const defaultTTL = 24 * time.Hour
 const defaultPRHistoryLimit = 30
 const defaultRepoExpertReviewPRs = 8
@@ -44,17 +45,36 @@ type Config struct {
 	RepoExpertMaxBytes int `json:"repo_expert_max_bytes,omitempty"`
 	// RepoExpertReviewTTLSeconds is cache freshness for the review-history digest (default 21600 = 6h).
 	RepoExpertReviewTTLSeconds int `json:"repo_expert_review_ttl_seconds,omitempty"`
-	// ParallelSpecialists runs all code-review specialists concurrently (same AI provider). Default false (sequential) to reduce API rate-limit bursts.
-	ParallelSpecialists bool `json:"parallel_specialists,omitempty"`
+	// ParallelSpecialists runs all code-review specialists concurrently (same
+	// AI provider). Default true: MaxConcurrentInference now caps the total
+	// in-flight inference calls across the run, so parallel dispatch no longer
+	// risks unbounded API rate-limit bursts — it is the single biggest
+	// wall-clock win available. Set to false in repo-context.json to force
+	// sequential dispatch.
+	//
+	// The json tag intentionally omits `omitempty`: now that the default is
+	// true, an explicit false must survive Save (whole-struct marshal), which
+	// omitempty would silently drop — reload would then resurrect the default.
+	ParallelSpecialists bool `json:"parallel_specialists"`
 	// ParallelRepoExperts runs repo code expert and repo history expert concurrently before the arbiter. Default false (sequential).
 	ParallelRepoExperts bool `json:"parallel_repo_experts,omitempty"`
 	// ParallelPRAgents runs the PR-level agents (description, checks,
 	// discussion, scope) concurrently with the code specialists phase — they
 	// share no data dependency, so overlapping them shortens wall-clock time
-	// — and concurrently among themselves. Default false (sequential, after
-	// the specialists) to reduce API rate-limit bursts, mirroring
-	// ParallelSpecialists.
-	ParallelPRAgents bool `json:"parallel_pr_agents,omitempty"`
+	// — and concurrently among themselves. Default true, mirroring
+	// ParallelSpecialists: MaxConcurrentInference caps total concurrent
+	// inference, so overlapping the phases is now safe. Set to false to force
+	// sequential dispatch after the specialists.
+	//
+	// Like ParallelSpecialists, the json tag omits `omitempty` so an explicit
+	// false persists through Save against the new default of true.
+	ParallelPRAgents bool `json:"parallel_pr_agents"`
+	// MaxConcurrentInference caps how many inference calls run concurrently
+	// across the whole run — including the hidden repair pass and PR-agent
+	// calls — regardless of which parallel toggles are on. Default 3. A value
+	// <= 0 resolves to the default (never unlimited): this is the client-side
+	// rate limit that makes the parallel defaults above safe.
+	MaxConcurrentInference int `json:"max_concurrent_inference,omitempty"`
 	// IncludeRepoEvidence injects per-PR static evidence (sibling tests,
 	// doc.go, exported-symbol coverage) and a path-history aggregate into the
 	// testing/docs specialists and into the testing/docs repo-agent generators.
@@ -97,6 +117,9 @@ func Default() *Config {
 		ConventionWitness:          true,
 		TechAgents:                 true,
 		PRAgents:                   true,
+		ParallelSpecialists:        true,
+		ParallelPRAgents:           true,
+		MaxConcurrentInference:     defaultMaxConcurrentInference,
 	}
 }
 
@@ -257,6 +280,9 @@ func (c *Config) Merge(o *Config) {
 	if o.RepoExpertReviewTTLSeconds > 0 {
 		c.RepoExpertReviewTTLSeconds = o.RepoExpertReviewTTLSeconds
 	}
+	if o.MaxConcurrentInference > 0 {
+		c.MaxConcurrentInference = o.MaxConcurrentInference
+	}
 	// IncludePRHistory and RepoCultureSummarize are applied in Load() only when keys appear in JSON.
 }
 
@@ -278,6 +304,12 @@ func (c *Config) normalize() {
 	}
 	if c.RepoExpertReviewTTLSeconds < 60 {
 		c.RepoExpertReviewTTLSeconds = int(defaultRepoExpertReviewTTL.Seconds())
+	}
+	// A missing key (zero) or a hostile <= 0 value resolves to the default so
+	// the concurrency cap is never unlimited and can never size a semaphore at
+	// zero (which would deadlock every inference call).
+	if c.MaxConcurrentInference <= 0 {
+		c.MaxConcurrentInference = defaultMaxConcurrentInference
 	}
 	if c.RepoRoots == nil {
 		c.RepoRoots = map[string]string{}
@@ -328,6 +360,16 @@ func (c *Config) TTL() time.Duration {
 		return defaultTTL
 	}
 	return time.Duration(c.TTLSeconds) * time.Second
+}
+
+// MaxConcurrentInferenceOrDefault returns the per-run inference concurrency
+// cap, resolving a nil config or a non-positive value to the default (3). It
+// never returns <= 0, so callers can size a semaphore with it directly.
+func (c *Config) MaxConcurrentInferenceOrDefault() int {
+	if c == nil || c.MaxConcurrentInference <= 0 {
+		return defaultMaxConcurrentInference
+	}
+	return c.MaxConcurrentInference
 }
 
 // RepoExpertReviewTTL returns cache TTL for the review-history digest.

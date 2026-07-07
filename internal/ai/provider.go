@@ -22,6 +22,20 @@ func (p *retryProvider) Name() string { return p.inner.Name() }
 func (p *retryProvider) Capabilities() Capabilities { return p.inner.Capabilities() }
 
 func (p *retryProvider) Complete(ctx context.Context, req Request) (Result, error) {
+	// R2: gate the whole logical call (retries and backoff included) behind
+	// the per-run concurrency semaphore installed via WithConcurrencyLimit.
+	// Acquiring here — at the single provider seam — caps concurrent inference
+	// across every caller (specialists, PR agents, the hidden repair pass, the
+	// arbiter/witness) without threading a limiter through any signature. A
+	// cancelled ctx while blocked returns promptly with the ctx error and
+	// never runs the call.
+	if lim := limiterFromContext(ctx); lim != nil {
+		release, err := lim.acquire(ctx)
+		if err != nil {
+			return Result{}, err
+		}
+		defer release()
+	}
 	start := time.Now()
 	res, retries, err := completeWithRetry(ctx, p.cfg, func(ctx context.Context) (Result, error) {
 		return p.inner.Complete(ctx, req)
