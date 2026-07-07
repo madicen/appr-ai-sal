@@ -284,7 +284,9 @@ func sleepBeforeInferenceRetry(ctx context.Context, backoffIndex int, base, maxW
 	return sleepInterruptible(ctx, retrySleepDuration(backoffIndex, base, maxWait, lastErr))
 }
 
-func completeWithRetry(ctx context.Context, cfg *aiconfig.Config, fn func(context.Context) (string, error)) (string, error) {
+// completeWithRetry returns the inference output plus the number of retries
+// performed (0 on first-try success) so the caller can log retry telemetry.
+func completeWithRetry(ctx context.Context, cfg *aiconfig.Config, fn func(context.Context) (string, error)) (string, int, error) {
 	max := cfg.InferenceRetryMaxAttempts()
 	base := cfg.InferenceRetryBase()
 	maxWait := cfg.InferenceRetryMaxBackoff()
@@ -293,22 +295,22 @@ func completeWithRetry(ctx context.Context, cfg *aiconfig.Config, fn func(contex
 	for attempt := 0; attempt < max; attempt++ {
 		if attempt > 0 {
 			if err := sleepBeforeInferenceRetry(ctx, attempt-1, base, maxWait, lastErr); err != nil {
-				return "", err
+				return "", attempt, err
 			}
 		}
 		out, err := fn(ctx)
 		if err == nil {
-			return out, nil
+			return out, attempt, nil
 		}
 		lastErr = err
 		if !IsRetryableCompleteError(err) {
-			return "", err
+			return "", attempt, err
 		}
 		if attempt == max-1 {
 			break
 		}
 	}
-	return "", fmt.Errorf("AI inference failed after %d attempts: %w", max, lastErr)
+	return "", max - 1, fmt.Errorf("AI inference failed after %d attempts: %w", max, lastErr)
 }
 
 // stageWithRetry retries any stage that returns a transiently-failing error

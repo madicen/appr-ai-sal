@@ -12,7 +12,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/madicen/appr-ai-sal/internal/applog"
 )
 
 // PR is a flattened view of a GitHub pull request, populated from one or more
@@ -93,13 +96,49 @@ func CheckAuth() error {
 	return nil
 }
 
-// ViewerLogin returns the GitHub login for the authenticated gh user.
+// viewerLoginCache holds the authenticated viewer's login for the process
+// lifetime. The login can't change under a running session, so we resolve it
+// once — either from the ListPRs GraphQL response (which already returns
+// viewer{login}) or a single `gh api user` call — and reuse it, sparing an
+// extra gh exec on every GetPR.
+var (
+	viewerLoginMu    sync.RWMutex
+	viewerLoginCache string
+)
+
+// cacheViewerLogin stores a resolved viewer login for reuse this session.
+// Empty logins are ignored so a failed lookup never poisons the cache.
+func cacheViewerLogin(login string) {
+	login = strings.TrimSpace(login)
+	if login == "" {
+		return
+	}
+	viewerLoginMu.Lock()
+	viewerLoginCache = login
+	viewerLoginMu.Unlock()
+}
+
+// cachedViewerLogin returns the cached viewer login, or "" when unset.
+func cachedViewerLogin() string {
+	viewerLoginMu.RLock()
+	defer viewerLoginMu.RUnlock()
+	return viewerLoginCache
+}
+
+// ViewerLogin returns the GitHub login for the authenticated gh user. The
+// result is cached for the process lifetime (see viewerLoginCache), so
+// repeated callers — notably GetPR — don't each re-exec `gh api user`.
 func ViewerLogin(ctx context.Context) (string, error) {
+	if v := cachedViewerLogin(); v != "" {
+		return v, nil
+	}
 	out, err := run(ctx, []string{"api", "user", "-q", ".login"})
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	login := strings.TrimSpace(string(out))
+	cacheViewerLogin(login)
+	return login, nil
 }
 
 // IsUserExplicitlyRequested returns true if login appears in the PR's
@@ -153,10 +192,13 @@ func ListPRs(ctx context.Context, mode ListMode) ([]PR, error) {
 	if err != nil {
 		return nil, err
 	}
-	prs, _, err := parseReviewSearchResponse(out)
+	prs, viewer, err := parseReviewSearchResponse(out)
 	if err != nil {
 		return nil, err
 	}
+	// The GraphQL query already returns viewer{login}; cache it so GetPR
+	// and other viewer-scoped lookups don't re-exec `gh api user`.
+	cacheViewerLogin(viewer)
 	if mode == ListModeReviewExplicit {
 		filtered := make([]PR, 0, len(prs))
 		for _, pr := range prs {
@@ -351,7 +393,9 @@ func PostReview(ctx context.Context, ref Ref, review Review) error {
 	path := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", ref.Owner, ref.Repo, ref.Number)
 	cmd := exec.CommandContext(ctx, "gh", "api", path, "--method", "POST", "--input", "-")
 	cmd.Stdin = bytes.NewReader(body)
+	start := time.Now()
 	out, err := cmd.CombinedOutput()
+	applog.Info("post review", "ref", ref.String(), "event", review.Event, "inline_comments", len(review.Comments), "duration_ms", time.Since(start).Milliseconds(), "ok", err == nil)
 	if err != nil {
 		ae := parseGHError(out, path)
 		ae.CommitID = review.CommitID
@@ -552,7 +596,10 @@ func run(ctx context.Context, args []string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	start := time.Now()
+	err := cmd.Run()
+	applog.GHInvocation(args, time.Since(start), err)
+	if err != nil {
 		return nil, fmt.Errorf("gh %s: %s", strings.Join(args, " "), strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil

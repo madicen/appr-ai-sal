@@ -47,3 +47,51 @@ func TestFilterFindingsBySeverityLenientKeepsErrorAndCritical(t *testing.T) {
 		t.Fatalf("lenient: want 2 kept, got %d %+v", len(out), out)
 	}
 }
+
+// normalizeSeverity folds synonyms/unknowns to canonical severities so an
+// unknown model string (e.g. "high", "blocker", "nit") never renders verbatim
+// in the review body (0.4 fix #6).
+func TestNormalizeSeverityFoldsSynonyms(t *testing.T) {
+	cases := map[Severity]Severity{
+		// canonical passthrough
+		SeverityInfo:     SeverityInfo,
+		SeverityWarning:  SeverityWarning,
+		SeverityError:    SeverityError,
+		SeverityCritical: SeverityCritical,
+		// synonyms
+		"high":    SeverityError,
+		"major":   SeverityError,
+		"blocker": SeverityCritical,
+		"crit":    SeverityCritical,
+		"nit":     SeverityInfo,
+		"low":     SeverityInfo,
+		"medium":  SeverityWarning,
+		// case + whitespace insensitivity
+		"  HIGH ": SeverityError,
+		// unknown / empty → warning (matches the filter's rank-0 coercion)
+		"bogus": SeverityWarning,
+		"":      SeverityWarning,
+	}
+	for in, want := range cases {
+		if got := normalizeSeverity(in); got != want {
+			t.Errorf("normalizeSeverity(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// normalizeSpecialistSeverities must canonicalise every finding's severity at
+// parse time (0.4 fix #6).
+func TestNormalizeSpecialistSeveritiesCanonicalises(t *testing.T) {
+	o := &specialistJSON{Findings: []Finding{
+		{Severity: "high"},
+		{Severity: "blocker"},
+		{Severity: "totally-unknown"},
+	}}
+	normalizeSpecialistSeverities(o)
+	want := []Severity{SeverityError, SeverityCritical, SeverityWarning}
+	for i, w := range want {
+		if o.Findings[i].Severity != w {
+			t.Errorf("finding %d severity = %q, want %q", i, o.Findings[i].Severity, w)
+		}
+	}
+}

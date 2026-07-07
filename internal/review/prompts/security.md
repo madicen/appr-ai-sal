@@ -104,6 +104,15 @@ multiple files. The `comment` then must still name the alternative pattern,
 library, or function.
 
 Severity calibration:
+- `critical` — a directly exploitable, catastrophic vulnerability that should
+  block merge on its own: remote code execution (RCE) / command injection
+  reachable from untrusted input, an authentication or authorization bypass
+  that exposes protected data or actions, or secret/credential exfiltration
+  (a live secret leaked to logs, clients, or an attacker-reachable sink).
+  Reserve `critical` for issues where merging would create an immediate,
+  serious security incident. Under the `critical_only` review intensity this
+  is the ONLY severity that survives, so a genuine show-stopper you file as
+  `error` would be silently dropped — escalate those to `critical`.
 - `error` — exploitable issues, hardcoded secrets, missing auth on a path
   that handles user data.
 - `warning` — risky patterns that could become exploitable, weak crypto,

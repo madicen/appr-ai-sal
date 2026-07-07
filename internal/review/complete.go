@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/applog"
 )
 
 // Complete runs inference for the given prompts using cfg.Provider transport.
@@ -23,9 +24,14 @@ func Complete(ctx context.Context, cfg *aiconfig.Config, systemPrompt, userPromp
 	if cfg == nil {
 		cfg = aiconfig.DefaultConfig()
 	}
-	return completeWithRetry(ctx, cfg, func(ctx context.Context) (string, error) {
+	start := time.Now()
+	out, retries, err := completeWithRetry(ctx, cfg, func(ctx context.Context) (string, error) {
 		return completeOnce(ctx, cfg, systemPrompt, userPrompt, worktree)
 	})
+	// Telemetry only — provider/model/stage are non-secret labels; the API
+	// key is never passed here. See internal/applog.
+	applog.LLMCall(ctx, string(cfg.Provider), cfg.AIModelOrDefault(), retries, time.Since(start), err)
+	return out, err
 }
 
 func completeOnce(ctx context.Context, cfg *aiconfig.Config, systemPrompt, userPrompt, worktree string) (string, error) {
@@ -135,9 +141,6 @@ func completeGemini(ctx context.Context, cfg *aiconfig.Config, systemPrompt, use
 	if err != nil {
 		return "", err
 	}
-	q := u.Query()
-	q.Set("key", key)
-	u.RawQuery = q.Encode()
 
 	reqBody := map[string]any{
 		"systemInstruction": map[string]any{
@@ -160,6 +163,9 @@ func completeGemini(ctx context.Context, cfg *aiconfig.Config, systemPrompt, use
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// Pass the API key in the header rather than the ?key= query string so it
+	// never lands in URL logs, proxy access logs, or referrer headers.
+	req.Header.Set("x-goog-api-key", key)
 
 	resp, err := httpClientFor(cfg).Do(req)
 	if err != nil {

@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/applog"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
@@ -62,14 +65,18 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 	go func() {
 		defer close(out)
 
+		applog.Info("review run start", "ref", ref.String(), "provider", string(runCfg.Provider), "strictness", string(runCfg.ReviewStrictness))
+
 		pr, err := gh.GetPR(ctx, ref)
 		if err != nil {
+			applog.Error("review stage failed", "stage", "fetch-pr", "ref", ref.String(), "err", err.Error())
 			out <- Progress{Stage: "fetch-pr", Err: fmt.Errorf("fetch PR: %w", err)}
 			return
 		}
 
 		worktree, err := prepareWorktree(ctx, ref)
 		if err != nil {
+			applog.Error("review stage failed", "stage", "checkout", "ref", ref.String(), "err", err.Error())
 			out <- Progress{Stage: "checkout", Err: fmt.Errorf("prepare worktree: %w", err)}
 			return
 		}
@@ -278,8 +285,24 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				out <- Progress{Stage: "repo-arbiter", Detail: "start"}
 				// Pass the combined slice (code specialists + PR agents) so the
 				// arbiter sees the whole-PR findings and can suppress/demote
-				// them, not just the code specialists'.
-				arb := RunRepoArbiter(ctx, runCfg, worktree, pr, allSpecialists, perAgent, techSection, witnesses)
+				// them, not just the code specialists'. Wrapped in
+				// stageWithRetry so a transient parse/transport glitch on this
+				// (previously non-retried) path re-runs like every other AI
+				// stage — isRetryableStageError already lists "parse repo
+				// arbiter".
+				var arb *RepoArbiterResult
+				arbNotify := func(attempt int, err error) {
+					out <- Progress{Stage: "repo-arbiter", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
+				}
+				_ = stageWithRetry(ctx, runCfg, "repo-arbiter", arbNotify, func(sctx context.Context) error {
+					stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "repo-arbiter"), perStageBudget(runCfg))
+					defer cancel()
+					arb = RunRepoArbiter(stCtx, runCfg, worktree, pr, allSpecialists, perAgent, techSection, witnesses)
+					if arb != nil && arb.Err != nil {
+						return arb.Err
+					}
+					return nil
+				})
 				if arb != nil && rc != nil && !rc.RepoArbiterDemotions {
 					arb.Demoted = nil
 				}
@@ -384,7 +407,7 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 			ev = prEvidence
 		}
 		_ = stageWithRetry(ctx, runCfg, "specialist "+name, notify, func(sctx context.Context) error {
-			stCtx, cancel := context.WithTimeout(sctx, perStageBudget(runCfg))
+			stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "specialist "+name), perStageBudget(runCfg))
 			defer cancel()
 			r = runReviewSpecialist(stCtx, runCfg, name, worktree, pr, diff, repoCtx, ev, langSection, techSection)
 			if r.Err != nil {
@@ -392,6 +415,9 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 			}
 			return nil
 		})
+		if r.RepairFired > 0 {
+			out <- Progress{Stage: "specialist", Detail: fmt.Sprintf("%s:repair fired=%d succeeded=%d", name, r.RepairFired, r.RepairSucceeded)}
+		}
 		cp := r
 		out <- Progress{Stage: "specialist", Detail: name + ":done", Result: &cp}
 		return r
@@ -438,7 +464,7 @@ func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconf
 		}
 		var r SpecialistResult
 		_ = stageWithRetry(ctx, runCfg, "pr-agent "+name, notify, func(sctx context.Context) error {
-			stCtx, cancel := context.WithTimeout(sctx, perStageBudget(runCfg))
+			stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "pr-agent "+name), perStageBudget(runCfg))
 			defer cancel()
 			r = runPRAgent(stCtx, runCfg, name, worktree, pr, diff, in)
 			if r.Err != nil {
@@ -446,6 +472,9 @@ func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconf
 			}
 			return nil
 		})
+		if r.RepairFired > 0 {
+			out <- Progress{Stage: "pr-agent", Detail: fmt.Sprintf("%s:repair fired=%d succeeded=%d", name, r.RepairFired, r.RepairSucceeded)}
+		}
 		cp := r
 		out <- Progress{Stage: "pr-agent", Detail: name + ":done", Result: &cp}
 		return r
@@ -523,11 +552,20 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 	// testing/docs-oriented and rarely covers IaC findings.
 	evidence = appendTechConventionEvidence(evidence, worktree, techFindings)
 	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("start (%d findings)", len(inputs))}
-	wctx, cancel := context.WithTimeout(ctx, perStageBudget(runCfg))
-	defer cancel()
-	res := conventionwitness.Run(wctx, runCfg, conventionwitness.CompleteFunc(Complete), worktree,
-		conventionwitness.PrWideRef{Repository: pr.Repository, Number: pr.Number, Title: pr.Title},
-		inputs, evidence)
+	// Wrap in stageWithRetry so a transient parse/transport glitch on this
+	// (previously non-retried) path re-runs like every other AI stage.
+	notify := func(attempt int, err error) {
+		out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
+	}
+	var res conventionwitness.Result
+	_ = stageWithRetry(ctx, runCfg, "convention-witness", notify, func(sctx context.Context) error {
+		wctx, cancel := context.WithTimeout(applog.WithStage(sctx, "convention-witness"), perStageBudget(runCfg))
+		defer cancel()
+		res = conventionwitness.Run(wctx, runCfg, conventionwitness.CompleteFunc(Complete), worktree,
+			conventionwitness.PrWideRef{Repository: pr.Repository, Number: pr.Number, Title: pr.Title},
+			inputs, evidence)
+		return res.Err
+	})
 	if res.Err != nil {
 		out <- Progress{Stage: "convention-witness", Detail: "warning: " + res.Err.Error()}
 		return nil
@@ -548,6 +586,17 @@ func retryReason(err error) string {
 	return msg
 }
 
+const (
+	// worktreeMarkerName marks a cache dir as one appr-ai-sal created, so the
+	// GC only ever deletes its own worktrees.
+	worktreeMarkerName = ".appr-ai-sal-worktree"
+	// worktreeKeepDays purges any marked worktree older than this many days.
+	worktreeKeepDays = 7
+	// worktreeKeepPerPR keeps at most this many of the newest worktrees for
+	// any single PR; older ones are purged even if under worktreeKeepDays.
+	worktreeKeepPerPR = 2
+)
+
 // prepareWorktree clones the PR's head into a fresh directory under the
 // user's cache. The directory is named so that repeated runs against the
 // same PR get distinct worktrees (timestamp-suffixed) — keeps things simple
@@ -557,15 +606,81 @@ func prepareWorktree(ctx context.Context, ref gh.Ref) (string, error) {
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", err
 	}
+	// Purge stale worktrees before adding a new one so the cache doesn't grow
+	// without bound. Best-effort: GC failures never block a review.
+	purgeStaleWorktrees(base)
 	dir := filepath.Join(base, fmt.Sprintf("%s-%s-%d-%d",
 		ref.Owner, ref.Repo, ref.Number, time.Now().Unix()))
 	if err := gh.CheckoutPR(ctx, ref, dir); err != nil {
 		return "", err
 	}
-	// Drop a marker so we know the dir is ours when we eventually purge old
-	// worktrees in a future version.
-	_ = os.WriteFile(filepath.Join(dir, ".appr-ai-sal-worktree"), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+	// Drop a marker so the GC knows the dir is ours (see purgeStaleWorktrees).
+	_ = os.WriteFile(filepath.Join(dir, worktreeMarkerName), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
 	return dir, nil
+}
+
+// purgeStaleWorktrees best-effort deletes old review worktrees under base:
+// any dir bearing the marker file whose marker mtime is older than
+// worktreeKeepDays, plus — per PR — all but the newest worktreeKeepPerPR
+// dirs. It only ever removes dirs carrying the appr-ai-sal marker, so a
+// user-created directory sharing the cache is never touched. Fail-open: any
+// error on a single dir is ignored so GC never blocks a run.
+func purgeStaleWorktrees(base string) {
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		return
+	}
+	type wt struct {
+		name  string
+		group string
+		unix  int64
+	}
+	var owned []wt
+	cutoff := time.Now().Add(-worktreeKeepDays * 24 * time.Hour)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(base, e.Name())
+		info, err := os.Stat(filepath.Join(dir, worktreeMarkerName))
+		if err != nil {
+			continue // no marker → not ours; leave it alone
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.RemoveAll(dir)
+			continue
+		}
+		group, unix := splitWorktreeName(e.Name())
+		owned = append(owned, wt{name: e.Name(), group: group, unix: unix})
+	}
+	byGroup := map[string][]wt{}
+	for _, w := range owned {
+		byGroup[w.group] = append(byGroup[w.group], w)
+	}
+	for _, ws := range byGroup {
+		if len(ws) <= worktreeKeepPerPR {
+			continue
+		}
+		sort.Slice(ws, func(i, j int) bool { return ws[i].unix > ws[j].unix }) // newest first
+		for _, w := range ws[worktreeKeepPerPR:] {
+			_ = os.RemoveAll(filepath.Join(base, w.name))
+		}
+	}
+}
+
+// splitWorktreeName splits "<owner>-<repo>-<number>-<unix>" into the PR group
+// prefix ("<owner>-<repo>-<number>") and the trailing unix timestamp. Owner
+// and repo may contain hyphens, so we split only on the final "-<digits>".
+func splitWorktreeName(name string) (group string, unix int64) {
+	i := strings.LastIndex(name, "-")
+	if i < 0 || i == len(name)-1 {
+		return name, 0
+	}
+	n, err := strconv.ParseInt(name[i+1:], 10, 64)
+	if err != nil {
+		return name, 0
+	}
+	return name[:i], n
 }
 
 func cacheDir() string {

@@ -20,13 +20,24 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/applog"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
 	"github.com/madicen/appr-ai-sal/internal/theme"
 	"github.com/madicen/appr-ai-sal/internal/tui"
 )
 
+// version is the release identifier, overridden at build time by goreleaser
+// via -ldflags "-X main.version={{.Version}}". Defaults to "dev" for local
+// `go run` / `go build` invocations.
+var version = "dev"
+
 func main() {
+	// Bare `version` subcommand (mirrors the repo-context subcommand sniff).
+	if len(os.Args) >= 2 && os.Args[1] == "version" {
+		fmt.Println(version)
+		return
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "repo-context" {
 		ctx := context.Background()
 		if err := review.RunRepoContextCLI(ctx, os.Args[2:]); err != nil {
@@ -50,7 +61,21 @@ func run() error {
 	aiTimeout := flag.Int("ai-timeout-sec", -1, "Timeout in seconds for AI HTTP calls and overall review context (default 300)")
 	reviewStrictness := flag.String("review-strictness", "", "Review intensity: critical_only | lenient | balanced | strict (overrides env / config)")
 	demoMode := flag.Bool("demo", false, "run in self-contained demo mode with mock services (for VHS screenshots / GIFs)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return nil
+	}
+
+	// TUI apps cannot log to stderr (it corrupts the alt-screen), so route
+	// structured diagnostics to a file. Failure to open the log is
+	// non-fatal — the app still runs, just without a log.
+	if err := applog.Init(version); err != nil {
+		fmt.Fprintf(os.Stderr, "appr-ai-sal: logging disabled: %v\n", err)
+	}
+
 	dry := *dryRun
 	if os.Getenv("APPR_AI_SAL_DRY") == "1" {
 		dry = true

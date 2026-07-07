@@ -16,8 +16,8 @@ GIF_TARGETS := $(patsubst vhs/%.tape,gif-%,$(TAPES))
 # matching). They run unconditionally because the recipe doesn't
 # produce a file matching the target name — vhs writes to whatever
 # Output the tape names, not to a "gif-foo" file.
-.PHONY: build install run tidy fmt vet test clean demo vhs-fixtures \
-        screenshots clean-screenshots
+.PHONY: build install run tidy fmt vet test test-race cover lint clean demo \
+        vhs-fixtures screenshots clean-screenshots
 
 build:
 	go build -o $(BINARY) $(PKG)
@@ -39,6 +39,26 @@ vet:
 
 test:
 	go test ./...
+
+# test-race — run the suite under the race detector (mirrors CI).
+test-race:
+	go test -race ./...
+
+# cover — run the suite with coverage reporting (mirrors CI).
+cover:
+	go test -cover ./...
+
+# lint — run golangci-lint over the module. Install it with:
+#   go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+# (or `brew install golangci-lint`). CI runs the same linter via
+# golangci/golangci-lint-action; see .github/workflows/ci.yml.
+lint:
+	@command -v golangci-lint >/dev/null 2>&1 || { \
+	  echo "error: golangci-lint not found on PATH."; \
+	  echo "install it with: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+	  exit 1; \
+	}
+	golangci-lint run ./...
 
 clean:
 	rm -f $(BINARY)

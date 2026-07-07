@@ -398,7 +398,12 @@ optional JSON file **`~/.config/appr-ai-sal/ai.json`** (or under
 -ai-api-key string       prefer env for secrets
 -ai-timeout-sec int      default 300; use -1 to leave unchanged from file/env
 -review-strictness string lenient | balanced | strict
+-version                 print the version and exit
 ```
+
+`appr-ai-sal -version` (or the bare `appr-ai-sal version` subcommand) prints the
+build's version string and exits. Local `go run` / `go build` builds report
+`dev`; release binaries carry the tagged version stamped in by GoReleaser.
 
 ### Ollama quick start
 
@@ -425,6 +430,22 @@ Large PRs may exceed smaller models’ context windows; prefer a large-context m
 - Repository profiles (merged-PR digest cache) live next to that layout under
   `repo-profiles` (e.g. `~/.cache/appr-ai-sal/repo-profiles` when using the
   default cache root).
+
+### Logging
+
+The TUI can't write to stderr without corrupting the screen, so structured
+diagnostics (`log/slog`) go to a file instead. Every LLM call
+(provider / model / stage / duration / retry count), every `gh` invocation, and
+each pipeline stage transition is logged; **API keys are never written** (any
+key material is redacted before it reaches the log).
+
+- `APPR_AI_SAL_LOG_LEVEL` — `debug` \| `info` \| `warn` \| `error`
+  (default `info`). Raise to `debug` when diagnosing a failed review run.
+- `APPR_AI_SAL_LOG_DIR` — explicit override for the log directory.
+  Otherwise logs land under `$APPR_AI_SAL_CONFIG_DIR/log`,
+  `$XDG_STATE_HOME/appr-ai-sal/log`, or `~/.local/state/appr-ai-sal/log`.
+- The log file is `appr-ai-sal.log` inside that directory; a failed run is
+  meant to be diagnosable from that file alone.
 
 ### Repository context (`repo-context.json`)
 
@@ -460,10 +481,29 @@ appr-ai-sal repo-context refresh --all-mapped   # every entry in repo_roots
 Before each review run, if the merged-PR cache entry is missing or past TTL, it
 is rebuilt automatically (progress line `repo context:` in the TUI).
 
+## Development
+
+CI (GitHub Actions) builds, vets, and tests on both Ubuntu and macOS, and runs
+`golangci-lint` + `govulncheck`. The suite is hermetic — nothing in it requires
+the `gh` or `claude` CLIs or network access. The same checks are available
+locally via the `Makefile`:
+
+```bash
+make test        # go test ./...
+make test-race   # go test -race ./...   (mirrors CI)
+make cover       # go test -cover ./...
+make lint        # golangci-lint run ./...
+```
+
+`make lint` needs `golangci-lint` on your `PATH`; install it with
+`go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` or
+`brew install golangci-lint`. The enabled linters live in `.golangci.yml`.
+
 ## Status
 
 Early MVP. Built for one user (the author) to validate the loop, then
 shareable with a team. Known gaps: no in-app editing of the draft body
-yet, no draft persistence between runs, no resume of a review for a PR
-already reviewed, and worktrees are not cleaned up automatically. Issues
-and PRs welcome once it's stable.
+yet, no draft persistence between runs, and no resume of a review for a PR
+already reviewed. Worktrees under the cache dir are garbage-collected on
+startup (older than 7 days, or beyond the newest 2 per PR). Issues and PRs
+welcome once it's stable.

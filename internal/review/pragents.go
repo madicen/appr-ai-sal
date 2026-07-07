@@ -109,7 +109,7 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 		res.Findings = validateAnchorExcerpt(res.Findings, parsedFiles)
 		res.Findings = validateNamingConvention(res.Findings)
 		res.Findings = synthesizeSuggestions(res.Findings, parsedFiles)
-		res.Findings = repairMissingSuggestions(ctx, cfg, worktree, name, res.Findings, parsedFiles)
+		res.Findings, res.RepairFired, res.RepairSucceeded = repairMissingSuggestions(ctx, cfg, worktree, name, res.Findings, parsedFiles)
 		res.Findings = FilterFindingsBySeverity(res.Findings, floor)
 	}
 	return res

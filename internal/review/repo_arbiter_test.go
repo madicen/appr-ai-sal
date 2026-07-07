@@ -8,6 +8,24 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/gh"
 )
 
+// 0.4 fix #5: an unparseable arbiter response must surface a bounded raw
+// excerpt in the error so a retry/progress log names what the model returned,
+// and the error text must be classified as retryable so RunRepoArbiter's
+// stageWithRetry wrapper actually re-runs it.
+func TestParseRepoArbiterJSONRawExcerptAndRetryable(t *testing.T) {
+	raw := "sorry, I cannot comply and here is some prose instead of JSON"
+	_, err := parseRepoArbiterJSON(raw)
+	if err == nil {
+		t.Fatal("expected parse error on non-JSON arbiter output")
+	}
+	if !strings.Contains(err.Error(), "sorry, I cannot comply") {
+		t.Fatalf("error must embed a raw-output excerpt, got %q", err.Error())
+	}
+	if !isRetryableStageError(err) {
+		t.Fatalf("parse repo arbiter error must be retryable, got %q", err.Error())
+	}
+}
+
 func TestFinalizeRepoArbiterDropsSecuritySuppression(t *testing.T) {
 	d := &Draft{
 		Specialists: []SpecialistResult{

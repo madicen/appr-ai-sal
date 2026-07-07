@@ -37,8 +37,13 @@ func TestBuildRepoArbiterUserPromptIncludesPerAgentBriefs(t *testing.T) {
 	if !strings.Contains(got, "no brief on file") {
 		t.Fatalf("expected fallback notice for missing briefs")
 	}
-	if !strings.Contains(got, "## Specialist + vibe digest") {
-		t.Fatalf("expected specialist digest section, got:\n%s", got)
+	// The vibe-coach runs AFTER the arbiter, so the digest heading must not
+	// promise vibe content that is never present (0.4 fix #3).
+	if !strings.Contains(got, "## Specialist findings digest") {
+		t.Fatalf("expected specialist findings digest section, got:\n%s", got)
+	}
+	if strings.Contains(got, "vibe digest") {
+		t.Fatalf("stale 'vibe digest' heading must be gone, got:\n%s", got)
 	}
 }
 

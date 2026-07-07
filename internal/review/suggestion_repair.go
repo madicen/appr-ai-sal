@@ -56,25 +56,33 @@ type repairResult struct {
 // they were — a missing suggestion is the status quo and must never block or
 // alter the review. The model call only fires when there is at least one
 // candidate, so clean specialists cost nothing extra.
-func repairMissingSuggestions(ctx context.Context, cfg *aiconfig.Config, worktree, name string, findings []Finding, files []FileDiff) []Finding {
+// repairMissingSuggestions returns the (possibly updated) findings plus
+// telemetry: fired is the number of suggestion-less findings sent to the
+// repair model (0 when the model call was skipped entirely), and succeeded is
+// the number that came back with a re-validated one-click suggestion. The
+// caller surfaces these as Progress events so a run's hidden repair calls are
+// observable.
+func repairMissingSuggestions(ctx context.Context, cfg *aiconfig.Config, worktree, name string, findings []Finding, files []FileDiff) (out []Finding, fired int, succeeded int) {
 	idxs := selectRepairCandidates(findings, files)
 	if len(idxs) == 0 {
-		return findings
+		return findings, 0, 0
 	}
 	items := buildRepairItems(findings, files, idxs)
 	if len(items) == 0 {
-		return findings
+		return findings, 0, 0
 	}
+	fired = len(items)
 	systemPrompt, userPrompt := buildRepairPrompt(name, items)
-	out, err := repairComplete(ctx, cfg, systemPrompt, userPrompt, worktree)
+	resp, err := repairComplete(ctx, cfg, systemPrompt, userPrompt, worktree)
 	if err != nil {
-		return findings
+		return findings, fired, 0
 	}
-	results, err := parseRepairResponse(out)
+	results, err := parseRepairResponse(resp)
 	if err != nil {
-		return findings
+		return findings, fired, 0
 	}
-	return applyRepairs(findings, files, results)
+	findings, succeeded = applyRepairs(findings, files, results)
+	return findings, fired, succeeded
 }
 
 // selectRepairCandidates returns the indices of inline findings that lack a
@@ -239,7 +247,8 @@ func parseRepairResponse(raw string) (map[int]repairResult, error) {
 // that names a line outside the hunk, or whose replacement would break the
 // file or mismatch the anchor kind, is dropped — the finding stays
 // suggestion-less rather than receiving a bad fix.
-func applyRepairs(findings []Finding, files []FileDiff, results map[int]repairResult) []Finding {
+func applyRepairs(findings []Finding, files []FileDiff, results map[int]repairResult) ([]Finding, int) {
+	applied := 0
 	for id, r := range results {
 		if id < 0 || id >= len(findings) {
 			continue
@@ -278,6 +287,7 @@ func applyRepairs(findings []Finding, files []FileDiff, results map[int]repairRe
 		f.AnchorExcerpt = ""
 		f.SuggestionStrippedReason = ""
 		f.SuggestionRepaired = true
+		applied++
 	}
-	return findings
+	return findings, applied
 }

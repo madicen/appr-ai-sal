@@ -89,7 +89,9 @@ func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map
 		b.WriteString(md)
 		b.WriteString("\n")
 	}
-	b.WriteString("## Specialist + vibe digest (authoritative for finding paths/lines)\n\n")
+	// The vibe-coach runs AFTER the arbiter, so its output is never part of
+	// this digest — the heading names only what is actually present.
+	b.WriteString("## Specialist findings digest (authoritative for finding paths/lines)\n\n")
 	b.WriteString(specialistDigest)
 	b.WriteString("\n")
 	b.WriteString(repoArbiterOutputContract)
@@ -121,7 +123,10 @@ func parseRepoArbiterJSON(s string) (*repoArbiterJSON, error) {
 			return &v, nil
 		}
 	}
-	return nil, fmt.Errorf("parse repo arbiter JSON")
+	// Include a bounded raw-output excerpt so a stage-retry log / progress
+	// line names what the model actually returned instead of an opaque
+	// "parse repo arbiter JSON".
+	return nil, fmt.Errorf("parse repo arbiter JSON (raw: %s)", truncate(s, 500))
 }
 
 // FinalizeRepoArbiter validates suppressions and demotions against the

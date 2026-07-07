@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/applog"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 )
 
@@ -139,7 +140,7 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// and writes the replacement, re-validated by the same safety gates.
 		// Fail-open and only fires when there is at least one candidate. See
 		// suggestion_repair.go.
-		res.Findings = repairMissingSuggestions(ctx, cfg, worktree, name, res.Findings, parsedFiles)
+		res.Findings, res.RepairFired, res.RepairSucceeded = repairMissingSuggestions(ctx, cfg, worktree, name, res.Findings, parsedFiles)
 		// Re-apply the floor: a finding demoted to info above must obey
 		// the same strictness gate the model originally got.
 		res.Findings = FilterFindingsBySeverity(res.Findings, floor)
@@ -174,7 +175,7 @@ func RunVibeCoachForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, n
 	vibeInput := SpecialistsForVibeCoach(d, d.Specialists)
 	var res *VibeCoachResult
 	_ = stageWithRetry(ctx, cfg, "vibe-coach", notify, func(sctx context.Context) error {
-		stCtx, cancel := context.WithTimeout(sctx, perStageBudget(cfg))
+		stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "vibe-coach"), perStageBudget(cfg))
 		defer cancel()
 		res = runVibeCoach(stCtx, cfg, d.Worktree, d.PR, vibeInput, "")
 		if res != nil && res.Err != nil {
@@ -480,7 +481,7 @@ const vibeCoachOutputContract = `Return your output as a single JSON object and 
       "rationale": "<1–2 sentences for the HUMAN reader: which specialist findings this bundles and what category of problem they amount to. Do NOT include any instructions for the AI assistant here.>",
       "agent_prompt": "<the verbatim block the author will paste into their AI coding assistant. Self-contained, second-person, references concrete paths/symbols. NOT a meta-summary; an actionable instruction. NEVER refer to the rationale or to other prompts; the AI receives only this string.>",
       "finding_refs": [
-        { "specialist": "<formatting | design | testing | docs | security>",
+        { "specialist": "<formatting | design | testing | docs | security | tech | description | checks | discussion | scope>",
           "path":       "<exact path from the bundled specialist finding>",
           "line":       <integer line number from that finding>,
           "side":       "RIGHT" | "LEFT" }
@@ -536,12 +537,25 @@ func parseSpecialistJSON(s string) (*specialistJSON, error) {
 	s = strings.TrimSpace(s)
 	o, err := tryParseSpecialistJSON(s)
 	if err == nil {
+		normalizeSpecialistSeverities(o)
 		return o, nil
 	}
 	if extractJSONObject(s) == "" {
 		return nil, fmt.Errorf("no JSON object found")
 	}
 	return nil, err
+}
+
+// normalizeSpecialistSeverities canonicalises each finding's severity at parse
+// time so unknown / synonym strings (e.g. "high", "nit") don't render verbatim
+// in the body. See normalizeSeverity.
+func normalizeSpecialistSeverities(o *specialistJSON) {
+	if o == nil {
+		return
+	}
+	for i := range o.Findings {
+		o.Findings[i].Severity = normalizeSeverity(o.Findings[i].Severity)
+	}
 }
 
 func tryParseSpecialistJSON(s string) (*specialistJSON, error) {

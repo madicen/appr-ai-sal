@@ -82,7 +82,10 @@ func TestApplyRepairsRelocatesAndFlags(t *testing.T) {
 	files := ParseDiff(unitSuffixDiff)
 	findings := []Finding{repairCandidateFinding()}
 	results := map[int]repairResult{0: {AnchorLine: 13, Replacement: "        memory: 717Mi"}}
-	out := applyRepairs(findings, files, results)
+	out, applied := applyRepairs(findings, files, results)
+	if applied != 1 {
+		t.Fatalf("expected 1 applied repair, got %d", applied)
+	}
 	if out[0].Line != 13 {
 		t.Fatalf("expected anchor moved to line 13, got %d", out[0].Line)
 	}
@@ -103,7 +106,10 @@ func TestApplyRepairsRollsBackNoOpReplacement(t *testing.T) {
 	// Replacement equals the anchor line verbatim → suggestionBreaksFile
 	// flags a no-op, so the repair must be rejected.
 	results := map[int]repairResult{0: {AnchorLine: 13, Replacement: "        memory: 717M"}}
-	out := applyRepairs(findings, files, results)
+	out, applied := applyRepairs(findings, files, results)
+	if applied != 0 {
+		t.Fatalf("rejected repair must report 0 applied, got %d", applied)
+	}
 	if strings.TrimSpace(out[0].Suggestion) != "" {
 		t.Fatalf("no-op repair must be rolled back, got suggestion %q", out[0].Suggestion)
 	}
@@ -125,7 +131,10 @@ func TestApplyRepairsRollsBackAnchorKindMismatch(t *testing.T) {
 		Comment:  "The function name should be in snake_case according to naming conventions.",
 	}
 	results := map[int]repairResult{0: {AnchorLine: 76, Replacement: `ingestValidatorFunc{N: "x", F: ingressStripHTML}`}}
-	out := applyRepairs([]Finding{f}, files, results)
+	out, applied := applyRepairs([]Finding{f}, files, results)
+	if applied != 0 {
+		t.Fatalf("rolled-back repair must report 0 applied, got %d", applied)
+	}
 	if out[0].Suggestion != "" {
 		t.Fatalf("anchor-kind mismatch repair must be rolled back, got %q", out[0].Suggestion)
 	}
@@ -144,12 +153,15 @@ func TestRepairMissingSuggestionsAppliesRepair(t *testing.T) {
 	}
 	files := ParseDiff(unitSuffixDiff)
 	findings := []Finding{repairCandidateFinding()}
-	out := repairMissingSuggestions(context.Background(), aiconfig.DefaultConfig(), "", "design", findings, files)
+	out, fired, succeeded := repairMissingSuggestions(context.Background(), aiconfig.DefaultConfig(), "", "design", findings, files)
 	if calls != 1 {
 		t.Fatalf("expected exactly 1 model call, got %d", calls)
 	}
 	if !out[0].SuggestionRepaired || strings.TrimSpace(out[0].Suggestion) != "memory: 717Mi" {
 		t.Fatalf("expected repaired suggestion, got repaired=%v suggestion=%q", out[0].SuggestionRepaired, out[0].Suggestion)
+	}
+	if fired != 1 || succeeded != 1 {
+		t.Fatalf("expected telemetry fired=1 succeeded=1, got fired=%d succeeded=%d", fired, succeeded)
 	}
 }
 
@@ -164,9 +176,12 @@ func TestRepairMissingSuggestionsSkipsWhenNoCandidates(t *testing.T) {
 	files := ParseDiff(unitSuffixDiff)
 	f := repairCandidateFinding()
 	f.Suggestion = "        memory: 717Mi" // already has one
-	out := repairMissingSuggestions(context.Background(), aiconfig.DefaultConfig(), "", "design", []Finding{f}, files)
+	out, fired, succeeded := repairMissingSuggestions(context.Background(), aiconfig.DefaultConfig(), "", "design", []Finding{f}, files)
 	if calls != 0 {
 		t.Fatalf("no candidates should mean no model call, got %d calls", calls)
+	}
+	if fired != 0 || succeeded != 0 {
+		t.Fatalf("no candidates should mean zero telemetry, got fired=%d succeeded=%d", fired, succeeded)
 	}
 	if strings.TrimSpace(out[0].Suggestion) != "memory: 717Mi" {
 		t.Fatalf("existing suggestion should be untouched, got %q", out[0].Suggestion)
@@ -181,9 +196,12 @@ func TestRepairMissingSuggestionsFailsOpenOnError(t *testing.T) {
 	}
 	files := ParseDiff(unitSuffixDiff)
 	findings := []Finding{repairCandidateFinding()}
-	out := repairMissingSuggestions(context.Background(), aiconfig.DefaultConfig(), "", "design", findings, files)
+	out, fired, succeeded := repairMissingSuggestions(context.Background(), aiconfig.DefaultConfig(), "", "design", findings, files)
 	if strings.TrimSpace(out[0].Suggestion) != "" || out[0].SuggestionRepaired {
 		t.Fatalf("API error must leave findings unchanged, got suggestion=%q repaired=%v", out[0].Suggestion, out[0].SuggestionRepaired)
+	}
+	if fired != 1 || succeeded != 0 {
+		t.Fatalf("fail-open should report fired=1 succeeded=0, got fired=%d succeeded=%d", fired, succeeded)
 	}
 }
 

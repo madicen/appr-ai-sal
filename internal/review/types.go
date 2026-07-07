@@ -161,6 +161,13 @@ type SpecialistResult struct {
 	// Err is non-nil if the specialist failed to run; Summary/Findings will be
 	// empty in that case.
 	Err error `json:"-"`
+	// RepairFired / RepairSucceeded record the suggestion-repair pass's
+	// hidden second LLM call: how many suggestion-less findings were sent to
+	// the repair model and how many came back with a re-validated one-click
+	// fix. Surfaced as Progress telemetry so the run's repair activity is
+	// observable. Never posted to GitHub.
+	RepairFired     int `json:"-"`
+	RepairSucceeded int `json:"-"`
 }
 
 // severityFloor returns the strictness floor recorded on the Draft, or
@@ -312,22 +319,22 @@ type DemotedFindingRef struct {
 
 // RepoArbiterResult merges repo experts with specialist output; may adjust verdict and suppress inline posts.
 type RepoArbiterResult struct {
-	UserSummary         string
-	RationaleBullets    []string
-	VerdictOverride     string // empty = keep vibe-coach verdict
-	EffectiveVerdict    string // filled at apply time: override or original
-	SummaryMode         string // none | append | replace
-	SummaryAddendum     string
-	SummaryReplace      string
-	Suppressed          []SuppressedFindingRef
-	suppressKeySet      map[string]struct{} // populated by ApplyToDraft
+	UserSummary      string
+	RationaleBullets []string
+	VerdictOverride  string // empty = keep vibe-coach verdict
+	EffectiveVerdict string // filled at apply time: override or original
+	SummaryMode      string // none | append | replace
+	SummaryAddendum  string
+	SummaryReplace   string
+	Suppressed       []SuppressedFindingRef
+	suppressKeySet   map[string]struct{} // populated by ApplyToDraft
 	// Demoted lists arbiter-recommended one-rank severity drops. Validated
 	// and applied by FinalizeRepoArbiter (mutates Finding.Severity in place,
 	// then re-runs the strictness floor so demoted-to-info findings can
 	// disappear under balanced/lenient/critical-only).
-	Demoted          []DemotedFindingRef
-	demoteKeySet     map[string]Severity // populated by FinalizeRepoArbiter; key→original severity
-	DroppedDemotions []string            // human-readable reject reasons
+	Demoted             []DemotedFindingRef
+	demoteKeySet        map[string]Severity // populated by FinalizeRepoArbiter; key→original severity
+	DroppedDemotions    []string            // human-readable reject reasons
 	DroppedSuppressions []string            // human-readable reject reasons
 	Err                 error
 }
@@ -934,10 +941,10 @@ func (d *Draft) hasBlockingContent() bool {
 
 // Draft is what the TUI renders and (on confirm) posts to GitHub.
 type Draft struct {
-	Ref         gh.Ref
-	PR          *gh.PR
-	Diff        string
-	Worktree    string
+	Ref      gh.Ref
+	PR       *gh.PR
+	Diff     string
+	Worktree string
 	// Strictness is the review intensity the specialists ran under. Used by
 	// FinalizeRepoArbiter to re-apply the severity floor after demotions.
 	Strictness  aiconfig.ReviewStrictness

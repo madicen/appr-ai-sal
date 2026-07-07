@@ -27,6 +27,27 @@ func MinSeverityForStrictness(s aiconfig.ReviewStrictness) Severity {
 	}
 }
 
+// normalizeSeverity maps a model-supplied severity string to a canonical
+// Severity. Canonical values pass through; common synonyms are folded; any
+// unrecognised value (including empty) becomes SeverityWarning — the same
+// coercion FilterFindingsBySeverity applies at rank 0, but done at parse time
+// so an unknown string (e.g. "high", "nit", "blocker") never renders verbatim
+// in the review body.
+func normalizeSeverity(sv Severity) Severity {
+	switch strings.ToLower(strings.TrimSpace(string(sv))) {
+	case "info", "informational", "low", "minor", "nit", "note", "trivial", "style", "suggestion":
+		return SeverityInfo
+	case "warning", "warn", "medium", "moderate", "med":
+		return SeverityWarning
+	case "error", "high", "major", "bug":
+		return SeverityError
+	case "critical", "crit", "blocker", "fatal", "severe":
+		return SeverityCritical
+	default:
+		return SeverityWarning
+	}
+}
+
 // severityRank maps a severity to numeric ordering:
 // info(1) < warning(2) < error(3) < critical(4).
 func severityRank(sv Severity) int {

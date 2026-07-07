@@ -2,7 +2,6 @@
 package repoconfig
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -106,6 +105,27 @@ func DefaultPath() string {
 	return filepath.Join(aiconfig.ConfigDir(), "repo-context.json")
 }
 
+// boolPresence mirrors Config's boolean fields as pointers so JSON decoding
+// can distinguish an omitted key (nil → keep the Default() value) from an
+// explicit `false` (non-nil → honour it). This replaces the fragile
+// bytes.Contains(`"field"`) raw-JSON scans that previously drove the same
+// "present vs absent" logic and could be fooled by the key appearing inside a
+// string value elsewhere in the file.
+type boolPresence struct {
+	IncludePRHistory           *bool `json:"include_pr_history"`
+	RepoCultureSummarize       *bool `json:"repo_culture_summarize"`
+	ContextVersusChangeSummary *bool `json:"context_versus_change_summary"`
+	RepoExpertPanel            *bool `json:"repo_expert_panel"`
+	ParallelSpecialists        *bool `json:"parallel_specialists"`
+	ParallelRepoExperts        *bool `json:"parallel_repo_experts"`
+	ParallelPRAgents           *bool `json:"parallel_pr_agents"`
+	IncludeRepoEvidence        *bool `json:"include_repo_evidence"`
+	RepoArbiterDemotions       *bool `json:"repo_arbiter_demotions"`
+	ConventionWitness          *bool `json:"convention_witness"`
+	TechAgents                 *bool `json:"tech_agents"`
+	PRAgents                   *bool `json:"pr_agents"`
+}
+
 // Load reads repo-context.json if present; otherwise returns defaults.
 func Load() (*Config, error) {
 	c := Default()
@@ -122,60 +142,60 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	c.Merge(&fileCfg)
-	if bytes.Contains(b, []byte(`"include_pr_history"`)) {
-		c.IncludePRHistory = fileCfg.IncludePRHistory
-	} else {
-		c.IncludePRHistory = true
+
+	// Bool fields need present-vs-absent detection so a default-true toggle
+	// isn't forced false just because its key was omitted. Decode them as
+	// pointers and only override the Default() value when the key was set.
+	var bp boolPresence
+	if err := json.Unmarshal(b, &bp); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
-	if bytes.Contains(b, []byte(`"repo_culture_summarize"`)) {
-		c.RepoCultureSummarize = fileCfg.RepoCultureSummarize
-	}
-	if bytes.Contains(b, []byte(`"context_versus_change_summary"`)) {
-		c.ContextVersusChangeSummary = fileCfg.ContextVersusChangeSummary
-	} else {
-		c.ContextVersusChangeSummary = true
-	}
-	if bytes.Contains(b, []byte(`"repo_expert_panel"`)) {
-		c.RepoExpertPanel = fileCfg.RepoExpertPanel
-	} else {
-		c.RepoExpertPanel = true
-	}
-	if bytes.Contains(b, []byte(`"parallel_specialists"`)) {
-		c.ParallelSpecialists = fileCfg.ParallelSpecialists
-	}
-	if bytes.Contains(b, []byte(`"parallel_repo_experts"`)) {
-		c.ParallelRepoExperts = fileCfg.ParallelRepoExperts
-	}
-	if bytes.Contains(b, []byte(`"parallel_pr_agents"`)) {
-		c.ParallelPRAgents = fileCfg.ParallelPRAgents
-	}
-	if bytes.Contains(b, []byte(`"include_repo_evidence"`)) {
-		c.IncludeRepoEvidence = fileCfg.IncludeRepoEvidence
-	} else {
-		c.IncludeRepoEvidence = true
-	}
-	if bytes.Contains(b, []byte(`"repo_arbiter_demotions"`)) {
-		c.RepoArbiterDemotions = fileCfg.RepoArbiterDemotions
-	} else {
-		c.RepoArbiterDemotions = true
-	}
-	if bytes.Contains(b, []byte(`"convention_witness"`)) {
-		c.ConventionWitness = fileCfg.ConventionWitness
-	} else {
-		c.ConventionWitness = true
-	}
-	if bytes.Contains(b, []byte(`"tech_agents"`)) {
-		c.TechAgents = fileCfg.TechAgents
-	} else {
-		c.TechAgents = true
-	}
-	if bytes.Contains(b, []byte(`"pr_agents"`)) {
-		c.PRAgents = fileCfg.PRAgents
-	} else {
-		c.PRAgents = true
-	}
+	applyBoolPresence(c, &bp)
 	c.Normalize()
 	return c, nil
+}
+
+// applyBoolPresence overrides c's boolean fields with any explicitly-set
+// values from bp. Absent keys (nil pointers) leave c's Default() value
+// untouched, preserving the default-true / default-false behaviour the old
+// bytes.Contains scans provided.
+func applyBoolPresence(c *Config, bp *boolPresence) {
+	if bp.IncludePRHistory != nil {
+		c.IncludePRHistory = *bp.IncludePRHistory
+	}
+	if bp.RepoCultureSummarize != nil {
+		c.RepoCultureSummarize = *bp.RepoCultureSummarize
+	}
+	if bp.ContextVersusChangeSummary != nil {
+		c.ContextVersusChangeSummary = *bp.ContextVersusChangeSummary
+	}
+	if bp.RepoExpertPanel != nil {
+		c.RepoExpertPanel = *bp.RepoExpertPanel
+	}
+	if bp.ParallelSpecialists != nil {
+		c.ParallelSpecialists = *bp.ParallelSpecialists
+	}
+	if bp.ParallelRepoExperts != nil {
+		c.ParallelRepoExperts = *bp.ParallelRepoExperts
+	}
+	if bp.ParallelPRAgents != nil {
+		c.ParallelPRAgents = *bp.ParallelPRAgents
+	}
+	if bp.IncludeRepoEvidence != nil {
+		c.IncludeRepoEvidence = *bp.IncludeRepoEvidence
+	}
+	if bp.RepoArbiterDemotions != nil {
+		c.RepoArbiterDemotions = *bp.RepoArbiterDemotions
+	}
+	if bp.ConventionWitness != nil {
+		c.ConventionWitness = *bp.ConventionWitness
+	}
+	if bp.TechAgents != nil {
+		c.TechAgents = *bp.TechAgents
+	}
+	if bp.PRAgents != nil {
+		c.PRAgents = *bp.PRAgents
+	}
 }
 
 // ApplyParallelExecutionEnv overrides parallel_specialists /
