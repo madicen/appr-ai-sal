@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/appdirs"
 	"github.com/madicen/appr-ai-sal/internal/applog"
@@ -26,13 +27,17 @@ import (
 // Progress messages are emitted on the channel returned by Run so the TUI can
 // stream updates to the user as specialists complete.
 type Progress struct {
-	Stage   string // "checkout", "diff", "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "pr-agent", "vibe-coach", "repo-arbiter", "done"; specialist/pr-agent Detail is "<name>:start"/"<name>:done"/"<name>:retry N (...)" (pr-agent also emits "warning: ..." for fetch failures); vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed
+	Stage   string // "checkout", "diff", "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "pr-agent", "vibe-coach", "repo-arbiter", "usage", "done"; specialist/pr-agent Detail is "<name>:start"/"<name>:done"/"<name>:retry N (...)" (pr-agent also emits "warning: ..." for fetch failures); vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed
 	Detail  string // free-form detail about the stage
 	Err     error  // non-nil if this stage hit an error worth surfacing
 	Result  *SpecialistResult
 	Vibe    *VibeCoachResult
 	Arbiter *RepoArbiterResult // populated on Stage="repo-arbiter" Detail="done"
 	Final   *Draft             // populated only on the final "done" message
+	// Usage carries a running snapshot of aggregated inference usage/cost.
+	// It rides Stage="usage" events (running totals as calls complete) and the
+	// final Stage="done" event (the run total). Nil on every other event.
+	Usage *RunUsage
 }
 
 // perStageBudget is the max wall-clock per individual AI stage (specialist,
@@ -67,6 +72,25 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		defer close(out)
 
 		applog.Info("review run start", "ref", ref.String(), "provider", string(runCfg.Provider), "strictness", string(runCfg.ReviewStrictness))
+
+		// R1: meter every inference call this run makes. The observer is
+		// installed on the run's context, so every stage that derives from it
+		// (specialists, PR agents, arbiter, witness, vibe-coach, the repair
+		// pass, the context-vs-change summary) reports usage/cost through the
+		// single ai provider layer — no per-signature sink threading. The
+		// accumulator is concurrency-safe because parallel specialists/PR
+		// agents report from their own goroutines.
+		runStart := time.Now()
+		usageAcc := newUsageAccumulator()
+		ctx = ai.WithUsageObserver(ctx, func(r ai.CallReport) {
+			usageAcc.record(r)
+			// Emit a running-total snapshot so the overlay can show usage
+			// climbing live. Sends are safe alongside the parallel stage
+			// goroutines already writing to out; the channel is only closed
+			// after every inference call has returned.
+			snap := usageAcc.snapshot(time.Since(runStart))
+			out <- Progress{Stage: "usage", Usage: &snap}
+		})
 
 		pr, err := gh.GetPR(ctx, ref)
 		if err != nil {
@@ -177,7 +201,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				cvCh <- cvOutcome{}
 				return
 			}
-			s, err := SummarizeContextVersusChange(ctx, runCfg, pr, diff, repoCtx, worktree)
+			s, err := SummarizeContextVersusChange(applog.WithStage(ctx, "context-summary"), runCfg, pr, diff, repoCtx, worktree)
 			cvCh <- cvOutcome{text: s, err: err}
 		}()
 
@@ -327,7 +351,16 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			out <- Progress{Stage: "vibe-coach", Detail: "done", Vibe: vibe}
 		}
 
-		out <- Progress{Stage: "done", Final: final}
+		runUsage := usageAcc.snapshot(time.Since(runStart))
+		applog.Info("review run usage",
+			"ref", ref.String(),
+			"calls", runUsage.Calls,
+			"input_tokens", runUsage.InputTokens,
+			"output_tokens", runUsage.OutputTokens,
+			"cost_usd", runUsage.CostUSD,
+			"cost_known", runUsage.CostKnown,
+			"wall_ms", runUsage.WallClock.Milliseconds())
+		out <- Progress{Stage: "done", Final: final, Usage: &runUsage}
 	}()
 
 	return out, nil

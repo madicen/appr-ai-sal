@@ -257,7 +257,25 @@ func runScript(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, out chan<-
 		RepositoryContext:          "demo repo-context bundle (canned)",
 		ContextVersusChangeSummary: demoContextVsChange,
 	}
-	_ = send(review.Progress{Stage: "done", Final: final})
+	// Canned usage/cost totals so the overlay's R1 summary line renders in
+	// recordings ("14 calls · 182k in / 21k out · ~$0.43 · …").
+	usage := demoRunUsage()
+	_ = send(review.Progress{Stage: "done", Final: final, Usage: &usage})
+}
+
+// demoRunUsage returns a plausible per-run usage/cost total for the scripted
+// demo (14 metered calls: 5 specialists, 4 PR agents, witness, arbiter,
+// vibe-coach, context-summary) so the overlay's R1 summary line reads
+// realistically in VHS recordings.
+func demoRunUsage() review.RunUsage {
+	return review.RunUsage{
+		Calls:        14,
+		InputTokens:  182_000,
+		OutputTokens: 21_000,
+		CostUSD:      0.43,
+		CostKnown:    true,
+		WallClock:    6*time.Minute + 12*time.Second,
+	}
 }
 
 // Demo findings: one per severity, all anchored on real lines from the

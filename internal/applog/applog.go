@@ -161,20 +161,25 @@ func Redact(s string) string {
 }
 
 // LLMCall logs one inference call (provider, model, stage, duration, retry
-// count, error). Never pass API key material here — provider/model/stage are
-// non-secret labels. duration is the wall-clock of the whole call including
-// retries.
-func LLMCall(ctx context.Context, provider, model string, retries int, dur time.Duration, err error) {
+// count, token/cost usage, error). Never pass API key material here —
+// provider/model/stage are non-secret labels. duration is the wall-clock of
+// the whole call including retries. inputTokens/outputTokens/costUSD carry the
+// usage the provider reported (0 when the backend didn't surface that datum);
+// see R1 usage/cost telemetry.
+func LLMCall(ctx context.Context, provider, model string, retries int, dur time.Duration, inputTokens, outputTokens int, costUSD float64, err error) {
 	stage := StageFromContext(ctx)
 	if err != nil {
 		L().Warn("llm call failed",
 			"provider", provider, "model", model, "stage", stage,
-			"retries", retries, "duration_ms", dur.Milliseconds(), "err", err.Error())
+			"retries", retries, "duration_ms", dur.Milliseconds(),
+			"input_tokens", inputTokens, "output_tokens", outputTokens, "cost_usd", costUSD,
+			"err", err.Error())
 		return
 	}
 	L().Info("llm call",
 		"provider", provider, "model", model, "stage", stage,
-		"retries", retries, "duration_ms", dur.Milliseconds())
+		"retries", retries, "duration_ms", dur.Milliseconds(),
+		"input_tokens", inputTokens, "output_tokens", outputTokens, "cost_usd", costUSD)
 }
 
 // GHInvocation logs one gh CLI invocation (args, duration, error). Callers

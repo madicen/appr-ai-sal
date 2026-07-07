@@ -86,11 +86,15 @@ func (m *Model) renderSummaryBody() string {
 		}
 	}
 	onPR, sessPosted, skippedOnly := m.tallyCardKinds()
-	b.WriteString(fmt.Sprintf("Inline comments: %s already on PR, %s posted this session, %s skipped (%d total)\n\n",
+	b.WriteString(fmt.Sprintf("Inline comments: %s already on PR, %s posted this session, %s skipped (%d total)\n",
 		styles.OkStyle.Render(fmt.Sprintf("%d", onPR)),
 		styles.OkStyle.Render(fmt.Sprintf("%d", sessPosted)),
 		styles.DimStyle.Render(fmt.Sprintf("%d", skippedOnly)),
 		len(m.cards)))
+	if ul := m.usageLine(); ul != "" {
+		b.WriteString(ul + "\n")
+	}
+	b.WriteString("\n")
 
 	if m.summaryPhaseOfferApproveWithoutSummary() {
 		b.WriteString(styles.DimStyle.Render("You have not posted any inline comments this session. Submit GitHub APPROVE with an empty body (a) to approve without publishing the summary below, or post the summary as usual (y).") + "\n\n")

@@ -411,6 +411,11 @@ type Model struct {
 	// running view shows total elapsed time relative to this; per-agent timers
 	// show each specialist's duration after it finishes.
 	runStartedAt time.Time
+	// runUsage is the latest aggregated inference usage/cost snapshot the
+	// runner emitted (Stage="usage" running totals, then the Stage="done"
+	// final). Nil until the first metered call reports (or in demo/test runs
+	// that emit no usage), so the overlay omits the usage line gracefully.
+	runUsage *review.RunUsage
 
 	phase overlayPhase
 	// tabs is the tab-bar model: overview, one per output agent, then

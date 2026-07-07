@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/madicen/appr-ai-sal/internal/review"
+	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 )
 
 // CloseMsg is the signal the overlay sends to the root model when
@@ -116,6 +117,31 @@ func (m *Model) OnOverlayResize(contentW, contentH int) tea.Cmd {
 	return nil
 }
 
+// adoptUsage installs a usage snapshot, ignoring one that regresses the call
+// count. Running-total events come off the runner from parallel goroutines, so
+// they can arrive slightly out of order; guarding on call count keeps the
+// displayed total monotonic. The final "done" snapshot always has the highest
+// call count, so it wins.
+func (m *Model) adoptUsage(u *review.RunUsage) {
+	if u == nil {
+		return
+	}
+	if m.runUsage != nil && u.Calls < m.runUsage.Calls {
+		return
+	}
+	m.runUsage = u
+}
+
+// usageLine renders the compact usage/cost/time summary shown in the overview
+// done-state and the run summary, or "" when no metered inference happened
+// (demo/test runs, or before the first call reports).
+func (m *Model) usageLine() string {
+	if m.runUsage == nil || !m.runUsage.HasData() {
+		return ""
+	}
+	return styles.DimStyle.Render("Usage · ") + m.runUsage.Summary()
+}
+
 func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 	switch p.Stage {
 	case "checkout":
@@ -177,7 +203,15 @@ func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 		if p.Err != nil {
 			m.log = append(m.log, "fetch PR: "+p.Err.Error())
 		}
+	case "usage":
+		// Running usage/cost total — store the latest snapshot so the overview
+		// and summary can show it climbing live. Totals only grow, so a later
+		// snapshot always supersedes an earlier one.
+		m.adoptUsage(p.Usage)
 	case "done":
+		// The final "done" event carries the run's total usage/cost alongside
+		// the draft.
+		m.adoptUsage(p.Usage)
 		// Root model receives the same progress message and sets m.draft. The
 		// overlay also adopts it directly so we can compute approval cards.
 		if p.Final != nil {

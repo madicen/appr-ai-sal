@@ -634,7 +634,11 @@ func (m *Model) renderRunningBody() string {
 		headline += "  ·  " + styles.ErrStyle.Render(fmt.Sprintf("%d failed", failedN))
 	}
 	b.WriteString(headline + "\n")
-	b.WriteString(renderProgressBar(doneN, totalN, max(20, rowW/2)) + "\n\n")
+	b.WriteString(renderProgressBar(doneN, totalN, max(20, rowW/2)) + "\n")
+	if ul := m.usageLine(); ul != "" {
+		b.WriteString(ul + "\n")
+	}
+	b.WriteString("\n")
 
 	// Stage groups in pipeline order. Each group prints a header (with its
 	// own done/total) and then its rows, indented by 2 cells.
