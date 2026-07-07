@@ -216,7 +216,7 @@ func (m *Model) actPostCurrent() (tea.Model, tea.Cmd) {
 		m.rebuildBody()
 		return m, nil
 	}
-	cmd := data.PostSingleFindingCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun)
+	cmd := data.PostSingleFindingCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun, m.demoMode)
 	return m, cmd
 }
 
@@ -293,7 +293,7 @@ func (m *Model) actPostCurrentFileLevel() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	cur.fileLevelPost = true
-	cmd := data.PostSingleFindingFileLevelCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun)
+	cmd := data.PostSingleFindingFileLevelCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun, m.demoMode)
 	return m, cmd
 }
 

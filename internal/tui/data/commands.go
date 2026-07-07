@@ -2,11 +2,16 @@
 // emit. Splitting them out of the model package lets every consumer (root
 // model + extracted tab packages such as tabs/review) react to the same
 // canonical message types without each package re-declaring them.
+//
+// Every command selects a Backend once (see selectBackend) and then talks to
+// it uniformly — demo mode and live mode share the exact same interface, so no
+// command branches on demoMode internally. The message-producing bodies are
+// factored into plain functions taking a Backend so the command flows can be
+// unit-tested against a fake Backend without a live gh CLI.
 package data
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -17,6 +22,13 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
 )
+
+// prRef is the ref of a fetched PR. Commands derive the diff ref from the PR
+// returned by Backend.PRDetail (rather than the requested ref) so the demo
+// fixture's fallback diff aligns with its fallback PR.
+func prRef(pr *gh.PR) gh.Ref {
+	return gh.Ref{Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number}
+}
 
 // PRListMsg delivers the result of LoadPRsCmd.
 type PRListMsg struct{ PRs []gh.PR }
@@ -43,23 +55,23 @@ func (e ErrMsg) Error() string { return e.Err.Error() }
 // queue, explicit-reviewer narrow, or authored-by-me).
 //
 // When demoMode is true the gh CLI is bypassed entirely and a canned
-// set of PRs is returned synchronously. The demo fixture is a fixed
-// list, so authored-mode just filters that fixture by the viewer's
-// canonical "madicen" login — keeping the recording reproducible
-// regardless of the host's gh user.
+// set of PRs is returned. The demo fixture is a fixed list, so
+// authored-mode just filters that fixture by the viewer's canonical
+// "madicen" login — keeping the recording reproducible regardless of the
+// host's gh user.
 func LoadPRsCmd(mode gh.ListMode, demoMode bool) tea.Cmd {
-	if demoMode {
-		return func() tea.Msg { return PRListMsg{PRs: demoPRsForMode(mode)} }
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return loadPRsMsg(b, mode) }
+}
+
+func loadPRsMsg(b Backend, mode gh.ListMode) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	prs, err := b.ListPRs(ctx, mode)
+	if err != nil {
+		return ErrMsg{err}
 	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		prs, err := gh.ListPRs(ctx, mode)
-		if err != nil {
-			return ErrMsg{err}
-		}
-		return PRListMsg{PRs: prs}
-	}
+	return PRListMsg{PRs: prs}
 }
 
 // demoPRsForMode returns the canned PR fixture filtered to match the
@@ -92,61 +104,49 @@ func demoPRsForMode(mode gh.ListMode) []gh.PR {
 // LoadPRDetailCmd fetches the PR view + unified diff for the given ref.
 //
 // In demo mode the canned PR fixture is looked up by ref; if the user
-// pasted a ref that doesn't match a fixture we fall back to the first
-// canned PR so the URL-paste demo still has something to render.
+// pasted a ref that doesn't match a fixture the backend falls back to the
+// first canned PR (and the diff is fetched against that PR's ref) so the
+// URL-paste demo still has something to render.
 func LoadPRDetailCmd(ref gh.Ref, demoMode bool) tea.Cmd {
-	if demoMode {
-		return func() tea.Msg {
-			pr := demo.LookupPR(ref)
-			if pr == nil {
-				fallback := demo.DemoPullRequests()[0]
-				pr = &fallback
-				ref = gh.Ref{Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number}
-			}
-			return PRDetailMsg{PR: pr, Diff: demo.DemoDiff(ref)}
-		}
-	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-
-		pr, err := gh.GetPR(ctx, ref)
-		if err != nil {
-			return ErrMsg{err}
-		}
-		diff, err := gh.GetDiff(ctx, ref)
-		if err != nil {
-			return ErrMsg{err}
-		}
-		return PRDetailMsg{PR: pr, Diff: diff}
-	}
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return loadPRDetailMsg(b, ref) }
 }
 
-// StartReviewCmd starts a review.Run goroutine and emits ReviewStartedMsg with
-// the progress channel the caller should poll via WaitForProgressCmd.
+func loadPRDetailMsg(b Backend, ref gh.Ref) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, err := b.PRDetail(ctx, ref)
+	if err != nil {
+		return ErrMsg{err}
+	}
+	diff, err := b.Diff(ctx, prRef(pr))
+	if err != nil {
+		return ErrMsg{err}
+	}
+	return PRDetailMsg{PR: pr, Diff: diff}
+}
+
+// StartReviewCmd starts a review run and emits ReviewStartedMsg with the
+// progress channel the caller should poll via WaitForProgressCmd.
 //
 // In demo mode the channel comes from demo.SyntheticReviewProgress, which
 // emits a scripted sequence of stages with realistic delays so the
 // review-overlay UI replays a believable run for VHS recording.
 func StartReviewCmd(ref gh.Ref, cfg *aiconfig.Config, demoMode bool) tea.Cmd {
+	b := selectBackend(demoMode)
 	snap := cfg.Clone()
-	if demoMode {
-		return func() tea.Msg {
-			ch := demo.SyntheticReviewProgress(context.Background(), ref, snap)
-			return ReviewStartedMsg{Ch: ch}
-		}
-	}
-	return func() tea.Msg {
-		ctx := context.Background()
-		ch, err := review.Run(ctx, ref, snap)
-		if err != nil {
-			return ErrMsg{err}
-		}
-		return ReviewStartedMsg{Ch: ch}
-	}
+	return func() tea.Msg { return startReviewMsg(b, ref, snap) }
 }
 
-// ReviewStartedMsg carries the progress channel produced by review.Run.
+func startReviewMsg(b Backend, ref gh.Ref, cfg *aiconfig.Config) tea.Msg {
+	ch, err := b.StartReview(context.Background(), ref, cfg)
+	if err != nil {
+		return ErrMsg{err}
+	}
+	return ReviewStartedMsg{Ch: ch}
+}
+
+// ReviewStartedMsg carries the progress channel produced by the review run.
 type ReviewStartedMsg struct {
 	Ch <-chan review.Progress
 }
@@ -185,33 +185,20 @@ type ExistingPRCommentsMsg struct {
 // recording starts with the same banner state regardless of what the
 // host's gh user happens to look like.
 func FetchExistingPRCommentsCmd(ref gh.Ref, demoMode bool) tea.Cmd {
-	if demoMode {
-		return func() tea.Msg {
-			comments, viewer, prior := demo.DemoExistingComments(ref)
-			return ExistingPRCommentsMsg{
-				Comments: comments,
-				Viewer:   viewer,
-				Prior:    prior,
-			}
-		}
-	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		comments, cerr := gh.ListPullReviewComments(ctx, ref)
-		viewer, verr := gh.ViewerLogin(ctx)
-		// Reviews are fetched best-effort — failure here just means the
-		// "tool has reviewed this before" banner won't include the
-		// review-body count, not a blocking error.
-		reviews, _ := gh.ListPullReviews(ctx, ref.Owner, ref.Repo, ref.Number, 30)
-		prior := gh.DetectPriorAprrAISalActivityFrom(comments, reviews, viewer)
-		return ExistingPRCommentsMsg{
-			Comments:  comments,
-			Viewer:    viewer,
-			Prior:     prior,
-			ListErr:   cerr,
-			ViewerErr: verr,
-		}
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return existingCommentsMsg(b, ref) }
+}
+
+func existingCommentsMsg(b Backend, ref gh.Ref) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ec := b.ExistingComments(ctx, ref)
+	return ExistingPRCommentsMsg{
+		Comments:  ec.Comments,
+		Viewer:    ec.Viewer,
+		Prior:     ec.Prior,
+		ListErr:   ec.ListErr,
+		ViewerErr: ec.ViewerErr,
 	}
 }
 
@@ -219,71 +206,55 @@ func FetchExistingPRCommentsCmd(ref gh.Ref, demoMode bool) tea.Cmd {
 // emits a preview message.
 //
 // Demo mode forces dry-run behaviour at the CLI seam (see
-// cmd/appr-ai-sal/main.go), so this function takes the same dryRun
-// argument it always did and the demo path naturally falls through to
-// the DryRunPayloadMsg branch below — no demo bool needed here.
-func PostReviewCmd(ref gh.Ref, draft *review.Draft, dryRun bool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		rev := draft.ToReview()
-		if dryRun {
-			b, _ := json.MarshalIndent(rev, "", "  ")
-			return DryRunPayloadMsg{
-				Title:   "Dry-run: full review payload (not posted)",
-				Payload: string(b),
-			}
-		}
-		// Pre-flight: detect that the PR was force-pushed since the review was
-		// generated. Without this we'd let GitHub reject the inline comments
-		// with the opaque "pull_request_review_thread.line could not be
-		// resolved" error; with it we surface a typed *HeadDriftError that
-		// the overlay turns into a clear "[R] Refresh PR" prompt.
-		if drift := preflightHeadDrift(ctx, ref, draft.PR); drift != nil {
-			return ErrMsg{drift}
-		}
-		if err := gh.PostReview(ctx, ref, rev); err != nil {
-			return ErrMsg{err}
-		}
-		return PostDoneMsg{}
+// cmd/appr-ai-sal/main.go), so the demo path naturally falls through to the
+// DryRunPayloadMsg branch and never touches the backend's post methods.
+func PostReviewCmd(ref gh.Ref, draft *review.Draft, dryRun, demoMode bool) tea.Cmd {
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return postReviewMsg(b, ref, draft, dryRun) }
+}
+
+func postReviewMsg(b Backend, ref gh.Ref, draft *review.Draft, dryRun bool) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if dryRun {
+		p := review.DryRunFullReview(draft)
+		return DryRunPayloadMsg{Title: p.Title, Payload: p.Payload}
 	}
+	// Pre-flight: detect that the PR was force-pushed since the review was
+	// generated. Without this we'd let GitHub reject the inline comments
+	// with the opaque "pull_request_review_thread.line could not be
+	// resolved" error; with it we surface a typed *HeadDriftError that
+	// the overlay turns into a clear "[R] Refresh PR" prompt.
+	if drift := preflightHeadDrift(ctx, b, ref, draft.PR); drift != nil {
+		return ErrMsg{drift}
+	}
+	if err := b.PostReview(ctx, ref, draft.ToReview()); err != nil {
+		return ErrMsg{err}
+	}
+	return PostDoneMsg{}
 }
 
 // PostSingleFindingCmd posts one inline comment or dry-run preview.
-func PostSingleFindingCmd(ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, dryRun bool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		body := review.ReviewCommentBody(specialist, f)
-		side := f.Side
-		if side == "" {
-			side = "RIGHT"
-		}
-		c := gh.ReviewComment{
-			Path: f.Path,
-			Line: f.Line,
-			Side: side,
-			Body: body,
-		}
-		if dryRun {
-			preview := fmt.Sprintf("POST %s/%s/pulls/%d/comments\n\n%s",
-				ref.Owner, ref.Repo, ref.Number, prettyJSON(struct {
-					Body     string `json:"body"`
-					CommitID string `json:"commit_id"`
-					Path     string `json:"path"`
-					Line     int    `json:"line"`
-					Side     string `json:"side"`
-				}{Body: body, CommitID: pr.HeadSHA, Path: f.Path, Line: f.Line, Side: side}))
-			return DryRunPayloadMsg{Title: "Dry-run: single comment (not posted)", Payload: preview}
-		}
-		if drift := preflightHeadDrift(ctx, ref, pr); drift != nil {
-			return ErrMsg{drift}
-		}
-		if err := gh.CreatePullReviewComment(ctx, ref, pr.HeadSHA, c); err != nil {
-			return ErrMsg{err}
-		}
-		return StagedFindingPostedMsg{}
+func PostSingleFindingCmd(ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, dryRun, demoMode bool) tea.Cmd {
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return postSingleFindingMsg(b, ref, pr, specialist, f, dryRun) }
+}
+
+func postSingleFindingMsg(b Backend, ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, dryRun bool) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if dryRun {
+		p := review.DryRunSingleFinding(ref, pr, specialist, f)
+		return DryRunPayloadMsg{Title: p.Title, Payload: p.Payload}
 	}
+	if drift := preflightHeadDrift(ctx, b, ref, pr); drift != nil {
+		return ErrMsg{drift}
+	}
+	c := review.InlineReviewComment(specialist, f)
+	if err := b.PostInlineComment(ctx, ref, pr.HeadSHA, c); err != nil {
+		return ErrMsg{err}
+	}
+	return StagedFindingPostedMsg{}
 }
 
 // PostSingleFindingFileLevelCmd posts one finding as a file-level review
@@ -294,48 +265,44 @@ func PostSingleFindingCmd(ref gh.Ref, pr *gh.PR, specialist string, f review.Fin
 // "(intended for line N — anchored to file because that line isn't on a
 // hunk in the current diff)" preamble before the usual comment so the
 // reader on GitHub still sees the original line the model meant.
-func PostSingleFindingFileLevelCmd(ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, dryRun bool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		body := review.ReviewCommentBodyForFileLevel(specialist, f)
-		if dryRun {
-			preview := fmt.Sprintf("POST %s/%s/pulls/%d/comments (file-level)\n\n%s",
-				ref.Owner, ref.Repo, ref.Number, prettyJSON(struct {
-					Body        string `json:"body"`
-					CommitID    string `json:"commit_id"`
-					Path        string `json:"path"`
-					SubjectType string `json:"subject_type"`
-				}{Body: body, CommitID: pr.HeadSHA, Path: f.Path, SubjectType: "file"}))
-			return DryRunPayloadMsg{Title: "Dry-run: single file-level comment (not posted)", Payload: preview}
-		}
-		if drift := preflightHeadDrift(ctx, ref, pr); drift != nil {
-			return ErrMsg{drift}
-		}
-		if err := gh.CreatePullReviewFileLevelComment(ctx, ref, pr.HeadSHA, f.Path, body); err != nil {
-			return ErrMsg{err}
-		}
-		return StagedFindingPostedMsg{}
+func PostSingleFindingFileLevelCmd(ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, dryRun, demoMode bool) tea.Cmd {
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return postSingleFindingFileLevelMsg(b, ref, pr, specialist, f, dryRun) }
+}
+
+func postSingleFindingFileLevelMsg(b Backend, ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, dryRun bool) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if dryRun {
+		p := review.DryRunFileLevelFinding(ref, pr, specialist, f)
+		return DryRunPayloadMsg{Title: p.Title, Payload: p.Payload}
 	}
+	if drift := preflightHeadDrift(ctx, b, ref, pr); drift != nil {
+		return ErrMsg{drift}
+	}
+	body := review.ReviewCommentBodyForFileLevel(specialist, f)
+	if err := b.PostFileLevelComment(ctx, ref, pr.HeadSHA, f.Path, body); err != nil {
+		return ErrMsg{err}
+	}
+	return StagedFindingPostedMsg{}
 }
 
 // preflightHeadDrift returns a *gh.HeadDriftError when the PR's current head
 // SHA on GitHub doesn't match the SHA we cached on draft/pr (force-push,
-// new commit). It returns nil if the SHAs match, if pr is nil, or if the
-// preflight call itself fails — we'd rather attempt the post and report a
-// real GitHub error than refuse to post on a transient pre-flight failure.
-func preflightHeadDrift(ctx context.Context, ref gh.Ref, pr *gh.PR) error {
+// new commit). It returns nil if the SHAs match, if pr is nil / has no SHA,
+// or if the head-SHA lookup itself fails — we'd rather attempt the post and
+// report a real GitHub error than refuse to post on a transient pre-flight
+// failure. The SHA comparison itself lives in gh.HeadDrift so it can be
+// unit-tested without a live PR.
+func preflightHeadDrift(ctx context.Context, b Backend, ref gh.Ref, pr *gh.PR) *gh.HeadDriftError {
 	if pr == nil || strings.TrimSpace(pr.HeadSHA) == "" {
 		return nil
 	}
-	cur, err := gh.GetPRHeadSHA(ctx, ref)
-	if err != nil || cur == "" {
+	cur, err := b.HeadSHA(ctx, ref)
+	if err != nil {
 		return nil
 	}
-	if cur == pr.HeadSHA {
-		return nil
-	}
-	return &gh.HeadDriftError{Was: pr.HeadSHA, Now: cur}
+	return gh.HeadDrift(pr.HeadSHA, cur)
 }
 
 // PostReviewWithVerdictCmd posts a body-only review using the GitHub review
@@ -343,51 +310,38 @@ func preflightHeadDrift(ctx context.Context, ref gh.Ref, pr *gh.PR) error {
 // PR author, verdict events are downgraded to COMMENT with a full summary body
 // (GitHub rejects APPROVE / REQUEST_CHANGES on your own PR).
 //
-// demoMode skips the gh.ViewerLogin shell-out — the demo binary may run
-// without gh on PATH, and we know the canned PRs aren't authored by the
-// demo viewer, so the self-author downgrade isn't relevant.
+// demoMode routes through the demo backend whose ViewerLogin returns "" — the
+// demo binary may run without gh on PATH, and we know the canned PRs aren't
+// authored by the demo viewer, so the self-author downgrade isn't relevant.
 func PostReviewWithVerdictCmd(ref gh.Ref, draft *review.Draft, dryRun, demoMode bool, event string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		if strings.TrimSpace(event) == "" {
-			event = draft.PostEvent()
-		}
-		var viewer string
-		if !demoMode {
-			viewer, _ = gh.ViewerLogin(ctx)
-		}
-		event, body, intent := review.EffectiveReviewEventAndBody(draft, event, viewer)
-		if dryRun {
-			preview := fmt.Sprintf("POST %s/%s/pulls/%d/reviews (verdict event=%s)\n",
-				ref.Owner, ref.Repo, ref.Number, event)
-			if intent != event {
-				preview += fmt.Sprintf("NOTE: You are the PR author — GitHub rejects event=%s; posting as %s.\n", intent, event)
-			}
-			preview += "\n" + prettyJSON(struct {
-				Body     string `json:"body"`
-				Event    string `json:"event"`
-				CommitID string `json:"commit_id"`
-			}{Body: body, Event: event, CommitID: draft.PR.HeadSHA})
-			title := "Dry-run: " + event + " review (not posted)"
-			if intent != event {
-				title = fmt.Sprintf("Dry-run: %s review (own PR: cannot submit %s; summary as comment) (not posted)", event, intent)
-			}
-			return DryRunPayloadMsg{Title: title, Payload: preview}
-		}
-		rev := gh.Review{
-			CommitID: draft.PR.HeadSHA,
-			Body:     body,
-			Event:    event,
-		}
-		if drift := preflightHeadDrift(ctx, ref, draft.PR); drift != nil {
-			return ErrMsg{drift}
-		}
-		if err := gh.PostReview(ctx, ref, rev); err != nil {
-			return ErrMsg{err}
-		}
-		return PostDoneMsg{}
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return postReviewWithVerdictMsg(b, ref, draft, dryRun, event) }
+}
+
+func postReviewWithVerdictMsg(b Backend, ref gh.Ref, draft *review.Draft, dryRun bool, event string) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if strings.TrimSpace(event) == "" {
+		event = draft.PostEvent()
 	}
+	viewer := b.ViewerLogin(ctx)
+	event, body, intent := review.EffectiveReviewEventAndBody(draft, event, viewer)
+	if dryRun {
+		p := review.DryRunVerdictReview(ref, draft.PR.HeadSHA, event, intent, body)
+		return DryRunPayloadMsg{Title: p.Title, Payload: p.Payload}
+	}
+	if drift := preflightHeadDrift(ctx, b, ref, draft.PR); drift != nil {
+		return ErrMsg{drift}
+	}
+	rev := gh.Review{
+		CommitID: draft.PR.HeadSHA,
+		Body:     body,
+		Event:    event,
+	}
+	if err := b.PostReview(ctx, ref, rev); err != nil {
+		return ErrMsg{err}
+	}
+	return PostDoneMsg{}
 }
 
 // PostApproveBareCmd posts a content-free GitHub APPROVE — event=APPROVE with
@@ -401,44 +355,31 @@ func PostReviewWithVerdictCmd(ref gh.Ref, draft *review.Draft, dryRun, demoMode 
 // PR, so the post is coerced to event=COMMENT with just an explanatory note as
 // the body (no full rendered summary, since the reviewer asked for no body).
 func PostApproveBareCmd(ref gh.Ref, draft *review.Draft, dryRun, demoMode bool) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		var viewer string
-		if !demoMode {
-			viewer, _ = gh.ViewerLogin(ctx)
-		}
-		event, body, intent := review.EffectiveApproveBareEventAndBody(draft, viewer)
-		if dryRun {
-			preview := fmt.Sprintf("POST %s/%s/pulls/%d/reviews (verdict event=%s, approve-only)\n",
-				ref.Owner, ref.Repo, ref.Number, event)
-			if intent != event {
-				preview += fmt.Sprintf("NOTE: You are the PR author — GitHub rejects event=%s; posting as %s.\n", intent, event)
-			}
-			preview += "\n" + prettyJSON(struct {
-				Body     string `json:"body"`
-				Event    string `json:"event"`
-				CommitID string `json:"commit_id"`
-			}{Body: body, Event: event, CommitID: draft.PR.HeadSHA})
-			title := "Dry-run: " + event + " review · approve only (not posted)"
-			if intent != event {
-				title = fmt.Sprintf("Dry-run: %s review (own PR: cannot submit %s; note-only comment) (not posted)", event, intent)
-			}
-			return DryRunPayloadMsg{Title: title, Payload: preview}
-		}
-		rev := gh.Review{
-			CommitID: draft.PR.HeadSHA,
-			Body:     body,
-			Event:    event,
-		}
-		if drift := preflightHeadDrift(ctx, ref, draft.PR); drift != nil {
-			return ErrMsg{drift}
-		}
-		if err := gh.PostReview(ctx, ref, rev); err != nil {
-			return ErrMsg{err}
-		}
-		return PostDoneMsg{}
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return postApproveBareMsg(b, ref, draft, dryRun) }
+}
+
+func postApproveBareMsg(b Backend, ref gh.Ref, draft *review.Draft, dryRun bool) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	viewer := b.ViewerLogin(ctx)
+	event, body, intent := review.EffectiveApproveBareEventAndBody(draft, viewer)
+	if dryRun {
+		p := review.DryRunApproveBare(ref, draft.PR.HeadSHA, event, intent, body)
+		return DryRunPayloadMsg{Title: p.Title, Payload: p.Payload}
 	}
+	if drift := preflightHeadDrift(ctx, b, ref, draft.PR); drift != nil {
+		return ErrMsg{drift}
+	}
+	rev := gh.Review{
+		CommitID: draft.PR.HeadSHA,
+		Body:     body,
+		Event:    event,
+	}
+	if err := b.PostReview(ctx, ref, rev); err != nil {
+		return ErrMsg{err}
+	}
+	return PostDoneMsg{}
 }
 
 // DryRunPayloadMsg is emitted by every Post*Cmd path when dry-run is enabled,
@@ -476,20 +417,18 @@ type ChecksMsg struct {
 // the root model caches the resulting report so subsequent visits are
 // instant.
 func LoadChecksCmd(ref gh.Ref, demoMode bool) tea.Cmd {
-	if demoMode {
-		return func() tea.Msg {
-			return ChecksMsg{Ref: ref, Report: demo.DemoChecks(ref)}
-		}
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return loadChecksMsg(b, ref) }
+}
+
+func loadChecksMsg(b Backend, ref gh.Ref) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	report, err := b.Checks(ctx, ref)
+	if err != nil {
+		return ChecksMsg{Ref: ref, Err: err}
 	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		report, err := gh.GetChecks(ctx, ref)
-		if err != nil {
-			return ChecksMsg{Ref: ref, Err: err}
-		}
-		return ChecksMsg{Ref: ref, Report: report}
-	}
+	return ChecksMsg{Ref: ref, Report: report}
 }
 
 // DiscussionMsg delivers the result of LoadDiscussionCmd: the merged issue
@@ -504,20 +443,18 @@ type DiscussionMsg struct {
 // LoadChecksCmd it is fired lazily on first visit and cached on the root
 // model; the demo path returns the canned timeline synchronously.
 func LoadDiscussionCmd(ref gh.Ref, demoMode bool) tea.Cmd {
-	if demoMode {
-		return func() tea.Msg {
-			return DiscussionMsg{Ref: ref, Timeline: demo.DemoDiscussion(ref)}
-		}
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return loadDiscussionMsg(b, ref) }
+}
+
+func loadDiscussionMsg(b Backend, ref gh.Ref) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	timeline, err := b.Discussion(ctx, ref)
+	if err != nil {
+		return DiscussionMsg{Ref: ref, Err: err}
 	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		timeline, err := gh.GetDiscussion(ctx, ref)
-		if err != nil {
-			return DiscussionMsg{Ref: ref, Err: err}
-		}
-		return DiscussionMsg{Ref: ref, Timeline: timeline}
-	}
+	return DiscussionMsg{Ref: ref, Timeline: timeline}
 }
 
 // RefreshPRCmd re-fetches the PR view (head SHA in particular) and the unified
@@ -525,39 +462,23 @@ func LoadDiscussionCmd(ref gh.Ref, demoMode bool) tea.Cmd {
 // from "PR head moved" or "line could not be resolved" errors without leaving
 // the approval flow.
 //
-// In demo mode the canned PR + diff are returned synchronously so the
-// "R" key still has a visible effect during recordings.
+// In demo mode the canned PR + diff are returned so the "R" key still has a
+// visible effect during recordings.
 func RefreshPRCmd(ref gh.Ref, demoMode bool) tea.Cmd {
-	if demoMode {
-		return func() tea.Msg {
-			pr := demo.LookupPR(ref)
-			if pr == nil {
-				fallback := demo.DemoPullRequests()[0]
-				pr = &fallback
-				ref = gh.Ref{Owner: pr.Owner, Repo: pr.Repo, Number: pr.Number}
-			}
-			return PRRefreshedMsg{PR: pr, Diff: demo.DemoDiff(ref)}
-		}
-	}
-	return func() tea.Msg {
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		pr, err := gh.GetPR(ctx, ref)
-		if err != nil {
-			return ErrMsg{fmt.Errorf("refresh PR: %w", err)}
-		}
-		diff, err := gh.GetDiff(ctx, ref)
-		if err != nil {
-			return ErrMsg{fmt.Errorf("refresh PR diff: %w", err)}
-		}
-		return PRRefreshedMsg{PR: pr, Diff: diff}
-	}
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return refreshPRMsg(b, ref) }
 }
 
-func prettyJSON(v any) string {
-	b, err := json.MarshalIndent(v, "", "  ")
+func refreshPRMsg(b Backend, ref gh.Ref) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	pr, err := b.PRDetail(ctx, ref)
 	if err != nil {
-		return fmt.Sprint(v)
+		return ErrMsg{fmt.Errorf("refresh PR: %w", err)}
 	}
-	return string(b)
+	diff, err := b.Diff(ctx, prRef(pr))
+	if err != nil {
+		return ErrMsg{fmt.Errorf("refresh PR diff: %w", err)}
+	}
+	return PRRefreshedMsg{PR: pr, Diff: diff}
 }

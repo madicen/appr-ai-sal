@@ -284,7 +284,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(popCmd, data.LoadPRsCmd(m.listMode(), m.opts.Demo))
 		case overlays.BulkConfirmOverlay:
 			if ans, ok := msg.Result.(overlays.BulkPostAnswer); ok && ans.Confirm && m.draft != nil && m.draft.PR != nil {
-				return m, tea.Sequence(popCmd, data.PostReviewCmd(m.draft.Ref, m.draft, m.opts.DryRun))
+				return m, tea.Sequence(popCmd, data.PostReviewCmd(m.draft.Ref, m.draft, m.opts.DryRun, m.opts.Demo))
 			}
 			return m, popCmd
 		default:

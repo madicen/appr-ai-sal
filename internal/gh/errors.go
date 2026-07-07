@@ -119,6 +119,28 @@ func (e *HeadDriftError) Error() string {
 		shortSHA(e.Was), shortSHA(e.Now))
 }
 
+// HeadDrift compares the head SHA a review was generated against (was) with
+// the PR's current head SHA on GitHub (now) and returns a *HeadDriftError
+// when they diverge. It returns nil when either SHA is empty — nothing to
+// compare against (was) or the lightweight lookup was unavailable (now) — or
+// when they match; in the empty cases we'd rather attempt the post and report
+// a real GitHub error than refuse on a missing/unknown SHA.
+//
+// This is the pure, testable core of the posting pre-flight: callers fetch the
+// current SHA (see GetPRHeadSHA) and hand both values here so the decision
+// logic can be unit-tested and reused by the headless CLI without a live PR.
+func HeadDrift(was, now string) *HeadDriftError {
+	was = strings.TrimSpace(was)
+	now = strings.TrimSpace(now)
+	if was == "" || now == "" {
+		return nil
+	}
+	if was == now {
+		return nil
+	}
+	return &HeadDriftError{Was: was, Now: now}
+}
+
 // IsHeadDrift reports whether err is a *HeadDriftError.
 func IsHeadDrift(err error) (*HeadDriftError, bool) {
 	var d *HeadDriftError
