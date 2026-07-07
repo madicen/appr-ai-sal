@@ -28,6 +28,15 @@ type VibeCoachDoneMsg struct {
 	RequestedAt time.Time
 }
 
+// OverlayBound marks VibeCoachDoneMsg for the root's generic overlay
+// forwarder (data.ForwardToOverlay). The goroutine's response only means
+// something to the overlay handler; without generic routing the root
+// would have to remember an explicit case, and forgetting it strands the
+// overlay in PhaseGeneratingSummary.
+func (VibeCoachDoneMsg) OverlayBound() {}
+
+var _ data.ForwardToOverlay = VibeCoachDoneMsg{}
+
 // skipSetHash returns a stable hash of the user-skip set so enterSummary
 // can decide whether to re-run vibe-coach. Empty set hashes to "".
 func skipSetHash(keys map[string]struct{}) string {

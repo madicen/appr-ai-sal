@@ -8,10 +8,6 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
-// PostedOverlayDismissMsg is emitted when the user dismisses the
-// "Posted." success modal.
-type PostedOverlayDismissMsg struct{}
-
 // PostedOverlay is the brief "Posted." confirmation shown after a review
 // is successfully published to GitHub.
 type PostedOverlay struct{}
@@ -23,12 +19,12 @@ func (m PostedOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc", "enter", "q", " ":
-			return m, func() tea.Msg { return PostedOverlayDismissMsg{} }
+			return m, dismiss(nil)
 		}
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if z := zone.Get(zones.PostedOK); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return PostedOverlayDismissMsg{} }
+				return m, dismiss(nil)
 			}
 		}
 	}

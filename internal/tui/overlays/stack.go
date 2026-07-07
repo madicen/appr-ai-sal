@@ -3,17 +3,44 @@
 // preview, and the posted-success overlay.
 //
 // The "stack" is the bubble-overlay layer wired up by root; this package
-// just owns the modal types and the dismiss messages they emit. Each
-// modal returns a typed message (BulkPostAnswerMsg, ErrorOverlayDismissMsg,
-// etc.) so root can drive the lifecycle without inspecting the model.
+// just owns the modal types and the single DismissMsg they emit. Every
+// modal returns overlays.DismissMsg when the user dismisses it; the root
+// pops the top overlay and dispatches on the popped overlay's concrete
+// type (and DismissMsg.Result) so one message type drives the whole modal
+// lifecycle instead of a bespoke per-modal message each.
 package overlays
 
 import (
 	"github.com/charmbracelet/bubbles/key"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 )
+
+// DismissMsg is the single message every modal overlay emits when the
+// user dismisses it (esc/enter/q/space or clicking a dismiss zone).
+//
+// Result carries the modal's per-dismiss payload when it has one — e.g.
+// BulkConfirmOverlay sets Result to a BulkPostAnswer. Modals that only
+// need acknowledgement (error, dry-run, posted) leave it nil. The root
+// distinguishes which modal was dismissed by the concrete type of the
+// popped overlay, not by the message type, so adding a new modal never
+// requires a new dismiss message.
+type DismissMsg struct {
+	Result any
+}
+
+// BulkPostAnswer is the DismissMsg.Result payload emitted by
+// BulkConfirmOverlay: whether the user confirmed the bulk post.
+type BulkPostAnswer struct {
+	Confirm bool
+}
+
+// dismiss is the shared helper every modal uses to emit DismissMsg.
+func dismiss(result any) tea.Cmd {
+	return func() tea.Msg { return DismissMsg{Result: result} }
+}
 
 // ModalChrome is the shared border + padding for every modal so they all
 // frame their content the same way. Exported because the review overlay

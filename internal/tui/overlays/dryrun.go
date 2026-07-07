@@ -10,9 +10,6 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
-// DryRunDismissMsg is emitted when the user closes the dry-run preview.
-type DryRunDismissMsg struct{}
-
 // DryRunOverlay shows the JSON payload that would have been posted to
 // GitHub in --dry-run mode. Scrollable because review payloads routinely
 // run several screens.
@@ -48,12 +45,12 @@ func (m DryRunOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc", "enter", "q", " ":
-			return m, func() tea.Msg { return DryRunDismissMsg{} }
+			return m, dismiss(nil)
 		}
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if z := zone.Get(zones.DryDismiss); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return DryRunDismissMsg{} }
+				return m, dismiss(nil)
 			}
 		}
 	}

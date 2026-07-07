@@ -12,10 +12,6 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
-// ErrorOverlayDismissMsg is emitted when the user dismisses an
-// ErrorOverlay (esc/enter/q/space or clicking the dismiss zone).
-type ErrorOverlayDismissMsg struct{}
-
 // ErrorOverlay shows a long error message in a scrollable viewport with a
 // "Copy to clipboard" affordance. Long stack traces and API responses can
 // blow past the terminal height; the overlay lets the user actually read
@@ -64,10 +60,8 @@ func (m ErrorOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "esc", "enter", "q":
-			return m, func() tea.Msg { return ErrorOverlayDismissMsg{} }
-		case " ":
-			return m, func() tea.Msg { return ErrorOverlayDismissMsg{} }
+		case "esc", "enter", "q", " ":
+			return m, dismiss(nil)
 		case "c", "C":
 			m.copyErr = ""
 			m.copied = false
@@ -76,7 +70,7 @@ func (m ErrorOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if z := zone.Get(zones.ErrorDismiss); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return ErrorOverlayDismissMsg{} }
+				return m, dismiss(nil)
 			}
 			if z := zone.Get(zones.ErrorCopy); z != nil && z.InBounds(msg) {
 				m.copyErr = ""

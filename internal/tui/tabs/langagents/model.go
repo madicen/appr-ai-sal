@@ -140,6 +140,14 @@ func (m *Model) Resize(width, body int) {
 	m.contentW = width
 }
 
+// SetContentOrigin records the absolute terminal row where this tab's
+// body begins. The lang-agents tab has no absolute-coordinate hit-testing
+// (its rows are keyboard-driven and its only mouse target is the close
+// chip, matched via bubblezone), so the origin is unused — but the method
+// exists so the tab satisfies the root's Tab contract uniformly with the
+// settings and repo-agents tabs.
+func (m *Model) SetContentOrigin(int) {}
+
 // Init kicks off the initial cache load.
 func (m *Model) Init() tea.Cmd {
 	return loadCacheCmd()

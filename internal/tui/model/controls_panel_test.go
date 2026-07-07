@@ -13,8 +13,25 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	techagentsstore "github.com/madicen/appr-ai-sal/internal/review/techagents"
+	"github.com/madicen/appr-ai-sal/internal/tui/tabs/repoagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
+
+// activeRepoAgents unwraps the concrete repo-agents sub-model held in the
+// root's tab registry so tests can reach methods the Tab interface doesn't
+// expose (CurrentRepoKey, Status).
+func activeRepoAgents(t *testing.T, m *Model) *repoagents.Model {
+	t.Helper()
+	a, ok := m.tabs[modeRepoAgents].(*tabAdapter)
+	if !ok || a == nil {
+		t.Fatal("repoAgents tab should be constructed and active")
+	}
+	rm, ok := a.inner.(*repoagents.Model)
+	if !ok {
+		t.Fatalf("active repo-agents tab is %T, want *repoagents.Model", a.inner)
+	}
+	return rm
+}
 
 // The right-hand "Review controls" pane is auto-shown at the wide
 // detailFixtureModel size (160 cols). The Start Review button must be
@@ -282,13 +299,11 @@ func TestControlsClickRepoAgentsRowNavigatesWithoutRegen(t *testing.T) {
 	if m2.mode != modeRepoAgents {
 		t.Fatalf("click should enter repo-agents mode, got %v", m2.mode)
 	}
-	if m2.repoAgents == nil {
-		t.Fatal("repoAgents tab should be constructed after the click")
-	}
-	if got := m2.repoAgents.CurrentRepoKey(); got != "o/r" {
+	ra := activeRepoAgents(t, m2)
+	if got := ra.CurrentRepoKey(); got != "o/r" {
 		t.Fatalf("tab should focus the current PR's repo o/r, got %q", got)
 	}
-	if status := m2.repoAgents.Status(); strings.Contains(strings.ToLower(status), "regenerat") {
+	if status := ra.Status(); strings.Contains(strings.ToLower(status), "regenerat") {
 		t.Fatalf("click must NOT trigger regeneration; status=%q", status)
 	}
 }
@@ -307,13 +322,11 @@ func TestControlsClickTechExpertsRowNavigatesWithoutRegen(t *testing.T) {
 	if m2.mode != modeRepoAgents {
 		t.Fatalf("click on Tech experts row should enter repo-agents mode, got %v", m2.mode)
 	}
-	if m2.repoAgents == nil {
-		t.Fatal("repoAgents tab should be constructed after the click")
-	}
-	if got := m2.repoAgents.CurrentRepoKey(); got != "o/r" {
+	ra := activeRepoAgents(t, m2)
+	if got := ra.CurrentRepoKey(); got != "o/r" {
 		t.Fatalf("tab should focus the current PR's repo o/r, got %q", got)
 	}
-	if status := m2.repoAgents.Status(); strings.Contains(strings.ToLower(status), "regenerat") {
+	if status := ra.Status(); strings.Contains(strings.ToLower(status), "regenerat") {
 		t.Fatalf("click must NOT trigger regeneration; status=%q", status)
 	}
 }

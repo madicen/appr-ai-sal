@@ -95,20 +95,20 @@ func (m *Model) renderBody() string {
 	case modeDetail:
 		return m.renderPRDetailBody(bodyH)
 	case modeSettings:
-		if m.settings == nil {
-			return styles.AppPadding.Render("settings unavailable")
+		if tab := m.tabs[modeSettings]; tab != nil {
+			return tab.View()
 		}
-		return m.settings.View()
+		return styles.AppPadding.Render("settings unavailable")
 	case modeRepoAgents:
-		if m.repoAgents == nil {
-			return styles.AppPadding.Render("repo agents unavailable")
+		if tab := m.tabs[modeRepoAgents]; tab != nil {
+			return tab.View()
 		}
-		return m.repoAgents.View()
+		return styles.AppPadding.Render("repo agents unavailable")
 	case modeLangAgents:
-		if m.langAgents == nil {
-			return styles.AppPadding.Render("language experts unavailable")
+		if tab := m.tabs[modeLangAgents]; tab != nil {
+			return tab.View()
 		}
-		return m.langAgents.View()
+		return styles.AppPadding.Render("language experts unavailable")
 	}
 	return ""
 }

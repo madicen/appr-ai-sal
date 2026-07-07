@@ -9,12 +9,6 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
-// BulkPostAnswerMsg is emitted by BulkConfirmOverlay when the user
-// answers yes/no to "post entire review now?".
-type BulkPostAnswerMsg struct {
-	Confirm bool
-}
-
 // BulkConfirmOverlay asks the user to confirm bulk-posting an in-progress
 // review's findings + summary. ref is the human-readable PR ref shown in
 // the prompt (e.g. "owner/repo#42").
@@ -35,21 +29,21 @@ func (m BulkConfirmOverlay) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch {
 		case key.Matches(msg, bulkYesKeys):
-			return m, func() tea.Msg { return BulkPostAnswerMsg{Confirm: true} }
+			return m, dismiss(BulkPostAnswer{Confirm: true})
 		case key.Matches(msg, bulkNoKeys):
-			return m, func() tea.Msg { return BulkPostAnswerMsg{Confirm: false} }
+			return m, dismiss(BulkPostAnswer{Confirm: false})
 		case msg.String() == "ctrl+c":
-			return m, func() tea.Msg { return BulkPostAnswerMsg{Confirm: false} }
+			return m, dismiss(BulkPostAnswer{Confirm: false})
 		}
 	case tea.MouseMsg:
 		if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 			return m, nil
 		}
 		if z := zone.Get(zones.ConfirmYes); z != nil && z.InBounds(msg) {
-			return m, func() tea.Msg { return BulkPostAnswerMsg{Confirm: true} }
+			return m, dismiss(BulkPostAnswer{Confirm: true})
 		}
 		if z := zone.Get(zones.ConfirmNo); z != nil && z.InBounds(msg) {
-			return m, func() tea.Msg { return BulkPostAnswerMsg{Confirm: false} }
+			return m, dismiss(BulkPostAnswer{Confirm: false})
 		}
 	}
 	return m, nil
