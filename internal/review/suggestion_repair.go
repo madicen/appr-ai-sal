@@ -2,13 +2,13 @@ package review
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/llmjson"
 )
 
 // repairComplete is indirected through a package var purely so tests can
@@ -197,9 +197,9 @@ func buildRepairPrompt(name string, items []repairItem) (string, string) {
 
 // parseRepairResponse parses the model's JSON into a map keyed by finding id,
 // keeping only accepted (non-decline) repairs with a usable anchor and
-// replacement. It tolerates fenced/wrapped JSON via extractJSONObject.
+// replacement. Salvage (fence/extract/comment/triple-quote/trailing-comma) is
+// delegated to the shared llmjson ladder.
 func parseRepairResponse(raw string) (map[int]repairResult, error) {
-	raw = strings.TrimSpace(raw)
 	type repairEnvelopeEntry struct {
 		ID          int    `json:"id"`
 		AnchorLine  int    `json:"anchor_line"`
@@ -209,23 +209,9 @@ func parseRepairResponse(raw string) (map[int]repairResult, error) {
 	type repairEnvelope struct {
 		Repairs []repairEnvelopeEntry `json:"repairs"`
 	}
-	parse := func(s string) (*repairEnvelope, error) {
-		var env repairEnvelope
-		if err := json.Unmarshal([]byte(s), &env); err != nil {
-			return nil, err
-		}
-		return &env, nil
-	}
-	env, err := parse(raw)
+	env, err := llmjson.Parse[repairEnvelope](raw)
 	if err != nil {
-		obj := extractJSONObject(raw)
-		if obj == "" {
-			return nil, fmt.Errorf("repair response: no JSON object found")
-		}
-		env, err = parse(obj)
-		if err != nil {
-			return nil, fmt.Errorf("repair response: %w", err)
-		}
+		return nil, fmt.Errorf("repair response: %w", err)
 	}
 	out := make(map[int]repairResult, len(env.Repairs))
 	for _, e := range env.Repairs {

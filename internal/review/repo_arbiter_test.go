@@ -112,6 +112,43 @@ func TestParseRepoArbiterJSONMinimal(t *testing.T) {
 	}
 }
 
+// F2: before consolidation, the arbiter parser only did a bare json.Unmarshal
+// plus extractJSONObject — it had NO fence-stripping and NO comment-removal, so
+// fenced or JSON5-commented arbiter output failed to parse (and, being on a
+// non-stage-retried path pre-0.4, silently degraded the run). Routing the
+// arbiter through llmjson.Parse gives it the same salvage ladder as the
+// specialists, so both of these fixtures now parse.
+func TestParseRepoArbiterJSONFencedAndCommented(t *testing.T) {
+	fenced := "```json\n" +
+		`{"user_summary":"looks fine","rationale_bullets":["a"],"verdict_override":"","summary_mode":"none","summary_text":"","suppress":[]}` +
+		"\n```"
+	p, err := parseRepoArbiterJSON(fenced)
+	if err != nil {
+		t.Fatalf("fenced arbiter JSON must now parse via the shared ladder: %v", err)
+	}
+	if p.UserSummary != "looks fine" {
+		t.Fatalf("user_summary = %q, want %q", p.UserSummary, "looks fine")
+	}
+
+	commented := "Here is my verdict:\n{\n" +
+		"  // overall this PR is safe\n" +
+		"  \"user_summary\": \"safe\",\n" +
+		"  /* no blockers found */\n" +
+		"  \"rationale_bullets\": [\"ok\"],\n" +
+		"  \"verdict_override\": \"approve\",\n" +
+		"  \"summary_mode\": \"append\",\n" +
+		"  \"summary_text\": \"low risk\",\n" +
+		"  \"suppress\": [],\n" +
+		"}"
+	p2, err := parseRepoArbiterJSON(commented)
+	if err != nil {
+		t.Fatalf("commented arbiter JSON must now parse via the shared ladder: %v", err)
+	}
+	if p2.UserSummary != "safe" || p2.VerdictOverride != "approve" {
+		t.Fatalf("commented arbiter parse mismatch: %+v", p2)
+	}
+}
+
 // A relaxing arbiter override is GUARDED in the displayed vibe-coach verdict,
 // exactly as it is in the posted event: with a blocking prompt still standing,
 // an override of "approve" must NOT show through as the headline verdict —

@@ -2,7 +2,6 @@ package review
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +9,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
+	"github.com/madicen/appr-ai-sal/internal/llmjson"
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
 )
 
@@ -114,20 +114,15 @@ type repoArbiterJSON struct {
 }
 
 func parseRepoArbiterJSON(s string) (*repoArbiterJSON, error) {
-	s = strings.TrimSpace(s)
-	var v repoArbiterJSON
-	if err := json.Unmarshal([]byte(s), &v); err == nil {
+	v, err := llmjson.Parse[repoArbiterJSON](s)
+	if err == nil {
 		return &v, nil
-	}
-	if obj := extractJSONObject(s); obj != "" {
-		if err := json.Unmarshal([]byte(obj), &v); err == nil {
-			return &v, nil
-		}
 	}
 	// Include a bounded raw-output excerpt so a stage-retry log / progress
 	// line names what the model actually returned instead of an opaque
-	// "parse repo arbiter JSON".
-	return nil, fmt.Errorf("parse repo arbiter JSON (raw: %s)", truncate(s, 500))
+	// "parse repo arbiter JSON". The "parse repo arbiter" substring keeps the
+	// error classified as retryable by isRetryableStageError.
+	return nil, fmt.Errorf("parse repo arbiter JSON (raw: %s)", truncate(strings.TrimSpace(s), 500))
 }
 
 // FinalizeRepoArbiter validates suppressions and demotions against the

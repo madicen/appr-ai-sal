@@ -1,34 +1,12 @@
 package review
 
-import (
-	"encoding/json"
-	"strings"
-	"testing"
-)
+import "testing"
 
-func TestSanitizeTripleQuotedSuggestion(t *testing.T) {
-	raw := `{"summary":"ok","findings":[{"path":"ec2.tf","line":31,"side":"RIGHT","severity":"warning","comment":"use data source","suggestion":"""data "aws_subnets" "private" {
-  filter {
-    name = "vpc-id"
-  }
-}
-"""}]}`
-
-	s := sanitizeTripleQuotedStringValues(raw)
-	if strings.Contains(s, `"""`) {
-		t.Fatalf("triple quotes should be removed:\n%s", s)
-	}
-	var v specialistJSON
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, s)
-	}
-	if len(v.Findings) != 1 {
-		t.Fatalf("findings: %+v", v)
-	}
-	if !strings.Contains(v.Findings[0].Suggestion, "aws_subnets") {
-		t.Fatalf("suggestion lost: %q", v.Findings[0].Suggestion)
-	}
-}
+// These tests assert the review layer's specialist parse path (which now
+// delegates salvage to internal/llmjson and then applies domain
+// normalization). The exhaustive sanitize-ladder cases live in
+// internal/llmjson; here we keep the integration-level assertions that the
+// specialist envelope survives the common noisy-output shapes.
 
 func TestParseSpecialistJSON_JSONCComments(t *testing.T) {
 	raw := "{\n// note\n\"summary\":\"ok\",\n/* here */\n\"findings\":[]}"

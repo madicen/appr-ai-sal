@@ -84,6 +84,28 @@ func TestParseWitnessJSONHandlesPrefixedOutput(t *testing.T) {
 	}
 }
 
+// F2: before consolidation, the witness parser only did a bare json.Unmarshal
+// plus extractJSONObject — no fence stripping (the prefixed-output test above
+// only worked because extractJSONObject happened to find the inner object) and
+// no comment removal. A witness response carrying JSON5 // or /* */ comments
+// failed to parse. Routing the witness through llmjson.Parse gives it the full
+// salvage ladder, so commented witness output now parses too.
+func TestParseWitnessJSONHandlesCommentedOutput(t *testing.T) {
+	raw := "{\n" +
+		"  // one witness per finding\n" +
+		"  \"witnesses\": [\n" +
+		"    {\"specialist\": \"testing\", \"path\": \"a.go\", \"line\": 1, \"side\": \"RIGHT\", \"verdict\": \"congruent\", \"citation\": \"aligned\"}, /* ok */\n" +
+		"  ],\n" +
+		"}"
+	got, err := parseWitnessJSON(raw)
+	if err != nil {
+		t.Fatalf("commented witness JSON must now parse via the shared ladder: %v", err)
+	}
+	if len(got.Witnesses) != 1 || got.Witnesses[0].Verdict != VerdictCongruent {
+		t.Fatalf("commented witness parse mismatch: %+v", got)
+	}
+}
+
 func TestFormatMarkdownEmpty(t *testing.T) {
 	if FormatMarkdown(nil) != "" {
 		t.Fatal("expected empty for nil")

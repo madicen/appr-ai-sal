@@ -14,6 +14,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/llmjson"
 )
 
 // promptFS embeds the generator system prompt. Only the meta-prompt
@@ -90,8 +91,8 @@ func Generate(ctx context.Context, opts GenerateOpts) (*Agent, error) {
 	}
 	// Be tolerant of accidental markdown fencing — strip a single
 	// outer ```markdown or ``` wrapper if present, but never modify the
-	// inner content.
-	body = stripOuterMarkdownFence(body)
+	// inner content. Shared with the JSON parse paths via llmjson.
+	body = llmjson.StripCodeFence(body)
 
 	agent := &Agent{
 		Language:    lang,
@@ -194,26 +195,4 @@ func buildGeneratorUserPrompt(lang, refLang Language, refBody string) (string, [
 	b.WriteString("## Output\n\n")
 	b.WriteString("Return markdown only. Start at the first `## Section` heading. Do not include a top-level `# ...` title or any prose preamble.\n")
 	return b.String(), hashInputs
-}
-
-// stripOuterMarkdownFence removes a single outer ```...``` wrapper if
-// the entire body is fenced. Idempotent for unfenced input.
-func stripOuterMarkdownFence(body string) string {
-	t := strings.TrimSpace(body)
-	if !strings.HasPrefix(t, "```") {
-		return body
-	}
-	// Skip the opening fence line (```markdown or ```).
-	nl := strings.Index(t, "\n")
-	if nl < 0 {
-		return body
-	}
-	inner := t[nl+1:]
-	// Walk back from the end and strip a trailing ``` line.
-	inner = strings.TrimRight(inner, "\n")
-	if !strings.HasSuffix(inner, "```") {
-		return body
-	}
-	inner = strings.TrimSuffix(inner, "```")
-	return strings.TrimSpace(inner)
 }

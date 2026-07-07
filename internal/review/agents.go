@@ -2,7 +2,6 @@ package review
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,6 +9,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/applog"
 	"github.com/madicen/appr-ai-sal/internal/gh"
+	"github.com/madicen/appr-ai-sal/internal/llmjson"
 )
 
 const nonClaudeToolingHint = "You do not have access to repository tools or the local filesystem. Base your answer on the PR metadata, the unified diff, and the \"Repository context\" section in the user message below. Treat that section as the authoritative summary of repo conventions for this review (the diff remains the authority for what changed).\n\n"
@@ -532,21 +532,17 @@ If a clean PR doesn't warrant any follow-up prompts and verdict is approve, retu
 
 String values must be valid JSON only (escape newlines as \n); never use Python """ triple-quoted strings inside the JSON.`
 
-// parseSpecialistJSON parses claude's textual output for a code specialist.
-// It tries strict parse first; on failure, it extracts the first JSON object
-// it finds in the text (handles cases where the model wraps JSON in fencing
-// despite instructions).
+// parseSpecialistJSON parses a code specialist's textual output via the shared
+// llmjson salvage ladder (fence/extract/comment/triple-quote/trailing-comma),
+// then applies domain normalization (severity canonicalisation) to the typed
+// result. The salvage is generic; only the severity fixup is review-specific.
 func parseSpecialistJSON(s string) (*specialistJSON, error) {
-	s = strings.TrimSpace(s)
-	o, err := tryParseSpecialistJSON(s)
-	if err == nil {
-		normalizeSpecialistSeverities(o)
-		return o, nil
+	o, err := llmjson.Parse[specialistJSON](s)
+	if err != nil {
+		return nil, err
 	}
-	if extractJSONObject(s) == "" {
-		return nil, fmt.Errorf("no JSON object found")
-	}
-	return nil, err
+	normalizeSpecialistSeverities(&o)
+	return &o, nil
 }
 
 // normalizeSpecialistSeverities canonicalises each finding's severity at parse
@@ -561,141 +557,23 @@ func normalizeSpecialistSeverities(o *specialistJSON) {
 	}
 }
 
-func tryParseSpecialistJSON(s string) (*specialistJSON, error) {
-	var lastErr error
-	try := func(raw string) (*specialistJSON, error) { return parseStrict(raw) }
-
-	for _, c := range specialistJSONVariants(s) {
-		if o, err := try(c); err == nil {
-			return o, nil
-		} else {
-			lastErr = err
-		}
-		if obj := extractJSONObject(c); obj != "" {
-			if o, err := try(obj); err == nil {
-				return o, nil
-			} else {
-				lastErr = err
-			}
-			fixed := sanitizeTripleQuotedStringValues(obj)
-			if fixed != obj {
-				if o, err := try(fixed); err == nil {
-					return o, nil
-				} else {
-					lastErr = err
-				}
-			}
-			com := stripJSONCStyleComments(obj)
-			if com != obj {
-				if o, err := try(com); err == nil {
-					return o, nil
-				} else {
-					lastErr = err
-				}
-			}
-		}
-	}
-	return nil, lastErr
-}
-
-func parseStrict(s string) (*specialistJSON, error) {
-	var v specialistJSON
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
-		return nil, err
-	}
-	return &v, nil
-}
-
 type specialistJSON struct {
 	Summary  string    `json:"summary"`
 	Findings []Finding `json:"findings"`
 }
 
 func parseVibeCoachJSON(s string) (*vibeCoachJSON, error) {
-	var lastErr error
-	for _, c := range specialistJSONVariants(strings.TrimSpace(s)) {
-		var v vibeCoachJSON
-		if err := json.Unmarshal([]byte(c), &v); err != nil {
-			lastErr = err
-		} else {
-			return &v, nil
-		}
-		if obj := extractJSONObject(c); obj != "" {
-			var v2 vibeCoachJSON
-			if err := json.Unmarshal([]byte(obj), &v2); err != nil {
-				lastErr = err
-			} else {
-				return &v2, nil
-			}
-			fixed := sanitizeTripleQuotedStringValues(obj)
-			if fixed != obj {
-				if err := json.Unmarshal([]byte(fixed), &v2); err != nil {
-					lastErr = err
-				} else {
-					return &v2, nil
-				}
-			}
-			com := stripJSONCStyleComments(obj)
-			if com != obj {
-				if err := json.Unmarshal([]byte(com), &v2); err != nil {
-					lastErr = err
-				} else {
-					return &v2, nil
-				}
-			}
-		}
+	v, err := llmjson.Parse[vibeCoachJSON](s)
+	if err != nil {
+		return nil, err
 	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, fmt.Errorf("no JSON object found")
+	return &v, nil
 }
 
 type vibeCoachJSON struct {
 	Verdict string         `json:"verdict"`
 	Summary string         `json:"summary"`
 	Prompts []AuthorPrompt `json:"prompts"`
-}
-
-// extractJSONObject finds the first top-level {...} block in s. Naive but
-// good enough — counts braces, ignoring those inside strings.
-func extractJSONObject(s string) string {
-	start := strings.Index(s, "{")
-	if start < 0 {
-		return ""
-	}
-	depth := 0
-	inStr := false
-	esc := false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		if inStr {
-			if esc {
-				esc = false
-				continue
-			}
-			if c == '\\' {
-				esc = true
-				continue
-			}
-			if c == '"' {
-				inStr = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inStr = true
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return s[start : i+1]
-			}
-		}
-	}
-	return ""
 }
 
 func truncate(s string, max int) string {

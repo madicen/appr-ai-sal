@@ -19,6 +19,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
+	"github.com/madicen/appr-ai-sal/internal/llmjson"
 )
 
 //go:embed prompts
@@ -122,17 +123,11 @@ type witnessJSON struct {
 }
 
 func parseWitnessJSON(s string) (*witnessJSON, error) {
-	s = strings.TrimSpace(s)
-	var v witnessJSON
-	if err := json.Unmarshal([]byte(s), &v); err == nil {
-		return &v, nil
+	v, err := llmjson.Parse[witnessJSON](s)
+	if err != nil {
+		return nil, err
 	}
-	if obj := extractJSONObject(s); obj != "" {
-		if err := json.Unmarshal([]byte(obj), &v); err == nil {
-			return &v, nil
-		}
-	}
-	return nil, fmt.Errorf("no JSON object found")
+	return &v, nil
 }
 
 // normalizeAndAlign drops witnesses that don't reference an input finding
@@ -253,47 +248,6 @@ func configDir() string {
 		return ".appr-ai-sal"
 	}
 	return filepath.Join(home, ".config", "appr-ai-sal")
-}
-
-// extractJSONObject finds the first top-level {...} block in s. Mirrors the
-// helper in the review package — duplicated to avoid an import cycle.
-func extractJSONObject(s string) string {
-	start := strings.Index(s, "{")
-	if start < 0 {
-		return ""
-	}
-	depth := 0
-	inStr := false
-	esc := false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		if inStr {
-			if esc {
-				esc = false
-				continue
-			}
-			if c == '\\' {
-				esc = true
-				continue
-			}
-			if c == '"' {
-				inStr = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inStr = true
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return s[start : i+1]
-			}
-		}
-	}
-	return ""
 }
 
 func truncate(s string, n int) string {
