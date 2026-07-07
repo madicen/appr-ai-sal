@@ -121,7 +121,7 @@ func TestAutoRegenAllFiresRegenStartedForEverySpecialist(t *testing.T) {
 	got := map[string]bool{}
 	for _, msg := range msgs {
 		if r, ok := msg.(regenStartedMsg); ok {
-			got[r.Specialist] = true
+			got[r.Key.Specialist] = true
 		}
 	}
 	for _, spec := range ra.Specialists {
@@ -130,7 +130,7 @@ func TestAutoRegenAllFiresRegenStartedForEverySpecialist(t *testing.T) {
 		}
 	}
 	for _, spec := range ra.Specialists {
-		if !m.busy[busyKey("acme", "widget", spec)] {
+		if !m.busy.Running(busyKey("acme", "widget", spec)) {
 			t.Errorf("regenerateAllForCurrentRepo should mark busy[%s|%s]", "acme/widget", spec)
 		}
 	}

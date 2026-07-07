@@ -4,10 +4,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	zone "github.com/lrstanley/bubblezone"
-	bubbledropdown "github.com/madicen/bubble-dropdown"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
 )
 
 // Dropdown kinds on the Review & AI tab. ddNone means no dropdown.
@@ -58,16 +57,29 @@ func strictnessHint(i int) string {
 	}
 }
 
-func newSettingsDropdown(labels []string, idx int, placeholder string) *bubbledropdown.Dropdown {
-	d := bubbledropdown.New(
-		bubbledropdown.WithOptions(labels),
-		bubbledropdown.WithInitialIndex(idx),
-		bubbledropdown.WithPlaceholder(placeholder),
-	)
-	// Match the existing bubble-color-picker integration: use the global
-	// bubblezone manager so the trigger is hit-tested via the root zone.Scan.
-	d.SetZoneManager(zone.DefaultManager)
-	return d
+// initDropdowns builds the three Review & AI dropdowns through the shared
+// dropdown.Host, wiring each one's OnSelect to mirror its selection onto the
+// draft (strictness / profile) or leaving it read-at-commit (provider). It is
+// called once from New; refreshProfileDropdown keeps the profile list current.
+func (m *Model) initDropdowns(selProv aiconfig.Provider) {
+	m.strictnessDD = dropdown.New("strictness")
+	m.strictnessDD.OnSelect = func(idx int) tea.Cmd {
+		m.draft.ReviewStrictness = strictnessAt(idx)
+		return nil
+	}
+	m.strictnessDD.Rebuild(strictnessDDLabels, strictnessIndex(m.draft.ReviewStrictness))
+
+	// The provider value lives on the dropdown and is read by
+	// commitEditorToSelectedProfile, so it needs no OnSelect mirror.
+	m.providerDD = dropdown.New("provider")
+	m.providerDD.Rebuild(providerDDLabels, providerDDIndex(selProv))
+
+	m.profileDD = dropdown.New("profile")
+	m.profileDD.OnSelect = func(idx int) tea.Cmd {
+		m.selectProfileByIndex(idx)
+		return nil
+	}
+	m.refreshProfileDropdown()
 }
 
 // profileDDLabels builds the profile dropdown options from the draft profile
@@ -88,37 +100,43 @@ func (m *Model) profileDDLabels() []string {
 	return labels
 }
 
-// newProfileDropdown builds a profile dropdown reflecting the current draft.
-// The component has no runtime SetOptions, so the dropdown is recreated
-// whenever the option set changes (see refreshProfileDropdown).
-func (m *Model) newProfileDropdown() *bubbledropdown.Dropdown {
+// refreshProfileDropdown rebuilds the profile dropdown so its labels (names,
+// active marker) and selection track the draft. The Host skips the rebuild
+// while the panel is open (no structural change can be in flight then).
+func (m *Model) refreshProfileDropdown() {
+	if m.profileDD.Open() {
+		return
+	}
 	idx := m.selectedProfileIdx
 	if idx < 0 || idx >= len(m.draft.Profiles) {
 		idx = 0
 	}
-	return newSettingsDropdown(m.profileDDLabels(), idx, "profile")
+	m.profileDD.Rebuild(m.profileDDLabels(), idx)
+	m.syncDropdownFocus()
 }
 
-// refreshProfileDropdown rebuilds the profile dropdown so its labels (names,
-// active marker) and selection track the draft. Only runs while the panel is
-// closed; an open panel implies no structural change can be in flight.
-func (m *Model) refreshProfileDropdown() {
-	if m.profileDD != nil && m.profileDD.Open() {
-		return
+// dropdownForKind returns the Host backing a dropdown kind (nil for ddNone).
+func (m *Model) dropdownForKind(kind int) *dropdown.Host {
+	switch kind {
+	case ddStrictness:
+		return m.strictnessDD
+	case ddProfile:
+		return m.profileDD
+	case ddProvider:
+		return m.providerDD
 	}
-	m.profileDD = m.newProfileDropdown()
-	m.syncDropdownFocus()
+	return nil
 }
 
 // openDropdownKind reports which Review & AI dropdown panel is open (ddNone
 // when none). At most one is open at a time.
 func (m *Model) openDropdownKind() int {
 	switch {
-	case m.strictnessDD != nil && m.strictnessDD.Open():
+	case m.strictnessDD.Open():
 		return ddStrictness
-	case m.profileDD != nil && m.profileDD.Open():
+	case m.profileDD.Open():
 		return ddProfile
-	case m.providerDD != nil && m.providerDD.Open():
+	case m.providerDD.Open():
 		return ddProvider
 	}
 	return ddNone
@@ -155,21 +173,6 @@ func fieldForDropdown(kind int) int {
 	}
 }
 
-// dropdownPtr returns the address of the dropdown field for kind so Update
-// results can be written back (Dropdown.Update returns a fresh pointer).
-func (m *Model) dropdownPtr(kind int) **bubbledropdown.Dropdown {
-	switch kind {
-	case ddStrictness:
-		return &m.strictnessDD
-	case ddProfile:
-		return &m.profileDD
-	case ddProvider:
-		return &m.providerDD
-	default:
-		return nil
-	}
-}
-
 // syncDropdownFocus sets the focused-arrow indicator on whichever dropdown
 // currently owns keyboard focus (only on the Review & AI tab).
 func (m *Model) syncDropdownFocus() {
@@ -177,34 +180,16 @@ func (m *Model) syncDropdownFocus() {
 	if m.panelTab == 0 {
 		fk = m.focusedDropdownKind()
 	}
-	if m.strictnessDD != nil {
-		m.strictnessDD.SetFocused(fk == ddStrictness)
-	}
-	if m.profileDD != nil {
-		m.profileDD.SetFocused(fk == ddProfile)
-	}
-	if m.providerDD != nil {
-		m.providerDD.SetFocused(fk == ddProvider)
-	}
+	m.strictnessDD.SetFocused(fk == ddStrictness)
+	m.profileDD.SetFocused(fk == ddProfile)
+	m.providerDD.SetFocused(fk == ddProvider)
 }
 
-// forwardToDropdown routes msg to the dropdown of kind, translating mouse
-// coordinates from absolute screen space into the settings-body-local space
-// the open panel uses for geometric hit-testing, then applies the resulting
-// selection to the draft. Returns any tea.Cmd the dropdown emits.
+// forwardToDropdown routes msg to the dropdown of kind. The Host translates
+// mouse coordinates into settings-body-local space (see ContentTop) and
+// mirrors any selection change onto the draft via its OnSelect callback.
 func (m *Model) forwardToDropdown(kind int, msg tea.Msg) tea.Cmd {
-	pp := m.dropdownPtr(kind)
-	if pp == nil || *pp == nil {
-		return nil
-	}
-	if mm, ok := msg.(tea.MouseMsg); ok {
-		mm.Y -= m.contentTop
-		msg = mm
-	}
-	updated, cmd := (*pp).Update(msg)
-	*pp = updated
-	m.applyDropdownSelection(kind)
-	return cmd
+	return m.dropdownForKind(kind).Forward(msg)
 }
 
 // handleDropdownResult applies an ItemChosenMsg / ItemCanceledMsg to the open
@@ -215,25 +200,6 @@ func (m *Model) handleDropdownResult(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	return m.forwardToDropdown(kind, msg)
-}
-
-// applyDropdownSelection mirrors a dropdown's current selection onto the
-// draft config: strictness updates the draft directly, provider is stored on
-// the dropdown (read at commit time), and profile switches the edited profile.
-func (m *Model) applyDropdownSelection(kind int) {
-	switch kind {
-	case ddStrictness:
-		if m.strictnessDD != nil {
-			m.draft.ReviewStrictness = strictnessAt(m.strictnessDD.SelectedIndex())
-		}
-	case ddProvider:
-		// The provider value lives on the dropdown and is read by
-		// commitEditorToSelectedProfile; nothing else to mirror here.
-	case ddProfile:
-		if m.profileDD != nil {
-			m.selectProfileByIndex(m.profileDD.SelectedIndex())
-		}
-	}
 }
 
 // selectProfileByIndex commits in-progress edits, switches the edited profile
@@ -249,9 +215,6 @@ func (m *Model) selectProfileByIndex(idx int) {
 
 // editedProvider returns the provider currently selected in the dropdown.
 func (m *Model) editedProvider() aiconfig.Provider {
-	if m.providerDD == nil {
-		return aiconfig.ProviderClaude
-	}
 	i := m.providerDD.SelectedIndex()
 	if i < 0 || i >= len(providerDDValues) {
 		return aiconfig.ProviderClaude

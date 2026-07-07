@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
-	bubbledropdown "github.com/madicen/bubble-dropdown"
 	overlay "github.com/madicen/bubble-overlay"
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
@@ -16,6 +15,7 @@ import (
 	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
 	reviewtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/review"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
 )
 
 // mode is the root TUI's active top-level screen. It is a type alias for
@@ -151,7 +151,7 @@ type Model struct {
 	// "Review controls" pane. It is positioned from the trigger's
 	// bubblezone-scanned (absolute) coordinates, cached here so the panel
 	// stays put while open even though the trigger sits under the overlay.
-	controlsProfileDD    *bubbledropdown.Dropdown
+	controlsProfileDD    *dropdown.Host
 	controlsProfileDDRow int
 	controlsProfileDDCol int
 

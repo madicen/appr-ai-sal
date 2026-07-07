@@ -3,167 +3,135 @@ package settings
 import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
+	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
-// handleMouse handles press and wheel. Returns a command when save/cancel/strictness click completes.
+// handleMouse maps a left-click to an action via a click table (see
+// zones.DispatchClick). The tab strip and Save/Cancel are always live; the
+// remaining targets are scoped to the active panel so a stale zone from
+// another panel (bubblezone's manager is global) can't shadow the hit.
 func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	if tea.MouseEvent(msg).IsWheel() {
-		return nil
+	h := []zones.ClickHandler{
+		{Zone: ZoneSettingsTabReview, Do: func() tea.Cmd { m.setPanelTab(0); return nil }},
+		{Zone: ZoneSettingsTabRepoCtx, Do: func() tea.Cmd { m.setPanelTab(1); return nil }},
+		{Zone: ZoneSettingsTabTheme, Do: func() tea.Cmd { m.setPanelTab(2); return nil }},
+		{Zone: ZoneSettingsSave, Do: m.submitCurrentSave},
+		{Zone: ZoneSettingsCancel, Do: cancelCmd},
 	}
-	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
-		return nil
+	switch m.panelTab {
+	case 0:
+		h = append(h, m.reviewPanelHandlers(msg)...)
+	case 1:
+		h = append(h, m.repoPanelHandlers()...)
+	case 2:
+		h = append(h, m.themePanelHandlers(msg)...)
 	}
-	if z := zone.Get(ZoneSettingsTabReview); z != nil && z.InBounds(msg) {
-		m.setPanelTab(0)
-		return nil
+	return zones.DispatchClick(msg, h)
+}
+
+// reviewPanelHandlers are the click targets on the Review & AI panel.
+func (m *Model) reviewPanelHandlers(msg tea.MouseMsg) []zones.ClickHandler {
+	return []zones.ClickHandler{
+		{Zone: ZoneStrictnessDD, Do: m.openDropdownCmd(ddStrictness, msg)},
+		{Zone: ZoneProfileDD, Do: m.openDropdownCmd(ddProfile, msg)},
+		{Zone: ZoneProviderDD, Do: m.openDropdownCmd(ddProvider, msg)},
+		{Zone: ZoneProfileSetActive, Do: m.profileActionCmd(m.activateSelectedProfile)},
+		{Zone: ZoneProfileAdd, Do: m.addNewProfile},
+		{Zone: ZoneProfileDelete, Do: m.profileActionCmd(m.deleteSelectedProfile)},
+		{Zone: ZoneAIFieldName, Do: m.aiFieldCmd(fieldProfileName)},
+		{Zone: ZoneAIFieldBaseURL, Do: m.aiFieldCmd(fieldBaseURL)},
+		{Zone: ZoneAIFieldModel, Do: m.aiFieldCmd(fieldModel)},
+		{Zone: ZoneAIFieldAPIKey, Do: m.aiFieldCmd(fieldAPIKey)},
+		{Zone: ZoneAIFieldTimeout, Do: m.aiFieldCmd(fieldTimeout)},
 	}
-	if z := zone.Get(ZoneSettingsTabRepoCtx); z != nil && z.InBounds(msg) {
-		m.setPanelTab(1)
-		return nil
+}
+
+// repoPanelHandlers are the click targets on the Repo context panel.
+func (m *Model) repoPanelHandlers() []zones.ClickHandler {
+	return []zones.ClickHandler{
+		{Zone: ZoneRepoToggleIncludePR, Do: m.repoToggleCmd(&m.repoIncludePR, repoFieldIncludePR)},
+		{Zone: ZoneRepoToggleCulture, Do: m.repoToggleCmd(&m.repoCultureSum, repoFieldCultureSum)},
+		{Zone: ZoneRepoToggleCtxVs, Do: m.repoToggleCmd(&m.repoCtxVsChange, repoFieldCtxVsChange)},
+		{Zone: ZoneRepoToggleExpert, Do: m.repoToggleCmd(&m.repoExpertPanel, repoFieldExpertPanel)},
+		{Zone: ZoneRepoToggleParallelSpecs, Do: m.repoToggleCmd(&m.repoParallelSpecs, repoFieldParallelSpecs)},
+		{Zone: ZoneRepoToggleParallelPRAgents, Do: m.repoToggleCmd(&m.repoParallelPRAgents, repoFieldParallelPRAgents)},
+		{Zone: ZoneRepoToggleParallelExperts, Do: m.repoToggleCmd(&m.repoParallelExperts, repoFieldParallelExperts)},
+		{Zone: ZoneRepoFieldRoots, Do: m.repoFieldCmd(repoFieldRoots)},
+		{Zone: ZoneRepoFieldMaxBytes, Do: m.repoFieldCmd(repoFieldMaxBytes)},
+		{Zone: ZoneRepoFieldTTL, Do: m.repoFieldCmd(repoFieldTTL)},
+		{Zone: ZoneRepoFieldPRHistLimit, Do: m.repoFieldCmd(repoFieldPRHistLimit)},
+		{Zone: ZoneRepoFieldExpertPRs, Do: m.repoFieldCmd(repoFieldExpertPRs)},
+		{Zone: ZoneRepoFieldExpertMaxB, Do: m.repoFieldCmd(repoFieldExpertMaxB)},
+		{Zone: ZoneRepoFieldExpertTTL, Do: m.repoFieldCmd(repoFieldExpertTTL)},
 	}
-	if z := zone.Get(ZoneSettingsTabTheme); z != nil && z.InBounds(msg) {
-		m.setPanelTab(2)
-		return nil
+}
+
+// themePanelHandlers are the click targets on the Theme panel. A swatch opens
+// its modal on press, so the press is delivered to whichever swatch row was
+// hit (the SwatchPicker opens on release; zones fire then).
+func (m *Model) themePanelHandlers(msg tea.MouseMsg) []zones.ClickHandler {
+	h := []zones.ClickHandler{
+		{Zone: ZoneThemeReset, Do: func() tea.Cmd { m.theme.resetAll(); return nil }},
 	}
-	if z := zone.Get(ZoneSettingsSave); z != nil && z.InBounds(msg) {
-		switch m.panelTab {
-		case 1:
-			return m.submitRepoSave()
-		case 2:
-			return m.submitThemeSave()
-		default:
-			return m.submitSave()
-		}
-	}
-	if z := zone.Get(ZoneSettingsCancel); z != nil && z.InBounds(msg) {
-		return func() tea.Msg { return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Cancelled: true}} }
-	}
-	if m.panelTab == 2 && m.theme != nil {
-		if z := zone.Get(ZoneThemeReset); z != nil && z.InBounds(msg) {
-			m.theme.resetAll()
-			return nil
-		}
-		// Forward the press to the swatch whose row is in bounds; the
-		// SwatchPicker library opens the modal on press (zones fire on
-		// release), so we deliver the original press directly.
-		for i, sw := range m.theme.swatches {
-			if z := zone.Get(sw.zoneID); z != nil && z.InBounds(msg) {
-				m.theme.swatches[i].swatch.SetFocused(false)
-				m.theme.focus = i
-				m.theme.swatches[i].swatch.SetFocused(true)
-				updated, cmd := m.theme.swatches[i].swatch.Update(msg)
-				m.theme.swatches[i].swatch = updated
-				return cmd
-			}
-		}
-	}
-	if m.panelTab == 0 {
-		// Dropdown trigger clicks: focus and open the panel. The dropdown
-		// trusts the zone hit (zoneManager is set), so forwarding the press
-		// opens it regardless of geometric coordinates.
-		for _, dt := range []struct {
-			zoneID string
-			kind   int
-		}{
-			{ZoneStrictnessDD, ddStrictness},
-			{ZoneProfileDD, ddProfile},
-			{ZoneProviderDD, ddProvider},
-		} {
-			if z := zone.Get(dt.zoneID); z != nil && z.InBounds(msg) {
-				m.blurInputs()
-				m.focus = fieldForDropdown(dt.kind)
-				m.syncDropdownFocus()
-				return m.forwardToDropdown(dt.kind, msg)
-			}
-		}
-		if z := zone.Get(ZoneProfileSetActive); z != nil && z.InBounds(msg) {
-			m.focus = fieldProfilePicker
-			m.blurInputs()
-			return m.activateSelectedProfile()
-		}
-		if z := zone.Get(ZoneProfileAdd); z != nil && z.InBounds(msg) {
-			return m.addNewProfile()
-		}
-		if z := zone.Get(ZoneProfileDelete); z != nil && z.InBounds(msg) {
-			m.focus = fieldProfilePicker
-			m.blurInputs()
-			return m.deleteSelectedProfile()
-		}
-		// Click-to-focus on a profile text field (typing still needs
-		// the keyboard, but reaching the field never does).
-		for _, f := range []struct {
-			zone  string
-			field int
-		}{
-			{ZoneAIFieldName, fieldProfileName},
-			{ZoneAIFieldBaseURL, fieldBaseURL},
-			{ZoneAIFieldModel, fieldModel},
-			{ZoneAIFieldAPIKey, fieldAPIKey},
-			{ZoneAIFieldTimeout, fieldTimeout},
-		} {
-			if z := zone.Get(f.zone); z != nil && z.InBounds(msg) {
-				m.focusAIField(f.field)
-				return textinput.Blink
-			}
+	if m.theme != nil {
+		for i := range m.theme.swatches {
+			h = append(h, zones.ClickHandler{Zone: m.theme.swatches[i].zoneID, Do: func() tea.Cmd { return m.forwardSwatchPress(i, msg) }})
 		}
 	}
-	if m.panelTab == 1 {
-		if z := zone.Get(ZoneRepoToggleIncludePR); z != nil && z.InBounds(msg) {
-			m.repoIncludePR = !m.repoIncludePR
-			m.focusRepoField(repoFieldIncludePR)
-			return nil
-		}
-		if z := zone.Get(ZoneRepoToggleCulture); z != nil && z.InBounds(msg) {
-			m.repoCultureSum = !m.repoCultureSum
-			m.focusRepoField(repoFieldCultureSum)
-			return nil
-		}
-		if z := zone.Get(ZoneRepoToggleCtxVs); z != nil && z.InBounds(msg) {
-			m.repoCtxVsChange = !m.repoCtxVsChange
-			m.focusRepoField(repoFieldCtxVsChange)
-			return nil
-		}
-		if z := zone.Get(ZoneRepoToggleExpert); z != nil && z.InBounds(msg) {
-			m.repoExpertPanel = !m.repoExpertPanel
-			m.focusRepoField(repoFieldExpertPanel)
-			return nil
-		}
-		if z := zone.Get(ZoneRepoToggleParallelSpecs); z != nil && z.InBounds(msg) {
-			m.repoParallelSpecs = !m.repoParallelSpecs
-			m.focusRepoField(repoFieldParallelSpecs)
-			return nil
-		}
-		if z := zone.Get(ZoneRepoToggleParallelPRAgents); z != nil && z.InBounds(msg) {
-			m.repoParallelPRAgents = !m.repoParallelPRAgents
-			m.focusRepoField(repoFieldParallelPRAgents)
-			return nil
-		}
-		if z := zone.Get(ZoneRepoToggleParallelExperts); z != nil && z.InBounds(msg) {
-			m.repoParallelExperts = !m.repoParallelExperts
-			m.focusRepoField(repoFieldParallelExperts)
-			return nil
-		}
-		// Click-to-focus on a repo-context text/number field.
-		for _, f := range []struct {
-			zone  string
-			field int
-		}{
-			{ZoneRepoFieldRoots, repoFieldRoots},
-			{ZoneRepoFieldMaxBytes, repoFieldMaxBytes},
-			{ZoneRepoFieldTTL, repoFieldTTL},
-			{ZoneRepoFieldPRHistLimit, repoFieldPRHistLimit},
-			{ZoneRepoFieldExpertPRs, repoFieldExpertPRs},
-			{ZoneRepoFieldExpertMaxB, repoFieldExpertMaxB},
-			{ZoneRepoFieldExpertTTL, repoFieldExpertTTL},
-		} {
-			if z := zone.Get(f.zone); z != nil && z.InBounds(msg) {
-				m.focusRepoField(f.field)
-				return m.repoBlinkCmd()
-			}
-		}
+	return h
+}
+
+func cancelCmd() tea.Cmd {
+	return state.NavigateTarget{Kind: state.NavBack, Cancelled: true}.Cmd()
+}
+
+// submitCurrentSave routes Save to the panel-specific submit handler.
+func (m *Model) submitCurrentSave() tea.Cmd {
+	switch m.panelTab {
+	case 1:
+		return m.submitRepoSave()
+	case 2:
+		return m.submitThemeSave()
+	default:
+		return m.submitSave()
 	}
-	return nil
+}
+
+// The *Cmd builders below produce the click actions for the repetitive field
+// rows so the table above stays one line per zone.
+func (m *Model) aiFieldCmd(field int) func() tea.Cmd {
+	return func() tea.Cmd { m.focusAIField(field); return textinput.Blink }
+}
+
+func (m *Model) repoToggleCmd(b *bool, field int) func() tea.Cmd {
+	return func() tea.Cmd { *b = !*b; m.focusRepoField(field); return nil }
+}
+
+func (m *Model) repoFieldCmd(field int) func() tea.Cmd {
+	return func() tea.Cmd { m.focusRepoField(field); return m.repoBlinkCmd() }
+}
+
+func (m *Model) profileActionCmd(action func() tea.Cmd) func() tea.Cmd {
+	return func() tea.Cmd { m.focus = fieldProfilePicker; m.blurInputs(); return action() }
+}
+
+func (m *Model) openDropdownCmd(kind int, msg tea.Msg) func() tea.Cmd {
+	return func() tea.Cmd {
+		m.blurInputs()
+		m.focus = fieldForDropdown(kind)
+		m.syncDropdownFocus()
+		return m.forwardToDropdown(kind, msg)
+	}
+}
+
+// forwardSwatchPress focuses swatch i and delivers the press to it.
+func (m *Model) forwardSwatchPress(i int, msg tea.MouseMsg) tea.Cmd {
+	m.theme.swatches[i].swatch.SetFocused(false)
+	m.theme.focus = i
+	m.theme.swatches[i].swatch.SetFocused(true)
+	updated, cmd := m.theme.swatches[i].swatch.Update(msg)
+	m.theme.swatches[i].swatch = updated
+	return cmd
 }

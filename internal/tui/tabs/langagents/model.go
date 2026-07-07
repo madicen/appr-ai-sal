@@ -23,6 +23,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	la "github.com/madicen/appr-ai-sal/internal/review/langagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/async"
 )
 
 // Opts configures a fresh Model.
@@ -81,9 +82,9 @@ type Model struct {
 
 	cache *la.LangAgents
 
-	// busy[language] is true while a regenerate/generate command is in
-	// flight; disables the row's actions and shows a spinner-ish label.
-	busy map[la.Language]bool
+	// busy tracks per-language regenerate/generate lifecycle; a running
+	// language disables the row's actions and shows a spinner-ish label.
+	busy async.Tracker[la.Language]
 
 	statusMsg string
 	err       error
@@ -105,7 +106,6 @@ func New(opts Opts) tea.Model {
 		contentW: opts.Width,
 		aiCfg:    opts.AICfg,
 		complete: opts.Complete,
-		busy:     make(map[la.Language]bool),
 		prLabel:  strings.TrimSpace(opts.PRLabel),
 	}
 	if opts.PRLanguages != nil {
@@ -172,23 +172,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rebuildRows()
 		return m, nil
 	case regenStartedMsg:
-		m.busy[msg.Language] = true
-		m.statusMsg = la.LabelFor(msg.Language) + ": generating…"
+		m.busy.Start(msg.Key)
+		m.statusMsg = la.LabelFor(msg.Key) + ": generating…"
 		return m, nil
 	case regenDoneMsg:
-		delete(m.busy, msg.Language)
+		m.busy.Clear(msg.Key)
 		if msg.Err != nil {
-			m.err = fmt.Errorf("regenerate %s: %w", la.LabelFor(msg.Language), msg.Err)
+			m.err = fmt.Errorf("regenerate %s: %w", la.LabelFor(msg.Key), msg.Err)
 			return m, nil
 		}
-		m.statusMsg = la.LabelFor(msg.Language) + ": generated"
+		m.statusMsg = la.LabelFor(msg.Key) + ": generated"
 		return m, loadCacheCmd()
 	case deleteDoneMsg:
 		if msg.Err != nil {
-			m.err = fmt.Errorf("delete %s: %w", la.LabelFor(msg.Language), msg.Err)
+			m.err = fmt.Errorf("delete %s: %w", la.LabelFor(msg.Key), msg.Err)
 			return m, nil
 		}
-		m.statusMsg = la.LabelFor(msg.Language) + ": deleted"
+		m.statusMsg = la.LabelFor(msg.Key) + ": deleted"
 		return m, loadCacheCmd()
 	}
 	return m, nil
@@ -222,7 +222,7 @@ func (m *Model) actionGenerate() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	r := m.rows[m.idx]
-	if m.busy[r.Language] {
+	if m.busy.Running(r.Language) {
 		return m, nil
 	}
 	if m.complete == nil || m.aiCfg == nil {
@@ -231,7 +231,7 @@ func (m *Model) actionGenerate() (tea.Model, tea.Cmd) {
 	}
 	refLang, refBody := m.referenceBriefFor(r.Language)
 	return m, tea.Batch(
-		func() tea.Msg { return regenStartedMsg{Language: r.Language} },
+		func() tea.Msg { return regenStartedMsg{Key: r.Language} },
 		regenerateCmd(m.aiCfg, m.complete, r.Language, refLang, refBody),
 	)
 }
@@ -262,7 +262,7 @@ func (m *Model) actionDelete() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	r := m.rows[m.idx]
-	if m.busy[r.Language] {
+	if m.busy.Running(r.Language) {
 		return m, nil
 	}
 	if m.cache == nil {
@@ -351,7 +351,7 @@ func (m *Model) renderRow(r row, selected bool) string {
 	// Per-row action buttons mirror the g/r/d keys so the tab is fully
 	// mouse-drivable. Hidden while a regen is in flight (the keys are
 	// no-ops then too — see actionGenerate/actionDelete).
-	if !m.busy[r.Language] {
+	if !m.busy.Running(r.Language) {
 		genLabel := " Generate "
 		if m.hasCached(r.Language) {
 			genLabel = " Refresh "
@@ -376,7 +376,7 @@ func (m *Model) hasCached(l la.Language) bool {
 }
 
 func (m *Model) chipForRow(r row) string {
-	if m.busy[r.Language] {
+	if m.busy.Running(r.Language) {
 		return chipBusy.Render("[generating]")
 	}
 	freshness := la.ComputeLanguage(r.Language, m.cache, time.Now(), la.DefaultStaleAfter)
@@ -498,18 +498,18 @@ func regenerateCmd(cfg *aiconfig.Config, complete ai.CompleteFunc, lang, refLang
 			ReferenceBrief:    refBody,
 		})
 		if err != nil {
-			return regenDoneMsg{Language: lang, Err: err}
+			return regenDoneMsg{Key: lang, Err: err}
 		}
 		if err := la.SaveAgent(*a); err != nil {
-			return regenDoneMsg{Language: lang, Err: fmt.Errorf("save: %w", err)}
+			return regenDoneMsg{Key: lang, Err: fmt.Errorf("save: %w", err)}
 		}
-		return regenDoneMsg{Language: lang, Agent: a}
+		return regenDoneMsg{Key: lang, Val: a}
 	}
 }
 
 func deleteCmd(lang la.Language) tea.Cmd {
 	return func() tea.Msg {
 		err := la.DeleteAgent(lang)
-		return deleteDoneMsg{Language: lang, Err: err}
+		return deleteDoneMsg{Key: lang, Err: err}
 	}
 }

@@ -46,13 +46,13 @@ func renderVerdictBanner(canonical, shortLabel string, maxW int) string {
 	var border lipgloss.Color
 	switch canonical {
 	case review.VibeVerdictApprove:
-		border = lipgloss.Color("#9ECE6A")
+		border = styles.OkColor
 	case review.VibeVerdictRequestChanges:
-		border = lipgloss.Color("#E0AF68")
+		border = styles.WarnColor
 	case review.VibeVerdictComment:
-		border = lipgloss.Color("#888888")
+		border = styles.DimColor
 	default:
-		border = lipgloss.Color("#888888")
+		border = styles.DimColor
 	}
 	inner := lipgloss.JoinVertical(lipgloss.Left,
 		styles.DimStyle.Render("Merge recommendation · vibe-coach"),

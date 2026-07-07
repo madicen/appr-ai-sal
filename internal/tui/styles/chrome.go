@@ -63,4 +63,34 @@ var (
 				Background(lipgloss.Color("#30363d")).
 				Padding(0, 1).
 				Bold(true)
+
+	// Chip styles are the filled action pills shared by the agent-management
+	// tabs (repo-agents, and — via aliases — settings). Centralising them
+	// here keeps the palette in one place instead of copied hex per tab.
+	//
+	// ChipStyle is the neutral chip (same surface as ModalButtonStyle).
+	ChipStyle = ModalButtonStyle
+	// ChipBusyStyle marks an in-flight action (blue surface).
+	ChipBusyStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#7AA2F7")).
+			Padding(0, 1).
+			Bold(true)
+	// ChipPrimaryStyle marks the primary action (purple surface, matching
+	// the header bar).
+	ChipPrimaryStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#FFFFFF")).
+				Background(lipgloss.Color("#5D2D91")).
+				Padding(0, 1).
+				Bold(true)
+	// ChipDangerStyle marks a destructive action (red surface).
+	ChipDangerStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("#FFFFFF")).
+			Background(lipgloss.Color("#7A1F1F")).
+			Padding(0, 1).
+			Bold(true)
+
+	// SectionRule draws the thin horizontal separator between agent rows.
+	// Its foreground matches PanelBorder so the chrome reads consistently.
+	SectionRule = lipgloss.NewStyle().Foreground(PanelBorder)
 )

@@ -2,31 +2,25 @@ package langagents
 
 import (
 	la "github.com/madicen/appr-ai-sal/internal/review/langagents"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/async"
 )
 
 // cacheLoadedMsg delivers the user-global lang-agents cache to the model.
+// It's a bulk data load rather than a per-row lifecycle event, so it stays a
+// named struct instead of an async.Result instantiation.
 type cacheLoadedMsg struct {
 	Cache *la.LangAgents
 	Err   error
 }
 
-// regenStartedMsg is emitted when a regenerate command is dispatched so
-// the row can show a "running…" badge immediately.
-type regenStartedMsg struct {
-	Language la.Language
-}
+// deleted is the marker payload for a delete completion, so deleteDoneMsg is a
+// distinct Go type from any other err-only result keyed by language.
+type deleted struct{}
 
-// regenDoneMsg is emitted when a regenerate command completes (success
-// or failure).
-type regenDoneMsg struct {
-	Language la.Language
-	Agent    *la.Agent
-	Err      error
-}
-
-// deleteDoneMsg is emitted when a cached entry has been removed (or the
-// remove failed).
-type deleteDoneMsg struct {
-	Language la.Language
-	Err      error
-}
+// Per-row async lifecycle messages, keyed by language, via the shared
+// async.Started / async.Result generics (see internal/tui/util/async).
+type (
+	regenStartedMsg = async.Started[la.Language]
+	regenDoneMsg    = async.Result[la.Language, *la.Agent]
+	deleteDoneMsg   = async.Result[la.Language, deleted]
+)

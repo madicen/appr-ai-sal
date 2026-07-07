@@ -172,7 +172,7 @@ func TestMouseClickAgentRegenerateMarksBusy(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("expected non-nil cmd from regenerate click")
 	}
-	if !m.busy[busyKey("a", "b", "testing")] {
+	if !m.busy.Running(busyKey("a", "b", "testing")) {
 		t.Fatalf("regenerate click should mark busy[%q] true", busyKey("a", "b", "testing"))
 	}
 }

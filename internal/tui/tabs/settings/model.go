@@ -19,6 +19,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/theme"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
 )
 
 // StartSection selects which group is focused when the pane opens.
@@ -82,12 +83,13 @@ type Model struct {
 	draft *aiconfig.Config
 	focus int
 
-	// Review & AI tab dropdowns (bubble-dropdown). strictnessDD and
-	// providerDD have static options; profileDD is recreated when the
-	// profile list changes (the component has no runtime SetOptions).
-	strictnessDD *bubbledropdown.Dropdown
-	profileDD    *bubbledropdown.Dropdown
-	providerDD   *bubbledropdown.Dropdown
+	// Review & AI tab dropdowns, each via the shared dropdown.Host.
+	// strictnessDD and providerDD have static options; profileDD is
+	// recreated when the profile list changes (the component has no runtime
+	// SetOptions).
+	strictnessDD *dropdown.Host
+	profileDD    *dropdown.Host
+	providerDD   *dropdown.Host
 
 	// Recorded content-line indices of each dropdown trigger, populated
 	// while buildForm assembles the body so SetBounds can be applied after
@@ -192,9 +194,7 @@ func New(o Opts) *Model {
 	if m.selectedProfileIdx >= 0 && m.selectedProfileIdx < len(draft.Profiles) {
 		selProv = draft.Profiles[m.selectedProfileIdx].Provider
 	}
-	m.strictnessDD = newSettingsDropdown(strictnessDDLabels, strictnessIndex(draft.ReviewStrictness), "strictness")
-	m.providerDD = newSettingsDropdown(providerDDLabels, providerDDIndex(selProv), "provider")
-	m.profileDD = m.newProfileDropdown()
+	m.initDropdowns(selProv)
 
 	m.loadEditorFromSelectedProfile()
 
@@ -1041,30 +1041,15 @@ func (m *Model) buildForm() string {
 	return b.String()
 }
 
-// applyDropdownBounds sets each Review & AI dropdown's trigger bounds in
-// settings-body-local coordinates, accounting for the viewport scroll offset
-// (the trigger's on-screen row = its content line index minus YOffset).
-func (m *Model) applyDropdownBounds() {
-	off := m.vp.YOffset
-	set := func(d *bubbledropdown.Dropdown, row int) {
-		if d == nil {
-			return
-		}
-		tw, th := d.TriggerSize()
-		d.SetBounds(row-off, 0, tw, th)
-	}
-	set(m.strictnessDD, m.ddStrictRow)
-	set(m.profileDD, m.ddProfileRow)
-	set(m.providerDD, m.ddProviderRow)
-}
-
-// composeDropdownOverlays composites any open dropdown panel onto body.
+// composeDropdownOverlays composites any open dropdown panel onto body. Each
+// Host sizes/positions its own trigger bounds in settings-body-local
+// coordinates (the trigger's on-screen row = its recorded content line index
+// minus the viewport scroll offset).
 func (m *Model) composeDropdownOverlays(body string) string {
-	for _, d := range []*bubbledropdown.Dropdown{m.strictnessDD, m.profileDD, m.providerDD} {
-		if d != nil && d.Open() {
-			body = d.ViewWithOverlay(body, m.width, m.bodyH)
-		}
-	}
+	off := m.vp.YOffset
+	body = m.strictnessDD.Composite(body, m.ddStrictRow-off, 0, m.width, m.bodyH)
+	body = m.profileDD.Composite(body, m.ddProfileRow-off, 0, m.width, m.bodyH)
+	body = m.providerDD.Composite(body, m.ddProviderRow-off, 0, m.width, m.bodyH)
 	return body
 }
 
@@ -1085,9 +1070,6 @@ func (m *Model) View() string {
 	}
 	// Rebuild each frame so textinput cursor blink and zones stay aligned with layout.
 	m.vp.SetContent(m.buildForm())
-	if m.panelTab == 0 {
-		m.applyDropdownBounds()
-	}
 	body := lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(m.bodyH).Render(m.vp.View())
 	if m.panelTab == 0 {
 		body = m.composeDropdownOverlays(body)
@@ -1103,6 +1085,9 @@ func (m *Model) SetContentOrigin(top int) {
 		top = 0
 	}
 	m.contentTop = top
+	m.strictnessDD.ContentTop = top
+	m.profileDD.ContentTop = top
+	m.providerDD.ContentTop = top
 }
 
 // buildThemeView assembles the Theme tab body (header + tab strip + panel).

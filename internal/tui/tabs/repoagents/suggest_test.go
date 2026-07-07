@@ -64,10 +64,10 @@ func TestMouseGenerateApprovedDispatchesAndClears(t *testing.T) {
 	if cmd == nil {
 		t.Fatalf("Generate approved should return a command")
 	}
-	if !m.busy[techBusyKey("a", "b", "kafka")] {
+	if !m.busy.Running(techBusyKey("a", "b", "kafka")) {
 		t.Fatalf("approved candidate should be marked busy")
 	}
-	if m.busy[techBusyKey("a", "b", "terraform")] {
+	if m.busy.Running(techBusyKey("a", "b", "terraform")) {
 		t.Fatalf("non-approved candidate should not be generated")
 	}
 	if len(m.candidates) != 0 {
@@ -105,9 +105,8 @@ func TestSuggestDoneIgnoredForStaleRepo(t *testing.T) {
 	m.suggestBusy = true
 	// Result for a repo that is not the current selection should be dropped.
 	_, _ = m.Update(techSuggestDoneMsg{
-		Owner:      "c",
-		Repo:       "d",
-		Candidates: []ta.Candidate{{Tech: "kafka", Label: "Kafka"}},
+		Key: repoKey{Owner: "c", Repo: "d"},
+		Val: []ta.Candidate{{Tech: "kafka", Label: "Kafka"}},
 	})
 	if len(m.candidates) != 0 {
 		t.Fatalf("stale suggestion result should be ignored")
@@ -121,9 +120,8 @@ func TestSuggestDoneStoresCandidates(t *testing.T) {
 	m := newTestModel(t, []string{"a/b"})
 	m.suggestBusy = true
 	_, _ = m.Update(techSuggestDoneMsg{
-		Owner:      "a",
-		Repo:       "b",
-		Candidates: []ta.Candidate{{Tech: "kafka", Label: "Kafka"}},
+		Key: repoKey{Owner: "a", Repo: "b"},
+		Val: []ta.Candidate{{Tech: "kafka", Label: "Kafka"}},
 	})
 	if len(m.candidates) != 1 {
 		t.Fatalf("expected 1 stored candidate, got %d", len(m.candidates))

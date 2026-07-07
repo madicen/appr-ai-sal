@@ -8,13 +8,13 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
-	bubbledropdown "github.com/madicen/bubble-dropdown"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	langagentsstore "github.com/madicen/appr-ai-sal/internal/review/langagents"
 	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	techagentsstore "github.com/madicen/appr-ai-sal/internal/review/techagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
@@ -73,7 +73,7 @@ func (m *Model) renderControlsProfile(width int) string {
 	b.WriteString(styles.BoldStyle.Render("AI profile") + "\n")
 	cfg := m.opts.AIConfig
 	if cfg == nil || len(cfg.Profiles) == 0 {
-		m.controlsProfileDD = nil
+		m.controlsProfileDD.Clear()
 		b.WriteString(styles.DimStyle.Render("(no profiles configured — open settings)") + "\n")
 		b.WriteString(zone.Mark(zones.ControlsProfileEdit, styles.DimStyle.Render(" edit in settings (o) ")) + "\n")
 		return b.String()
@@ -91,16 +91,23 @@ func (m *Model) renderControlsProfile(width int) string {
 
 // refreshControlsProfileDropdown keeps the dropdown's options/selection in
 // sync with the AI config while the panel is closed (the active profile may
-// change via the settings tab or other paths). The component has no runtime
-// SetOptions, so it is recreated; recreation is skipped while open.
+// change via the settings tab or other paths). The shared dropdown.Host
+// recreates the component (which has no runtime SetOptions) and skips the
+// rebuild while open.
 func (m *Model) refreshControlsProfileDropdown() {
 	cfg := m.opts.AIConfig
 	if cfg == nil || len(cfg.Profiles) == 0 {
-		m.controlsProfileDD = nil
+		m.controlsProfileDD.Clear()
 		return
 	}
-	if m.controlsProfileDD != nil && m.controlsProfileDD.Open() {
-		return
+	if m.controlsProfileDD == nil {
+		m.controlsProfileDD = dropdown.New("profile")
+		// Coordinates are absolute (the panel is composited at the root),
+		// so no ContentTop offset is needed.
+		m.controlsProfileDD.OnSelect = func(idx int) tea.Cmd {
+			m.applyControlsProfileSelection(idx)
+			return nil
+		}
 	}
 	names := make([]string, len(cfg.Profiles))
 	activeIdx := 0
@@ -110,36 +117,19 @@ func (m *Model) refreshControlsProfileDropdown() {
 			activeIdx = i
 		}
 	}
-	d := bubbledropdown.New(
-		bubbledropdown.WithOptions(names),
-		bubbledropdown.WithInitialIndex(activeIdx),
-		bubbledropdown.WithPlaceholder("profile"),
-	)
-	d.SetZoneManager(zone.DefaultManager)
-	m.controlsProfileDD = d
+	m.controlsProfileDD.Rebuild(names, activeIdx)
 }
 
 // controlsProfileDropdownOpen reports whether the controls-pane profile
 // dropdown panel is currently displayed.
 func (m *Model) controlsProfileDropdownOpen() bool {
-	return m.controlsProfileDD != nil && m.controlsProfileDD.Open()
+	return m.controlsProfileDD.Open()
 }
 
-// forwardControlsProfileDropdown routes msg to the dropdown and, when the
-// selection changes, applies it as the new active profile. Coordinates are
-// absolute screen space (the panel is composited at the root), so no offset
-// translation is needed.
+// forwardControlsProfileDropdown routes msg to the dropdown; the Host applies
+// a selection change as the new active profile via its OnSelect callback.
 func (m *Model) forwardControlsProfileDropdown(msg tea.Msg) tea.Cmd {
-	if m.controlsProfileDD == nil {
-		return nil
-	}
-	prev := m.controlsProfileDD.SelectedIndex()
-	updated, cmd := m.controlsProfileDD.Update(msg)
-	m.controlsProfileDD = updated
-	if sel := m.controlsProfileDD.SelectedIndex(); sel != prev {
-		m.applyControlsProfileSelection(sel)
-	}
-	return cmd
+	return m.controlsProfileDD.Forward(msg)
 }
 
 // handleControlsProfileResult applies an ItemChosenMsg / ItemCanceledMsg to
@@ -168,20 +158,14 @@ func (m *Model) applyControlsProfileSelection(idx int) {
 // recent bubblezone scan while closed and frozen while open (the layout does
 // not move during a selection), so the panel anchors to the trigger.
 func (m *Model) overlayControlsProfile(main string) string {
-	dd := m.controlsProfileDD
-	if dd == nil {
+	if !m.controlsProfileDD.Built() {
 		return main
 	}
-	if z := zone.Get(zones.ControlsProfileDD); z != nil && !dd.Open() {
+	if z := zone.Get(zones.ControlsProfileDD); z != nil && !m.controlsProfileDD.Open() {
 		m.controlsProfileDDRow = z.StartY
 		m.controlsProfileDDCol = z.StartX
 	}
-	if !dd.Open() {
-		return main
-	}
-	tw, th := dd.TriggerSize()
-	dd.SetBounds(m.controlsProfileDDRow, m.controlsProfileDDCol, tw, th)
-	return dd.ViewWithOverlay(main, m.width, m.height)
+	return m.controlsProfileDD.Composite(main, m.controlsProfileDDRow, m.controlsProfileDDCol, m.width, m.height)
 }
 
 func (m *Model) renderControlsAgents(width int) string {
