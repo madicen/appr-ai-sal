@@ -1,4 +1,4 @@
-package review
+package ai
 
 import (
 	"context"

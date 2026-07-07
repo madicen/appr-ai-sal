@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 )
 
@@ -22,16 +23,11 @@ import (
 //go:embed prompts/lang-generator.md
 var promptFS embed.FS
 
-// CompleteFunc runs LLM inference. Callers pass review.Complete here;
-// the indirection lets this package stay leaf-level in the import graph
-// (the runner imports us; we never import the runner).
-type CompleteFunc func(ctx context.Context, cfg *aiconfig.Config, system, user, worktree string) (string, error)
-
 // GenerateOpts collects inputs for a single language brief regeneration.
 type GenerateOpts struct {
 	AICfg    *aiconfig.Config
 	Language Language
-	Complete CompleteFunc
+	Complete ai.CompleteFunc
 	// Worktree is optional; some backends (Claude) want it set so the
 	// CLI runs in a writable directory. Empty is fine — a temp dir is
 	// created and cleaned up automatically.

@@ -19,6 +19,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	la "github.com/madicen/appr-ai-sal/internal/review/langagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
@@ -32,7 +33,7 @@ type Opts struct {
 	// Complete runs LLM inference. The root TUI passes review.Complete
 	// here; the indirection keeps this package free of any review
 	// dependency.
-	Complete la.CompleteFunc
+	Complete ai.CompleteFunc
 	// PRLanguages, when non-empty, scopes the tab to ONLY those
 	// languages — the rationale being "you opened this from a PR, so
 	// only the languages that PR exercises are relevant right now."
@@ -60,7 +61,7 @@ type Model struct {
 	contentW int
 
 	aiCfg    *aiconfig.Config
-	complete la.CompleteFunc
+	complete ai.CompleteFunc
 
 	// scope is the PR-derived language set. When non-nil, the tab
 	// renders rows ONLY for these languages (scoped mode). When nil,
@@ -69,8 +70,8 @@ type Model struct {
 	// empty scope means "the PR touches zero languages we recognise"
 	// — we still want to render a scoped header in that case so the
 	// user sees we noticed the PR, just with no rows.
-	scope    []la.Language
-	prLabel  string
+	scope   []la.Language
+	prLabel string
 
 	// rows is the displayable row set, rebuilt whenever scope or
 	// cache change. Status (cached / stale / missing) is derived
@@ -477,7 +478,7 @@ func loadCacheCmd() tea.Cmd {
 	}
 }
 
-func regenerateCmd(cfg *aiconfig.Config, complete la.CompleteFunc, lang, refLang la.Language, refBody string) tea.Cmd {
+func regenerateCmd(cfg *aiconfig.Config, complete ai.CompleteFunc, lang, refLang la.Language, refBody string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()

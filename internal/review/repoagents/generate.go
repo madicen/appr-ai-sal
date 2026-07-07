@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review/repocontext"
@@ -19,11 +20,6 @@ import (
 
 //go:embed all:prompts
 var promptFS embed.FS
-
-// CompleteFunc runs LLM inference. Callers pass review.Complete here; the
-// indirection avoids an import cycle (review needs to import repoagents to
-// load briefs at review time).
-type CompleteFunc func(ctx context.Context, cfg *aiconfig.Config, system, user, worktree string) (string, error)
 
 // HistoryFetcher returns a markdown review-history digest for owner/repo
 // (capped to maxBytes). Pass gh.BuildReviewHistoryDigest. May be nil — in
@@ -38,14 +34,14 @@ type PathHistoryFetcher func(ctx context.Context, owner, repo string) (string, e
 
 // GenerateOpts collects inputs for a single agent regeneration.
 type GenerateOpts struct {
-	AICfg     *aiconfig.Config
-	RC        *repoconfig.Config
-	Owner     string
-	Repo      string
-	Worktree  string // optional; LocalRoot or temp dir is used when empty
+	AICfg      *aiconfig.Config
+	RC         *repoconfig.Config
+	Owner      string
+	Repo       string
+	Worktree   string // optional; LocalRoot or temp dir is used when empty
 	Specialist string
-	Complete  CompleteFunc
-	History   HistoryFetcher // optional
+	Complete   ai.CompleteFunc
+	History    HistoryFetcher // optional
 	// PathHistory returns repo-wide PR-touch evidence (testing and docs only).
 	// Skipped when nil or specialist is not "testing" / "docs".
 	PathHistory PathHistoryFetcher

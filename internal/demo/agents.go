@@ -15,8 +15,8 @@ import (
 // don't have time to scroll through walls of text — but realistic
 // enough that the rendered "fresh" tab shows useful content.
 //
-// Signature matches review.CompleteFunc / repoagents.CompleteFunc /
-// langagents.CompleteFunc / techagents.CompleteFunc (all identical).
+// Signature matches the shared ai.CompleteFunc that review.Complete and the
+// repo / lang / tech agent generators all use.
 func FakeComplete(ctx context.Context, cfg *aiconfig.Config, system, user, worktree string) (string, error) {
 	// Sleep so the regen-all flow shows the in-progress chip for a beat
 	// instead of snapping to "fresh" on the next render. Cancellable so

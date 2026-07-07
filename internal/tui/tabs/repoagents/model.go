@@ -22,6 +22,7 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 	bubbledropdown "github.com/madicen/bubble-dropdown"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	ra "github.com/madicen/appr-ai-sal/internal/review/repoagents"
@@ -35,7 +36,7 @@ type Opts struct {
 	RC           *repoconfig.Config
 	Width        int
 	BodyHeight   int
-	Complete     ra.CompleteFunc       // required: typically review.Complete
+	Complete     ai.CompleteFunc       // required: typically review.Complete
 	History      ra.HistoryFetcher     // optional: typically gh.BuildReviewHistoryDigest
 	PathHistory  ra.PathHistoryFetcher // optional: feeds the testing/docs generator with path-history evidence
 	InitialRepos []string              // owner/repo discovered from the loaded PR list (lowercased)
@@ -69,7 +70,7 @@ type Model struct {
 
 	aiCfg       *aiconfig.Config
 	rc          *repoconfig.Config
-	complete    ra.CompleteFunc
+	complete    ai.CompleteFunc
 	history     ra.HistoryFetcher
 	pathHistory ra.PathHistoryFetcher
 
@@ -790,7 +791,7 @@ func (m *Model) commitAddTech() tea.Cmd {
 	m.statusMsg = fmt.Sprintf("generating %s/%s · tech %s …", owner, repo, canonical)
 	return tea.Batch(
 		func() tea.Msg { return techRegenStartedMsg{Owner: owner, Repo: repo, Tech: canonical} },
-		regenerateTechCmd(ta.CompleteFunc(m.complete), nil, m.aiCfg, m.rc, owner, repo, canonical, rawName, seed),
+		regenerateTechCmd(m.complete, nil, m.aiCfg, m.rc, owner, repo, canonical, rawName, seed),
 	)
 }
 
@@ -1010,7 +1011,7 @@ func loadAgentsCmd(owner, repo string) tea.Cmd {
 	}
 }
 
-func regenerateCmd(complete ra.CompleteFunc, history ra.HistoryFetcher, pathHistory ra.PathHistoryFetcher, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo, specialist string) tea.Cmd {
+func regenerateCmd(complete ai.CompleteFunc, history ra.HistoryFetcher, pathHistory ra.PathHistoryFetcher, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo, specialist string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -1069,7 +1070,7 @@ func techBusyKey(owner, repo, tech string) string {
 	return owner + "/" + repo + "|tech:" + ta.CanonicalTech(tech)
 }
 
-func regenerateTechCmd(complete ta.CompleteFunc, history ta.HistoryFetcher, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo, tech, label, seed string) tea.Cmd {
+func regenerateTechCmd(complete ai.CompleteFunc, history ta.HistoryFetcher, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo, tech, label, seed string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -1161,7 +1162,7 @@ func (m *Model) startRegenerateTech(tech string) tea.Cmd {
 	m.err = nil
 	return tea.Batch(
 		func() tea.Msg { return techRegenStartedMsg{Owner: owner, Repo: repo, Tech: canonical} },
-		regenerateTechCmd(ta.CompleteFunc(m.complete), nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
+		regenerateTechCmd(m.complete, nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
 	)
 }
 
@@ -1202,11 +1203,11 @@ func (m *Model) startSuggestTechs() tea.Cmd {
 	m.statusMsg = fmt.Sprintf("analyzing %s/%s for technologies …", owner, repo)
 	return tea.Batch(
 		func() tea.Msg { return techSuggestStartedMsg{Owner: owner, Repo: repo} },
-		suggestTechsCmd(ta.CompleteFunc(m.complete), m.aiCfg, m.rc, owner, repo, existing),
+		suggestTechsCmd(m.complete, m.aiCfg, m.rc, owner, repo, existing),
 	)
 }
 
-func suggestTechsCmd(complete ta.CompleteFunc, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo string, existing []string) tea.Cmd {
+func suggestTechsCmd(complete ai.CompleteFunc, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo string, existing []string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -1286,7 +1287,7 @@ func (m *Model) generateApprovedCmd() tea.Cmd {
 		m.busy[techBusyKey(owner, repo, canonical)] = true
 		cmds = append(cmds,
 			func() tea.Msg { return techRegenStartedMsg{Owner: owner, Repo: repo, Tech: canonical} },
-			regenerateTechCmd(ta.CompleteFunc(m.complete), nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
+			regenerateTechCmd(m.complete, nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
 		)
 	}
 	m.err = nil

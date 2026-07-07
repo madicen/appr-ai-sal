@@ -16,16 +16,13 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 )
 
 //go:embed prompts
 var promptFS embed.FS
-
-// CompleteFunc is the LLM call. Callers pass review.Complete to avoid an
-// import cycle (review imports this package).
-type CompleteFunc func(ctx context.Context, cfg *aiconfig.Config, system, user, worktree string) (string, error)
 
 // Verdict is the witness's classification of one finding.
 type Verdict string
@@ -96,7 +93,7 @@ type PrWideRef struct {
 // LLM call. The agent is invoked even when evidence is empty; the prompt
 // instructs the model to emit `unknown` verdicts in that case so the
 // arbiter still has a row per finding.
-func Run(ctx context.Context, cfg *aiconfig.Config, complete CompleteFunc, worktree string, pr PrWideRef, findings []FindingInput, evidence string) Result {
+func Run(ctx context.Context, cfg *aiconfig.Config, complete ai.CompleteFunc, worktree string, pr PrWideRef, findings []FindingInput, evidence string) Result {
 	if len(findings) == 0 {
 		return Result{Witnesses: nil}
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/applog"
 	"github.com/madicen/appr-ai-sal/internal/gh"
@@ -34,10 +35,12 @@ func rewriteReviewIntroForDiffOnly(userPrompt string) string {
 	return s
 }
 
-// augmentPromptsForProvider prepends guidance for backends that cannot use Claude's repo tools.
+// augmentPromptsForProvider prepends guidance for backends that cannot use
+// repository tools. It branches on the provider's capability (repoTools), not
+// on the provider enum, so a new tool-capable backend needs no change here.
 // hasRepoContext should be true when the user message includes a repository-context section (specialists omit it today).
-func augmentPromptsForProvider(p aiconfig.Provider, systemPrompt, userPrompt string, hasRepoContext bool) (string, string) {
-	if p == aiconfig.ProviderClaude {
+func augmentPromptsForProvider(repoTools bool, systemPrompt, userPrompt string, hasRepoContext bool) (string, string) {
+	if repoTools {
 		return systemPrompt, userPrompt
 	}
 	userPrompt = rewriteReviewIntroForDiffOnly(userPrompt)
@@ -71,7 +74,7 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 
 	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, langSection, techSection)
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
-	systemPrompt, userPrompt = augmentPromptsForProvider(cfg.Provider, systemPrompt, userPrompt, hasContext)
+	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, hasContext)
 
 	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
 	if err != nil {
@@ -203,7 +206,7 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	systemPrompt += vibeCoachSystemAddendum
 
 	userPrompt := buildVibeCoachUserPrompt(pr, specialists, cfg.ReviewStrictness, repoContext)
-	systemPrompt, userPrompt = augmentPromptsForProvider(cfg.Provider, systemPrompt, userPrompt, strings.TrimSpace(repoContext) != "")
+	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, strings.TrimSpace(repoContext) != "")
 
 	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
 	if err != nil {

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review/repocontext"
@@ -19,11 +20,6 @@ import (
 
 //go:embed all:prompts
 var promptFS embed.FS
-
-// CompleteFunc runs LLM inference. Callers pass review.Complete here; the
-// indirection avoids an import cycle (review needs to import techagents to
-// load briefs at review time).
-type CompleteFunc func(ctx context.Context, cfg *aiconfig.Config, system, user, worktree string) (string, error)
 
 // HistoryFetcher returns a markdown review-history digest for owner/repo
 // (capped to maxBytes). Pass gh.BuildReviewHistoryDigest. May be nil — in
@@ -43,7 +39,7 @@ type GenerateOpts struct {
 	Tech     string
 	Label    string
 	Seed     string
-	Complete CompleteFunc
+	Complete ai.CompleteFunc
 	History  HistoryFetcher // optional
 }
 

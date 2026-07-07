@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 )
@@ -72,7 +73,7 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 	userPrompt := buildPRAgentUserPrompt(name, pr, diff, in, cfg.ReviewStrictness)
 	// PR agents do not inject repo/lang/tech briefs; pass hasRepoContext=false
 	// so non-Claude backends get the diff-only tooling hint.
-	systemPrompt, userPrompt = augmentPromptsForProvider(cfg.Provider, systemPrompt, userPrompt, false)
+	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, false)
 
 	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
 	if err != nil {

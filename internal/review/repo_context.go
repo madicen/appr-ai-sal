@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
@@ -200,7 +201,7 @@ If (A) is empty or minimal, say so and focus on what the diff shows.
 Ground claims in the inputs only—do not invent policies. No JSON. About 200–400 words.`
 
 	user := buildContextVersusChangeUser(pr, diff, repoBlock)
-	sysAug, userAug := augmentPromptsForProvider(aiCfg.Provider, system, user, true)
+	sysAug, userAug := augmentPromptsForProvider(ai.CapabilitiesFor(aiCfg).RepoTools, system, user, true)
 
 	out, err := Complete(ctx2, aiCfg, sysAug, userAug, worktree)
 	if err != nil {

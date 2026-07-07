@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review/repocontext"
@@ -41,7 +42,7 @@ type SuggestOpts struct {
 	Owner    string
 	Repo     string
 	Worktree string // optional; LocalRoot is used when empty
-	Complete CompleteFunc
+	Complete ai.CompleteFunc
 	Existing []string
 }
 

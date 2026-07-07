@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
@@ -484,7 +485,7 @@ func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, 
 		return ar
 	}
 	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses)
-	sys, user = augmentPromptsForProvider(cfg.Provider, sys, user, true)
+	sys, user = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, sys, user, true)
 	out, err := Complete(ctx, cfg, sys, user, worktree)
 	if err != nil {
 		ar.Err = err

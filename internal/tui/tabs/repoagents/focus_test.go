@@ -16,9 +16,9 @@ func newFocusTestModel(t *testing.T, opts Opts) *Model {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("APPR_AI_SAL_CACHE_DIR", "")
 	if opts.Complete == nil {
-		opts.Complete = ra.CompleteFunc(func(_ context.Context, _ *aiconfig.Config, _, _, _ string) (string, error) {
+		opts.Complete = func(_ context.Context, _ *aiconfig.Config, _, _, _ string) (string, error) {
 			return "stub-context", nil
-		})
+		}
 	}
 	if opts.AICfg == nil {
 		opts.AICfg = aiconfig.DefaultConfig()

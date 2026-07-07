@@ -7,16 +7,14 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 )
 
-// completeFunc is the inference entrypoint the repair pass calls. It defaults
-// to Complete; tests swap in a fake so no real backend is hit.
-type completeFunc func(ctx context.Context, cfg *aiconfig.Config, systemPrompt, userPrompt, worktree string) (string, error)
-
 // repairComplete is indirected through a package var purely so tests can
-// inject a deterministic completer. Production always uses Complete.
-var repairComplete completeFunc = Complete
+// inject a deterministic completer. Production always uses Complete. Its type
+// is the shared ai.CompleteFunc — no per-package inference typedef.
+var repairComplete ai.CompleteFunc = Complete
 
 // repairItem is one finding handed to the suggestion-repair model: the
 // reviewer's prose plus the numbered post-image lines of the hunk it anchors

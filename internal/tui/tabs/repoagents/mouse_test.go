@@ -64,7 +64,7 @@ func newTestModel(t *testing.T, repos []string) *Model {
 		RC:           repoconfig.Default(),
 		Width:        140,
 		BodyHeight:   30,
-		Complete:     ra.CompleteFunc(complete),
+		Complete:     complete,
 		InitialRepos: repos,
 	})
 }

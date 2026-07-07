@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/demo"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
@@ -76,11 +77,11 @@ func (m *Model) openRepoAgents(focusRepo string, autoRegen bool) tea.Cmd {
 	// so the recording doesn't shell out to gh / hit a real model. The
 	// fake Complete sleeps briefly so the regen flow's "in progress"
 	// chip is visible on the resulting GIF.
-	complete := repoagentsstore.CompleteFunc(review.Complete)
+	complete := ai.CompleteFunc(review.Complete)
 	history := repoagentsstore.HistoryFetcher(gh.BuildReviewHistoryDigest)
 	pathHistory := repoagentsstore.PathHistoryFetcher(pathHistoryFetcher)
 	if m.opts.Demo {
-		complete = repoagentsstore.CompleteFunc(demo.FakeComplete)
+		complete = ai.CompleteFunc(demo.FakeComplete)
 		history = repoagentsstore.HistoryFetcher(noopReviewHistory)
 		pathHistory = repoagentsstore.PathHistoryFetcher(noopPathHistory)
 	}
@@ -127,9 +128,9 @@ func noopPathHistory(ctx context.Context, owner, repo string) (string, error) {
 func (m *Model) openLangAgents() tea.Cmd {
 	m.langAgentsPrevMode = m.mode
 	m.mode = modeLangAgents
-	complete := langagentsstore.CompleteFunc(review.Complete)
+	complete := ai.CompleteFunc(review.Complete)
 	if m.opts.Demo {
-		complete = langagentsstore.CompleteFunc(demo.FakeComplete)
+		complete = ai.CompleteFunc(demo.FakeComplete)
 	}
 	opts := langagentstui.Opts{
 		AICfg:      m.opts.AIConfig,

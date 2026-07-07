@@ -45,7 +45,7 @@ func clickFixture(t *testing.T) *Model {
 	}
 	m := New(Opts{
 		AICfg:       aiconfig.DefaultConfig(),
-		Complete:    la.CompleteFunc(complete),
+		Complete:    complete,
 		PRLanguages: []la.Language{"go", "python"},
 		Width:       120,
 		BodyHeight:  30,

@@ -561,7 +561,7 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 	_ = stageWithRetry(ctx, runCfg, "convention-witness", notify, func(sctx context.Context) error {
 		wctx, cancel := context.WithTimeout(applog.WithStage(sctx, "convention-witness"), perStageBudget(runCfg))
 		defer cancel()
-		res = conventionwitness.Run(wctx, runCfg, conventionwitness.CompleteFunc(Complete), worktree,
+		res = conventionwitness.Run(wctx, runCfg, Complete, worktree,
 			conventionwitness.PrWideRef{Repository: pr.Repository, Number: pr.Number, Title: pr.Title},
 			inputs, evidence)
 		return res.Err
