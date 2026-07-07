@@ -33,6 +33,62 @@ func TestParseRepoRootsLinesErrors(t *testing.T) {
 	}
 }
 
+func TestDiffBudgetKnobsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repo-context.json")
+	cfg := Default()
+	cfg.DiffElisionGlobs = []string{"*.snap", "generated/"}
+	cfg.DiffByteCap = 123456
+	cfg.DiffPerFileLineCap = 321
+	if err := Save(cfg, path); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("APPR_AI_SAL_CONFIG_DIR", dir)
+	got, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got.DiffElisionGlobs, []string{"*.snap", "generated/"}) {
+		t.Errorf("globs = %#v, want [*.snap generated/]", got.DiffElisionGlobs)
+	}
+	if got.DiffByteCap != 123456 {
+		t.Errorf("byte cap = %d, want 123456", got.DiffByteCap)
+	}
+	if got.DiffPerFileLineCap != 321 {
+		t.Errorf("per-file cap = %d, want 321", got.DiffPerFileLineCap)
+	}
+}
+
+func TestDiffElisionGlobsOrDefault(t *testing.T) {
+	// Unset → baked-in defaults (non-empty, includes go.sum).
+	c := Default()
+	def := c.DiffElisionGlobsOrDefault()
+	if len(def) == 0 {
+		t.Fatal("default globs should be non-empty")
+	}
+	found := false
+	for _, g := range def {
+		if g == "go.sum" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("default globs should include go.sum, got %v", def)
+	}
+	// Set → the override, verbatim.
+	c.DiffElisionGlobs = []string{"only.this"}
+	if got := c.DiffElisionGlobsOrDefault(); len(got) != 1 || got[0] != "only.this" {
+		t.Errorf("override globs = %v, want [only.this]", got)
+	}
+	// Negative caps normalize to 0 (= use default), never negative/unbounded.
+	c.DiffByteCap = -5
+	c.DiffPerFileLineCap = -9
+	c.Normalize()
+	if c.DiffByteCap != 0 || c.DiffPerFileLineCap != 0 {
+		t.Errorf("negative caps should normalize to 0, got byte=%d line=%d", c.DiffByteCap, c.DiffPerFileLineCap)
+	}
+}
+
 func TestApplyParallelExecutionEnv(t *testing.T) {
 	c := Default()
 	t.Setenv("APPR_AI_SAL_PARALLEL_SPECIALISTS", "true")

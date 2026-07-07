@@ -131,6 +131,27 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// (only gh/git fetches), so no call escapes the cap.
 		ctx = ai.WithConcurrencyLimit(ctx, rc.MaxConcurrentInferenceOrDefault())
 
+		// R3: shape the diff BEFORE it is inlined into any prompt. The budgeter
+		// drops lockfiles/vendored/generated/minified/binary files (manifest
+		// entry only), applies a per-file line cap, and enforces a conservative
+		// per-provider whole-diff byte cap so a multi-megabyte PR can never blow
+		// the provider context window / trigger a 400. A diff that fits under
+		// all caps with nothing to elide passes through byte-identical, so
+		// ordinary small PRs are unaffected. The RAW diff is kept for the TUI /
+		// GitHub (final.Diff) — surviving lines keep their real line numbers, so
+		// findings the model files against the shaped diff still anchor
+		// correctly against the full diff.
+		shapedDiff, budgetReport := budgetDiff(diff, newBudgetConfig(rc, runCfg))
+		if budgetReport.Truncated {
+			applog.Info("review diff budgeted",
+				"ref", ref.String(),
+				"original_bytes", budgetReport.OriginalBytes,
+				"shaped_bytes", budgetReport.ShapedBytes,
+				"elided", len(budgetReport.Elided),
+				"truncated", len(budgetReport.Truncations))
+			out <- Progress{Stage: "diff", Detail: "warning: " + budgetReport.DisclosureLine()}
+		}
+
 		// PR-level agents (description / checks / discussion / scope) read the
 		// PR's CI checks, review threads, and conversation. Fetch those signals
 		// in the background so they overlap with repo-context composition and the
@@ -211,7 +232,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				cvCh <- cvOutcome{}
 				return
 			}
-			s, err := SummarizeContextVersusChange(applog.WithStage(ctx, "context-summary"), runCfg, pr, diff, repoCtx, worktree)
+			s, err := SummarizeContextVersusChange(applog.WithStage(ctx, "context-summary"), runCfg, pr, shapedDiff, repoCtx, worktree)
 			cvCh <- cvOutcome{text: s, err: err}
 		}()
 
@@ -254,19 +275,21 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			go func() {
 				defer prWG.Done()
 				prData := <-prDataCh
-				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, diff, prData, out))
+				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, out))
 			}()
 		}
 
 		// Specialists: sequential by default (repo-context.json parallel_specialists),
 		// or parallel when configured / env override — see runSpecialistsPhase.
-		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, diff, perAgent, prEvidence, langSection, techSection, out)
+		// They receive the shaped diff (R3) so no single call can overflow the
+		// provider context window.
+		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, perAgent, prEvidence, langSection, techSection, out)
 
 		if prParallel {
 			prWG.Wait()
 		} else if prAgentsEnabled {
 			prData := <-prDataCh
-			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, diff, prData, out))
+			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, out))
 		}
 
 		cv := <-cvCh
@@ -298,6 +321,13 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			Specialists:                allSpecialists,
 			RepositoryContext:          repoBlock,
 			ContextVersusChangeSummary: cvSummary,
+		}
+		// Carry the diff-budget report so the rendered body can disclose that
+		// the review ran on a truncated diff (R3). Only set when shaping
+		// actually happened; nil means the full diff was reviewed.
+		if budgetReport.Truncated {
+			br := budgetReport
+			final.DiffBudget = &br
 		}
 
 		if skipDownstream {

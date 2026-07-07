@@ -257,12 +257,14 @@ func (d *Draft) RenderBody() string {
 		// case explains why instead of looking content-free.
 		return "## appr-ai-sal summary\n\n" +
 			"✅ **No issues found by any agent** — every configured specialist reviewed this diff and produced no actionable feedback to leave on the diff or in a written summary. It recommends Approving this pull request.\n\n" +
+			d.diffTruncationNote() +
 			"> [!CAUTION]\n" +
 			"> The review is still manually performed by the person using appr-ai-sal. It is **not** a replacement for manual review.\n\n" +
 			"> **AI disclosure:** This summary was produced by **appr-ai-sal** (automated AI tools).\n"
 	}
 	var b string
 	b += "## appr-ai-sal summary\n\n"
+	b += d.diffTruncationNote()
 	b += "> **AI disclosure:** This summary was produced by **appr-ai-sal** (automated AI tools) to assist the human reviewer. "
 	b += "**Line-level feedback** appears as **inline comments on the diff** where agents cited paths and lines. "
 	b += "This top-level comment summarises that feedback and offers optional paste-ready AI instructions for the author.\n\n"
@@ -372,6 +374,22 @@ func (d *Draft) RenderBody() string {
 	}
 
 	return b
+}
+
+// diffTruncationNote renders the R3 truncation disclosure as a GitHub callout
+// when the diff budgeter shaped the diff for this run, or "" otherwise. It is
+// surfaced near the top of the review body so a PR author reading the summary
+// knows the review did not see the full diff (which files were elided /
+// truncated).
+func (d *Draft) diffTruncationNote() string {
+	if d == nil || d.DiffBudget == nil || !d.DiffBudget.Truncated {
+		return ""
+	}
+	note := d.DiffBudget.DisclosureLine()
+	if note == "" {
+		return ""
+	}
+	return "> [!WARNING]\n> " + note + ". These files were not sent to the review agents; review them manually if they matter.\n\n"
 }
 
 func repoExpertPanelSection(d *Draft) string {

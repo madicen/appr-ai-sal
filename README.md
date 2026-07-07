@@ -466,6 +466,23 @@ rules as `ai.json` / `$APPR_AI_SAL_CONFIG_DIR`):
 | `parallel_specialists` | Run the code-review specialists concurrently. **Default `true`** — set explicitly to `false` to serialize. |
 | `parallel_pr_agents` | Run the PR-level agents (description / checks / discussion / scope) concurrently with, and among, themselves. **Default `true`** — set explicitly to `false` to serialize after the specialists. |
 | `max_concurrent_inference` | Client-side cap on how many inference calls run at once across the **whole run** (specialists, PR agents, the repair pass, arbiter/witness). Default 3; any value ≤ 0 resolves to 3 (never unlimited). This bound is what makes the parallel defaults above safe against provider rate limits. |
+| `diff_elision_globs` | Override the set of file globs the **diff budgeter** drops from the diff before it is inlined into review prompts (each dropped file becomes a one-line manifest entry the agents still see). When unset, sensible defaults apply: `*.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`, `Cargo.lock`, `composer.lock`, `Gemfile.lock`, `poetry.lock`, `vendor/`, `*_generated*`, `*.min.js`, `*.min.css` (plus any binary file). Matching is basename-based for slash-free patterns, prefix-based for patterns ending in `/`, and full-path otherwise. |
+| `diff_byte_cap` | Override the whole-diff byte budget the diff budgeter enforces before inlining the diff. `0` (unset) resolves to a conservative per-provider default (Gemini 768 KiB, Claude 512 KiB, Ollama / OpenAI-compatible 256 KiB) chosen so a large PR never overflows the provider context window / triggers a 400. When the cap is hit, trailing files/hunks are elided and disclosed. |
+| `diff_per_file_line_cap` | Override the per-file unified-diff line cap (default 1500). The **tail** of any single file over the cap is elided with a `…N lines omitted` marker; leading lines keep their real line numbers so inline findings still anchor correctly. `0` (unset) uses the default. |
+
+**Diff budgeting & truncation disclosure (R3):** the entire diff is no longer
+inlined uncapped into every LLM call. Before any prompt is built, the diff
+budgeter (1) drops non-review-worthy files (lockfiles, vendored trees,
+generated code, minified assets, binaries — see `diff_elision_globs`) to a
+one-line manifest, (2) applies the per-file line cap, and (3) enforces the
+whole-diff byte cap, eliding trailing files/hunks once the budget is exhausted.
+A diff that fits under all caps with nothing to elide is passed through
+**unchanged**, so ordinary PRs are unaffected. When shaping happens it is fully
+disclosed: a `diff: warning: review ran on a truncated diff: …` progress line
+in the TUI, and a `> [!WARNING]` callout in the posted review body listing the
+elided/truncated files. The raw diff (with real line numbers) is what the TUI
+and GitHub see, so findings the agents file against the shaped diff still anchor
+to the correct lines.
 
 **Security / caps:** only a fixed allowlist of small convention paths is read;
 paths under `.git`, `vendor`, `.env*`, key-like names, and similar are skipped;

@@ -57,6 +57,12 @@ type Draft struct {
 	// body despite the arbiter demoting them below the floor. Inline demoted
 	// findings use the opt-in card flow instead and are not tracked here.
 	UserPostDemotedKeys map[string]struct{} `json:"-"`
+	// DiffBudget records how the R3 diff budgeter shaped the diff before it was
+	// inlined into specialist / PR-agent prompts. Nil means the full diff was
+	// reviewed; when non-nil (and Truncated) RenderBody discloses that the
+	// review ran on a truncated diff so PR authors know it didn't see
+	// everything.
+	DiffBudget *BudgetReport `json:"-"`
 }
 
 // severityFloor returns the strictness floor recorded on the Draft, or

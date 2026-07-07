@@ -21,6 +21,40 @@ const defaultRepoExpertReviewPRs = 8
 const defaultRepoExpertMaxBytes = 12000
 const defaultRepoExpertReviewTTL = 6 * time.Hour
 
+// defaultDiffElisionGlobs is the baked-in glob set the R3 diff budgeter uses
+// to drop non-review-worthy files (lockfiles, vendored trees, generated code,
+// minified assets) from the diff before it is inlined into review prompts.
+// Each dropped file is replaced by a one-line manifest entry so the model —
+// and the reviewer — still know it changed. Users can override the list via
+// repo-context.json's diff_elision_globs; when that key is unset these apply.
+//
+// Matching rules (see review.matchDiffGlob): a pattern ending in "/" is a
+// directory prefix (e.g. "vendor/"); a pattern containing "/" is matched
+// against the full path; a pattern with neither is matched against the file's
+// basename. So "*_generated*" matches "pkg/foo_generated.go" (basename match)
+// even though path.Match's "*" does not cross a slash.
+var defaultDiffElisionGlobs = []string{
+	"*.lock",
+	"package-lock.json",
+	"yarn.lock",
+	"pnpm-lock.yaml",
+	"go.sum",
+	"Cargo.lock",
+	"composer.lock",
+	"Gemfile.lock",
+	"poetry.lock",
+	"vendor/",
+	"*_generated*",
+	"*.min.js",
+	"*.min.css",
+}
+
+// DefaultDiffElisionGlobs returns a copy of the baked-in elision glob set so
+// callers can read it without mutating the package default.
+func DefaultDiffElisionGlobs() []string {
+	return append([]string(nil), defaultDiffElisionGlobs...)
+}
+
 // Config controls repository context harvesting and caching.
 type Config struct {
 	// RepoRoots maps "owner/repo" (case-insensitive keys normalized to lower) to an absolute local clone path used to supplement missing convention files.
@@ -97,6 +131,24 @@ type Config struct {
 	// discussion, scope) that evaluate the pull request as a whole and post
 	// their feedback alongside the code specialists. Default true.
 	PRAgents bool `json:"pr_agents,omitempty"`
+	// DiffElisionGlobs overrides the R3 diff budgeter's set of globs for files
+	// dropped from the diff before it is inlined into review prompts (each
+	// dropped file becomes a one-line manifest entry). When empty the baked-in
+	// defaultDiffElisionGlobs apply — see DefaultDiffElisionGlobs. Matching is
+	// basename-based for slash-free patterns, prefix-based for patterns ending
+	// in "/", and full-path for the rest.
+	DiffElisionGlobs []string `json:"diff_elision_globs,omitempty"`
+	// DiffByteCap overrides the whole-diff byte budget the R3 budgeter enforces
+	// before inlining the diff into a prompt. 0 (unset) resolves to a
+	// conservative per-provider default so a large PR never blows the provider
+	// context window / triggers a 400. Files/hunks beyond the cap are elided
+	// and disclosed.
+	DiffByteCap int `json:"diff_byte_cap,omitempty"`
+	// DiffPerFileLineCap overrides the R3 budgeter's per-file unified-diff line
+	// cap; the tail of any file exceeding it is elided with a "…N lines
+	// omitted" marker (leading lines keep their real line numbers so inline
+	// findings still anchor correctly). 0 (unset) resolves to the default.
+	DiffPerFileLineCap int `json:"diff_per_file_line_cap,omitempty"`
 }
 
 // Default returns defaults suitable for merging.
@@ -283,6 +335,15 @@ func (c *Config) Merge(o *Config) {
 	if o.MaxConcurrentInference > 0 {
 		c.MaxConcurrentInference = o.MaxConcurrentInference
 	}
+	if len(o.DiffElisionGlobs) > 0 {
+		c.DiffElisionGlobs = append([]string(nil), o.DiffElisionGlobs...)
+	}
+	if o.DiffByteCap > 0 {
+		c.DiffByteCap = o.DiffByteCap
+	}
+	if o.DiffPerFileLineCap > 0 {
+		c.DiffPerFileLineCap = o.DiffPerFileLineCap
+	}
 	// IncludePRHistory and RepoCultureSummarize are applied in Load() only when keys appear in JSON.
 }
 
@@ -310,6 +371,26 @@ func (c *Config) normalize() {
 	// zero (which would deadlock every inference call).
 	if c.MaxConcurrentInference <= 0 {
 		c.MaxConcurrentInference = defaultMaxConcurrentInference
+	}
+	// A hostile negative cap resolves to 0 (= "use the default") rather than
+	// disabling the budget; the budgeter treats a non-positive cap as "apply
+	// the conservative default", never as "unbounded".
+	if c.DiffByteCap < 0 {
+		c.DiffByteCap = 0
+	}
+	if c.DiffPerFileLineCap < 0 {
+		c.DiffPerFileLineCap = 0
+	}
+	// Drop blank / whitespace-only globs so an empty override line can't turn
+	// into a glob that matches every basename.
+	if len(c.DiffElisionGlobs) > 0 {
+		cleaned := make([]string, 0, len(c.DiffElisionGlobs))
+		for _, g := range c.DiffElisionGlobs {
+			if g = strings.TrimSpace(g); g != "" {
+				cleaned = append(cleaned, g)
+			}
+		}
+		c.DiffElisionGlobs = cleaned
 	}
 	if c.RepoRoots == nil {
 		c.RepoRoots = map[string]string{}
@@ -370,6 +451,16 @@ func (c *Config) MaxConcurrentInferenceOrDefault() int {
 		return defaultMaxConcurrentInference
 	}
 	return c.MaxConcurrentInference
+}
+
+// DiffElisionGlobsOrDefault returns the configured diff-elision globs, or the
+// baked-in defaults when none are set. It never returns nil, so the budgeter
+// can range over the result directly.
+func (c *Config) DiffElisionGlobsOrDefault() []string {
+	if c == nil || len(c.DiffElisionGlobs) == 0 {
+		return DefaultDiffElisionGlobs()
+	}
+	return append([]string(nil), c.DiffElisionGlobs...)
 }
 
 // RepoExpertReviewTTL returns cache TTL for the review-history digest.
