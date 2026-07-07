@@ -2,11 +2,11 @@ package gh
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/madicen/appr-ai-sal/internal/applog"
 )
 
 // CheckRunAnnotation is one inline annotation attached to a CheckRun output.
@@ -47,98 +47,109 @@ type ChecksReport struct {
 	Runs        []CheckRun
 }
 
+// checksData mirrors the `data` object of graphqlChecksQuery. It is also the
+// checks slice of the fused PR-agent prefetch query, so checksReportFromData
+// converts a single commit node reused by both callers.
+type checksData struct {
+	Repository struct {
+		PullRequest struct {
+			Commits struct {
+				Nodes []checksCommitNode `json:"nodes"`
+			} `json:"commits"`
+		} `json:"pullRequest"`
+	} `json:"repository"`
+}
+
+type checksCommitNode struct {
+	Commit struct {
+		Oid               string `json:"oid"`
+		StatusCheckRollup *struct {
+			State    string `json:"state"`
+			Contexts struct {
+				PageInfo   pageInfo           `json:"pageInfo"`
+				TotalCount int                `json:"totalCount"`
+				Nodes      []checkContextNode `json:"nodes"`
+			} `json:"contexts"`
+		} `json:"statusCheckRollup"`
+	} `json:"commit"`
+}
+
+type checkContextNode struct {
+	Typename string `json:"__typename"`
+	// CheckRun fields
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	Conclusion  string `json:"conclusion"`
+	StartedAt   string `json:"startedAt"`
+	CompletedAt string `json:"completedAt"`
+	DetailsURL  string `json:"detailsUrl"`
+	Title       string `json:"title"`
+	Summary     string `json:"summary"`
+	CheckSuite  struct {
+		App struct {
+			Name string `json:"name"`
+		} `json:"app"`
+	} `json:"checkSuite"`
+	Annotations struct {
+		PageInfo pageInfo `json:"pageInfo"`
+		Nodes    []struct {
+			Path     string `json:"path"`
+			Location struct {
+				Start struct {
+					Line int `json:"line"`
+				} `json:"start"`
+			} `json:"location"`
+			Message         string `json:"message"`
+			AnnotationLevel string `json:"annotationLevel"`
+		} `json:"nodes"`
+	} `json:"annotations"`
+	// StatusContext fields
+	Context     string `json:"context"`
+	State       string `json:"state"`
+	Description string `json:"description"`
+	TargetURL   string `json:"targetUrl"`
+	CreatedAt   string `json:"createdAt"`
+}
+
 // GetChecks fetches the PR head commit's status-check rollup and the per-run
 // detail (status / conclusion / output / annotations) in one GraphQL round
 // trip. Returns a zero-value report (RollupState="") when there are no
 // checks at all — the renderer treats that as "no checks configured" rather
 // than failing.
 func GetChecks(ctx context.Context, ref Ref) (*ChecksReport, error) {
-	out, err := runGraphQL(ctx, graphqlChecksQuery, map[string]string{
+	data, err := graphQLQuery[checksData](ctx, graphqlChecksQuery, map[string]any{
 		"owner":  ref.Owner,
 		"name":   ref.Repo,
-		"number": fmt.Sprintf("%d", ref.Number),
+		"number": ref.Number,
 	})
 	if err != nil {
 		return nil, err
 	}
-	var resp struct {
-		Data struct {
-			Repository struct {
-				PullRequest struct {
-					Commits struct {
-						Nodes []struct {
-							Commit struct {
-								Oid               string `json:"oid"`
-								StatusCheckRollup *struct {
-									State    string `json:"state"`
-									Contexts struct {
-										Nodes []struct {
-											Typename string `json:"__typename"`
-											// CheckRun fields
-											Name        string `json:"name"`
-											Status      string `json:"status"`
-											Conclusion  string `json:"conclusion"`
-											StartedAt   string `json:"startedAt"`
-											CompletedAt string `json:"completedAt"`
-											DetailsURL  string `json:"detailsUrl"`
-											Title       string `json:"title"`
-											Summary     string `json:"summary"`
-											CheckSuite  struct {
-												App struct {
-													Name string `json:"name"`
-												} `json:"app"`
-											} `json:"checkSuite"`
-											Annotations struct {
-												Nodes []struct {
-													Path     string `json:"path"`
-													Location struct {
-														Start struct {
-															Line int `json:"line"`
-														} `json:"start"`
-													} `json:"location"`
-													Message         string `json:"message"`
-													AnnotationLevel string `json:"annotationLevel"`
-												} `json:"nodes"`
-											} `json:"annotations"`
-											// StatusContext fields
-											Context     string `json:"context"`
-											State       string `json:"state"`
-											Description string `json:"description"`
-											TargetURL   string `json:"targetUrl"`
-											CreatedAt   string `json:"createdAt"`
-										} `json:"nodes"`
-									} `json:"contexts"`
-								} `json:"statusCheckRollup"`
-							} `json:"commit"`
-						} `json:"nodes"`
-					} `json:"commits"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		} `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil, fmt.Errorf("parse checks response: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		msgs := make([]string, 0, len(resp.Errors))
-		for _, e := range resp.Errors {
-			msgs = append(msgs, e.Message)
-		}
-		return nil, fmt.Errorf("graphql checks: %s", strings.Join(msgs, "; "))
-	}
+	return checksReportFromData(ref, data.Repository.PullRequest.Commits.Nodes), nil
+}
+
+// checksReportFromData collapses the (last) commit node into a ChecksReport.
+// A rollup with more than the fetched page of contexts (first: 50) or
+// annotations (first: 10) is rare; paginating the nested connections is
+// overkill, so we log an explicit overflow warning (R6.3) and render what we
+// have — the failing runs the reviewer needs are already surfaced.
+func checksReportFromData(ref Ref, commitNodes []checksCommitNode) *ChecksReport {
 	report := &ChecksReport{}
-	if len(resp.Data.Repository.PullRequest.Commits.Nodes) == 0 {
-		return report, nil
+	if len(commitNodes) == 0 {
+		return report
 	}
-	commit := resp.Data.Repository.PullRequest.Commits.Nodes[len(resp.Data.Repository.PullRequest.Commits.Nodes)-1].Commit
+	commit := commitNodes[len(commitNodes)-1].Commit
 	report.HeadSHA = commit.Oid
 	if commit.StatusCheckRollup == nil {
-		return report, nil
+		return report
 	}
 	report.RollupState = strings.ToUpper(strings.TrimSpace(commit.StatusCheckRollup.State))
+	if commit.StatusCheckRollup.Contexts.PageInfo.HasNextPage {
+		applog.Warn("check contexts truncated",
+			"ref", ref.String(),
+			"fetched", len(commit.StatusCheckRollup.Contexts.Nodes),
+			"total", commit.StatusCheckRollup.Contexts.TotalCount)
+	}
 	for _, n := range commit.StatusCheckRollup.Contexts.Nodes {
 		run := CheckRun{}
 		switch n.Typename {
@@ -156,6 +167,9 @@ func GetChecks(ctx context.Context, ref Ref) (*ChecksReport, error) {
 			}
 			if t, err := time.Parse(time.RFC3339, n.CompletedAt); err == nil {
 				run.CompletedAt = t
+			}
+			if n.Annotations.PageInfo.HasNextPage {
+				applog.Warn("check annotations truncated", "ref", ref.String(), "check", n.Name)
 			}
 			for _, a := range n.Annotations.Nodes {
 				run.Annotations = append(run.Annotations, CheckRunAnnotation{
@@ -186,7 +200,7 @@ func GetChecks(ctx context.Context, ref Ref) (*ChecksReport, error) {
 	sort.SliceStable(report.Runs, func(i, j int) bool {
 		return checkSortRank(report.Runs[i]) < checkSortRank(report.Runs[j])
 	})
-	return report, nil
+	return report
 }
 
 // checkSortRank gives failing/error runs the lowest score so they bubble to
@@ -236,6 +250,8 @@ const graphqlChecksQuery = `query($owner: String!, $name: String!, $number: Int!
             statusCheckRollup {
               state
               contexts(first: 50) {
+                pageInfo { hasNextPage }
+                totalCount
                 nodes {
                   __typename
                   ... on CheckRun {
@@ -249,6 +265,7 @@ const graphqlChecksQuery = `query($owner: String!, $name: String!, $number: Int!
                     summary
                     checkSuite { app { name } }
                     annotations(first: 10) {
+                      pageInfo { hasNextPage }
                       nodes {
                         path
                         location { start { line } }

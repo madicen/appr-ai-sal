@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // APIError is a parsed view of a non-2xx response body emitted by `gh api`.
@@ -26,6 +27,11 @@ type APIError struct {
 	Comment     *ReviewComment // Inline comment we attempted to post (set by CreatePullReviewComment).
 	RawBody     string         // Original gh combined output (always populated).
 	HumanReason string         // Heuristic, user-facing explanation when we recognise the cause.
+	// RetryAfter is the delay GitHub asked us to wait before retrying, parsed
+	// from the response's Retry-After header (secondary rate limits / abuse
+	// detection). Zero when the header was absent or unparseable. Callers that
+	// implement backoff can honor this instead of guessing.
+	RetryAfter time.Duration
 }
 
 // APIErrorItem is one entry from a 4xx response's "errors" array.

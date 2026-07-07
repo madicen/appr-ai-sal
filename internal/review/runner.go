@@ -171,20 +171,16 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			prDataCh = make(chan PRAgentInput, 1)
 			go func() {
 				var in PRAgentInput
-				if checks, cerr := gh.GetChecks(ctx, ref); cerr == nil {
-					in.Checks = checks
+				// R6.1: one fused GraphQL call fetches checks + review threads
+				// + discussion (was three separate execs). On error the
+				// individual sections stay empty and the matching agent runs
+				// without that signal, matching the prior fail-open behavior.
+				if data, derr := gh.GetPRAgentData(ctx, ref); derr == nil {
+					in.Checks = data.Checks
+					in.Threads = data.Threads
+					in.Discussion = data.Discussion
 				} else {
-					out <- Progress{Stage: "pr-agent", Detail: "warning: checks fetch: " + cerr.Error()}
-				}
-				if threads, terr := gh.GetReviewThreads(ctx, ref); terr == nil {
-					in.Threads = threads
-				} else {
-					out <- Progress{Stage: "pr-agent", Detail: "warning: review-threads fetch: " + terr.Error()}
-				}
-				if disc, derr := gh.GetDiscussion(ctx, ref); derr == nil {
-					in.Discussion = disc
-				} else {
-					out <- Progress{Stage: "pr-agent", Detail: "warning: discussion fetch: " + derr.Error()}
+					out <- Progress{Stage: "pr-agent", Detail: "warning: pr-agent data fetch: " + derr.Error()}
 				}
 				prDataCh <- in
 			}()

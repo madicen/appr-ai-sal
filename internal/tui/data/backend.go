@@ -74,7 +74,10 @@ func (ghBackend) ListPRs(ctx context.Context, mode gh.ListMode) ([]gh.PR, error)
 }
 
 func (ghBackend) PRDetail(ctx context.Context, ref gh.Ref) (*gh.PR, error) {
-	return gh.GetPR(ctx, ref)
+	// R6.4: GetPRCached reuses a prior fetch when the PR's head SHA is
+	// unchanged (cheap head-SHA revalidation), so refreshing an already-current
+	// PR avoids a full `gh pr view`.
+	return gh.GetPRCached(ctx, ref)
 }
 
 func (ghBackend) Diff(ctx context.Context, ref gh.Ref) (string, error) {

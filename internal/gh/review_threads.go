@@ -2,9 +2,9 @@ package gh
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"strings"
+
+	"github.com/madicen/appr-ai-sal/internal/applog"
 )
 
 // ReviewThreadComment is one comment inside an inline review thread. Unlike
@@ -29,64 +29,87 @@ type ReviewThread struct {
 	Comments   []ReviewThreadComment
 }
 
+// reviewThreadsData mirrors the `data` object of graphqlReviewThreadsQuery.
+// It carries pageInfo so GetReviewThreads can cursor-loop instead of silently
+// truncating at the first 100 threads (R6.3).
+type reviewThreadsData struct {
+	Repository struct {
+		PullRequest struct {
+			ReviewThreads reviewThreadConnection `json:"reviewThreads"`
+		} `json:"pullRequest"`
+	} `json:"repository"`
+}
+
+type reviewThreadConnection struct {
+	PageInfo pageInfo           `json:"pageInfo"`
+	Nodes    []reviewThreadNode `json:"nodes"`
+}
+
+type reviewThreadNode struct {
+	IsResolved bool `json:"isResolved"`
+	IsOutdated bool `json:"isOutdated"`
+	Comments   struct {
+		PageInfo   pageInfo `json:"pageInfo"`
+		TotalCount int      `json:"totalCount"`
+		Nodes      []struct {
+			Body         string `json:"body"`
+			Path         string `json:"path"`
+			Line         *int   `json:"line"`
+			OriginalLine *int   `json:"originalLine"`
+			Author       struct {
+				Login string `json:"login"`
+			} `json:"author"`
+		} `json:"nodes"`
+	} `json:"comments"`
+}
+
+// pageInfo is the standard GraphQL forward-pagination cursor block.
+type pageInfo struct {
+	HasNextPage bool   `json:"hasNextPage"`
+	EndCursor   string `json:"endCursor"`
+}
+
 // GetReviewThreads fetches the PR's inline review threads (with resolved /
-// outdated state and the comments inside each) in one GraphQL round trip.
-// Returns an empty slice when the PR has no inline threads.
-//
-// This is the one capability the rest of internal/gh does not already expose:
-// GetDiscussion returns only top-level conversation comments and review
-// summaries, and ListPullReviewComments returns a flat comment list with no
-// thread / resolved state.
+// outdated state and the comments inside each). It cursor-loops over the
+// reviewThreads connection so PRs with more than one page of threads are no
+// longer silently truncated. Returns an empty slice when the PR has no inline
+// threads.
 func GetReviewThreads(ctx context.Context, ref Ref) ([]ReviewThread, error) {
-	out, err := runGraphQL(ctx, graphqlReviewThreadsQuery, map[string]string{
-		"owner":  ref.Owner,
-		"name":   ref.Repo,
-		"number": fmt.Sprintf("%d", ref.Number),
-	})
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Data struct {
-			Repository struct {
-				PullRequest struct {
-					ReviewThreads struct {
-						Nodes []struct {
-							IsResolved bool `json:"isResolved"`
-							IsOutdated bool `json:"isOutdated"`
-							Comments   struct {
-								Nodes []struct {
-									Body         string `json:"body"`
-									Path         string `json:"path"`
-									Line         *int   `json:"line"`
-									OriginalLine *int   `json:"originalLine"`
-									Author       struct {
-										Login string `json:"login"`
-									} `json:"author"`
-								} `json:"nodes"`
-							} `json:"comments"`
-						} `json:"nodes"`
-					} `json:"reviewThreads"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		} `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil, fmt.Errorf("parse review threads response: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		msgs := make([]string, 0, len(resp.Errors))
-		for _, e := range resp.Errors {
-			msgs = append(msgs, e.Message)
+	var threads []ReviewThread
+	cursor := ""
+	for {
+		data, err := graphQLQuery[reviewThreadsData](ctx, graphqlReviewThreadsQuery, map[string]any{
+			"owner":  ref.Owner,
+			"name":   ref.Repo,
+			"number": ref.Number,
+			"cursor": nullableCursor(cursor),
+		})
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("graphql review threads: %s", strings.Join(msgs, "; "))
+		conn := data.Repository.PullRequest.ReviewThreads
+		threads = append(threads, threadsFromNodes(ref, conn.Nodes)...)
+		if !conn.PageInfo.HasNextPage || conn.PageInfo.EndCursor == "" {
+			break
+		}
+		cursor = conn.PageInfo.EndCursor
 	}
-	nodes := resp.Data.Repository.PullRequest.ReviewThreads.Nodes
+	return threads, nil
+}
+
+// threadsFromNodes converts parsed thread nodes into ReviewThreads. A thread
+// with more comments than the single page we fetch (first: 50) is uncommon; a
+// full nested cursor loop per thread is overkill, so we log an explicit
+// overflow warning (R6.3) rather than paginate — the discussion agent still
+// gets the first 50, which is more than enough to judge whether a concern was
+// addressed.
+func threadsFromNodes(ref Ref, nodes []reviewThreadNode) []ReviewThread {
 	threads := make([]ReviewThread, 0, len(nodes))
 	for _, t := range nodes {
+		if t.Comments.PageInfo.HasNextPage {
+			applog.Warn("review thread comments truncated",
+				"ref", ref.String(), "fetched", len(t.Comments.Nodes), "total", t.Comments.TotalCount)
+		}
 		thread := ReviewThread{IsResolved: t.IsResolved, IsOutdated: t.IsOutdated}
 		for _, c := range t.Comments.Nodes {
 			line := 0
@@ -104,17 +127,30 @@ func GetReviewThreads(ctx context.Context, ref Ref) ([]ReviewThread, error) {
 		}
 		threads = append(threads, thread)
 	}
-	return threads, nil
+	return threads
 }
 
-const graphqlReviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!) {
+// nullableCursor returns nil for an empty cursor so the GraphQL `after`
+// argument serializes as JSON null (fetch the first page) rather than an empty
+// string, which GitHub rejects as an invalid cursor.
+func nullableCursor(c string) any {
+	if strings.TrimSpace(c) == "" {
+		return nil
+	}
+	return c
+}
+
+const graphqlReviewThreadsQuery = `query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      reviewThreads(first: 100) {
+      reviewThreads(first: 100, after: $cursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           isResolved
           isOutdated
           comments(first: 50) {
+            pageInfo { hasNextPage }
+            totalCount
             nodes {
               body
               path

@@ -83,10 +83,16 @@ type ReviewComment struct {
 	Body string `json:"body"`
 }
 
-// CheckAuth returns nil if gh is installed and the user is logged in.
+// CheckAuth returns nil if gh is installed, recent enough (see MinGHVersion),
+// and the user is logged in.
 func CheckAuth() error {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return fmt.Errorf("gh not found on PATH; install from https://cli.github.com")
+	}
+	// R6.5: reject a too-old gh CLI with a clear message before the auth
+	// check, while any sugar command still shells out to gh.
+	if err := checkGHVersion(); err != nil {
+		return err
 	}
 	cmd := exec.Command("gh", "auth", "status")
 	out, err := cmd.CombinedOutput()
@@ -132,11 +138,13 @@ func ViewerLogin(ctx context.Context) (string, error) {
 	if v := cachedViewerLogin(); v != "" {
 		return v, nil
 	}
-	out, err := run(ctx, []string{"api", "user", "-q", ".login"})
-	if err != nil {
+	var resp struct {
+		Login string `json:"login"`
+	}
+	if err := ghAPIGet(ctx, "user", &resp); err != nil {
 		return "", err
 	}
-	login := strings.TrimSpace(string(out))
+	login := strings.TrimSpace(resp.Login)
 	cacheViewerLogin(login)
 	return login, nil
 }
@@ -148,12 +156,16 @@ func IsUserExplicitlyRequested(ctx context.Context, pr PR, login string) (bool, 
 		return false, nil
 	}
 	path := fmt.Sprintf("repos/%s/%s/pulls/%d", pr.Owner, pr.Repo, pr.Number)
-	out, err := run(ctx, []string{"api", path, "-q", ".requested_reviewers[].login"})
-	if err != nil {
+	var resp struct {
+		RequestedReviewers []struct {
+			Login string `json:"login"`
+		} `json:"requested_reviewers"`
+	}
+	if err := ghAPIGet(ctx, path, &resp); err != nil {
 		return false, err
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == login {
+	for _, r := range resp.RequestedReviewers {
+		if r.Login == login {
 			return true, nil
 		}
 	}
@@ -188,16 +200,13 @@ const (
 // and (optionally) a client-side narrow.
 func ListPRs(ctx context.Context, mode ListMode) ([]PR, error) {
 	q := listModeQuery(mode)
-	out, err := runGraphQL(ctx, graphqlReviewQuery, map[string]string{"q": q})
+	data, err := graphQLQuery[graphqlReviewData](ctx, graphqlReviewQuery, map[string]any{"q": q})
 	if err != nil {
 		return nil, err
 	}
-	prs, viewer, err := parseReviewSearchResponse(out)
-	if err != nil {
-		return nil, err
-	}
+	prs, viewer := reviewDataToPRs(data)
 	// The GraphQL query already returns viewer{login}; cache it so GetPR
-	// and other viewer-scoped lookups don't re-exec `gh api user`.
+	// and other viewer-scoped lookups don't re-hit the API for it.
 	cacheViewerLogin(viewer)
 	if mode == ListModeReviewExplicit {
 		filtered := make([]PR, 0, len(prs))
@@ -391,13 +400,11 @@ func PostReview(ctx context.Context, ref Ref, review Review) error {
 		return fmt.Errorf("marshal review: %w", err)
 	}
 	path := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews", ref.Owner, ref.Repo, ref.Number)
-	cmd := exec.CommandContext(ctx, "gh", "api", path, "--method", "POST", "--input", "-")
-	cmd.Stdin = bytes.NewReader(body)
 	start := time.Now()
-	out, err := cmd.CombinedOutput()
+	err = ghAPIPost(ctx, path, body)
 	applog.Info("post review", "ref", ref.String(), "event", review.Event, "inline_comments", len(review.Comments), "duration_ms", time.Since(start).Milliseconds(), "ok", err == nil)
 	if err != nil {
-		ae := parseGHError(out, path)
+		ae := apiErrorFrom(err, path)
 		ae.CommitID = review.CommitID
 		// When the review carried exactly one inline comment, attach it so
 		// the diagnostic can name the failing comment. With multiple
@@ -445,11 +452,8 @@ func CreatePullReviewComment(ctx context.Context, ref Ref, commitID string, c Re
 		return fmt.Errorf("marshal comment: %w", err)
 	}
 	apiPath := fmt.Sprintf("repos/%s/%s/pulls/%d/comments", ref.Owner, ref.Repo, ref.Number)
-	cmd := exec.CommandContext(ctx, "gh", "api", apiPath, "--method", "POST", "--input", "-")
-	cmd.Stdin = bytes.NewReader(body)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		ae := parseGHError(out, apiPath)
+	if err := ghAPIPost(ctx, apiPath, body); err != nil {
+		ae := apiErrorFrom(err, apiPath)
 		ae.CommitID = commitID
 		echo := ReviewComment{Path: c.Path, Line: c.Line, Side: side, Body: c.Body}
 		ae.Comment = &echo
@@ -503,11 +507,8 @@ func CreatePullReviewFileLevelComment(ctx context.Context, ref Ref, commitID, pa
 		return fmt.Errorf("marshal file-level comment: %w", err)
 	}
 	apiPath := fmt.Sprintf("repos/%s/%s/pulls/%d/comments", ref.Owner, ref.Repo, ref.Number)
-	cmd := exec.CommandContext(ctx, "gh", "api", apiPath, "--method", "POST", "--input", "-")
-	cmd.Stdin = bytes.NewReader(raw)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		ae := parseGHError(out, apiPath)
+	if err := ghAPIPost(ctx, apiPath, raw); err != nil {
+		ae := apiErrorFrom(err, apiPath)
 		ae.CommitID = commitID
 		echo := ReviewComment{Path: path, Body: body}
 		ae.Comment = &echo
@@ -523,11 +524,15 @@ func CreatePullReviewFileLevelComment(ctx context.Context, ref Ref, commitID, pa
 // with the opaque "could not be resolved" error.
 func GetPRHeadSHA(ctx context.Context, ref Ref) (string, error) {
 	path := fmt.Sprintf("repos/%s/%s/pulls/%d", ref.Owner, ref.Repo, ref.Number)
-	out, err := run(ctx, []string{"api", path, "-q", ".head.sha"})
-	if err != nil {
+	var resp struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if err := ghAPIGet(ctx, path, &resp); err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(resp.Head.SHA), nil
 }
 
 // PostReviewBodyOnly submits a pull request review with only the top-level body

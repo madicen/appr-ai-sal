@@ -36,11 +36,7 @@ func TestGetReviewThreadsParsesResolvedState(t *testing.T) {
     }
   }
 }`
-	prev := runGraphQL
-	runGraphQL = func(_ context.Context, _ string, _ map[string]string) ([]byte, error) {
-		return []byte(payload), nil
-	}
-	defer func() { runGraphQL = prev }()
+	stubGraphQL(t, payload)
 
 	threads, err := GetReviewThreads(context.Background(), Ref{Owner: "o", Repo: "r", Number: 1})
 	if err != nil {
@@ -78,11 +74,7 @@ func TestGetReviewThreadsParsesResolvedState(t *testing.T) {
 }
 
 func TestGetReviewThreadsSurfacesGraphQLErrors(t *testing.T) {
-	prev := runGraphQL
-	runGraphQL = func(_ context.Context, _ string, _ map[string]string) ([]byte, error) {
-		return []byte(`{"errors":[{"message":"boom"}]}`), nil
-	}
-	defer func() { runGraphQL = prev }()
+	stubGraphQL(t, `{"errors":[{"message":"boom"}]}`)
 
 	if _, err := GetReviewThreads(context.Background(), Ref{Owner: "o", Repo: "r", Number: 1}); err == nil {
 		t.Fatalf("expected error from graphql errors payload")

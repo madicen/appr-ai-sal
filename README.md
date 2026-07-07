@@ -14,7 +14,7 @@ like before installing.
 ### 1. Install the prerequisites
 
 - **Go 1.22+** — check with `go version`.
-- **GitHub CLI** — install [`gh`](https://cli.github.com/) and run `gh auth login` once. `appr-ai-sal` uses `gh` for all GitHub auth and PR fetches.
+- **GitHub CLI** — install [`gh`](https://cli.github.com/) (**version 2.0.0 or newer**) and run `gh auth login` once. `appr-ai-sal` reuses `gh`'s stored auth for all GitHub access — GraphQL/REST calls now run in-process (no separate token to configure), and a couple of convenience reads still shell out to `gh`. Startup fails with a clear message if `gh` is missing, too old, or not logged in.
 - **Pick one AI backend:**
   - **Claude (default, simplest)** — install the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) so `claude` is on your `PATH`. No extra config needed.
   - **Ollama (local, no API key)** — install [Ollama](https://ollama.com) and pull a model, e.g. `ollama pull llama3.2`.
