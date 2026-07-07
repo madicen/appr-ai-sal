@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
 )
 
 // Provider selects how appr-ai-sal runs specialist inference.
@@ -115,18 +117,9 @@ func DefaultConfig() *Config {
 }
 
 // ConfigDir is the app config directory (same rules as prompt overrides).
+// Delegates to internal/appdirs so path resolution lives in one place.
 func ConfigDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CONFIG_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".appr-ai-sal"
-	}
-	return filepath.Join(home, ".config", "appr-ai-sal")
+	return appdirs.ConfigDir()
 }
 
 // DefaultPath returns the default path for persisted AI settings (JSON).

@@ -18,6 +18,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/llmjson"
 )
@@ -221,7 +222,7 @@ func loadPrompt() (string, error) {
 
 // OverridePath returns the user-writable path that overrides the embedded prompt.
 func OverridePath() string {
-	return filepath.Join(configDir(), "prompts", "convention-witness.md")
+	return filepath.Join(appdirs.ConfigDir(), "prompts", "convention-witness.md")
 }
 
 func readOverride() (string, bool, error) {
@@ -234,20 +235,6 @@ func readOverride() (string, bool, error) {
 		return "", false, fmt.Errorf("read override %s: %w", p, err)
 	}
 	return string(b), true, nil
-}
-
-func configDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CONFIG_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".appr-ai-sal"
-	}
-	return filepath.Join(home, ".config", "appr-ai-sal")
 }
 
 func truncate(s string, n int) string {

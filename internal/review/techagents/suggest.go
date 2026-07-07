@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/llmjson"
@@ -168,34 +167,13 @@ func dedupeCandidates(in []Candidate, existing []string) []Candidate {
 }
 
 func loadSuggesterPrompt() (string, error) {
-	if override, ok, err := readSuggesterOverride(); err != nil {
-		return "", err
-	} else if ok {
-		return override, nil
-	}
-	b, err := fs.ReadFile(promptFS, "prompts/tech-suggester.md")
-	if err != nil {
-		return "", fmt.Errorf("load tech-suggester prompt: %w", err)
-	}
-	return string(b), nil
+	return agentstore.LoadPrompt(promptFS, "prompts/tech-suggester.md", "tech-suggester.md")
 }
 
 // SuggesterPromptOverridePath is where users may write a custom suggester
 // prompt to replace the embedded one.
 func SuggesterPromptOverridePath() string {
-	return filepath.Join(configDir(), "prompts", "tech-suggester.md")
-}
-
-func readSuggesterOverride() (string, bool, error) {
-	p := SuggesterPromptOverridePath()
-	b, err := os.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("read override %s: %w", p, err)
-	}
-	return string(b), true, nil
+	return agentstore.PromptOverridePath("tech-suggester.md")
 }
 
 func buildSuggesterUserPrompt(owner, repo, bundle string) string {

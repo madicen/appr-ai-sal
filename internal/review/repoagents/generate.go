@@ -2,16 +2,13 @@ package repoagents
 
 import (
 	"context"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
@@ -155,64 +152,23 @@ func Generate(ctx context.Context, opts GenerateOpts) (*Agent, error) {
 		Manual:      false,
 		Provider:    string(opts.AICfg.Provider),
 		Model:       opts.AICfg.AIModelOrDefault(),
-		SourceHash:  sourceHash(bundle, historyDigest, repoEvidence, pathHistory),
+		SourceHash:  agentstore.SourceHash(bundle, historyDigest, repoEvidence, pathHistory),
 	}
 	return agent, nil
 }
 
-func sourceHash(parts ...string) string {
-	h := sha256.New()
-	for _, p := range parts {
-		_, _ = h.Write([]byte(p))
-		_, _ = h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil)[:8])
+func overrideName(specialist string) string {
+	return "repo-agent-" + strings.ToLower(strings.TrimSpace(specialist)) + ".md"
 }
 
 func loadGeneratorPrompt(specialist string) (string, error) {
-	if override, ok, err := readPromptOverride(specialist); err != nil {
-		return "", err
-	} else if ok {
-		return override, nil
-	}
-	name := "prompts/repo-agent-" + specialist + ".md"
-	b, err := fs.ReadFile(promptFS, name)
-	if err != nil {
-		return "", fmt.Errorf("load repo-agent prompt %q: %w", specialist, err)
-	}
-	return string(b), nil
+	return agentstore.LoadPrompt(promptFS, "prompts/repo-agent-"+specialist+".md", overrideName(specialist))
 }
 
 // PromptOverridePath is where users may write a custom generator prompt to
 // replace the embedded one for a specialist.
 func PromptOverridePath(specialist string) string {
-	return filepath.Join(configDir(), "prompts", "repo-agent-"+strings.ToLower(strings.TrimSpace(specialist))+".md")
-}
-
-func readPromptOverride(specialist string) (string, bool, error) {
-	p := PromptOverridePath(specialist)
-	b, err := os.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("read override %s: %w", p, err)
-	}
-	return string(b), true, nil
-}
-
-func configDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CONFIG_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".appr-ai-sal"
-	}
-	return filepath.Join(home, ".config", "appr-ai-sal")
+	return agentstore.PromptOverridePath(overrideName(specialist))
 }
 
 func buildGeneratorUserPrompt(specialist, owner, repo, bundle, history, repoEvidence, pathHistory string) string {

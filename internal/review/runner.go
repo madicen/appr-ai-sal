@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
 	"github.com/madicen/appr-ai-sal/internal/applog"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
@@ -684,23 +685,13 @@ func splitWorktreeName(name string) (group string, unix int64) {
 }
 
 func cacheDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CACHE_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CACHE_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal", "worktrees")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".cache", "appr-ai-sal", "worktrees")
-	}
-	return filepath.Join(home, ".cache", "appr-ai-sal", "worktrees")
+	return appdirs.CacheSubdir(appdirs.WorktreesSubdir)
 }
 
 // RepoProfilesDir returns the directory for cached repository context bundles
 // (sibling of the worktrees folder when using the default XDG layout).
 func RepoProfilesDir() string {
-	return filepath.Clean(filepath.Join(cacheDir(), "..", "repo-profiles"))
+	return appdirs.CacheSubdir("repo-profiles")
 }
 
 // composeLangBriefSection picks the dominant-language briefs for the PR

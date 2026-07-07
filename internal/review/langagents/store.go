@@ -1,34 +1,23 @@
 package langagents
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
 )
 
 // CacheDir returns the on-disk root for the language-agent cache. Unlike
 // repoagents (which is per-repo), the lang-agents cache is user-global —
 // "you generated lang-swift once, every repo benefits."
 //
-// Layout: $APPR_AI_SAL_CACHE_DIR / appr-ai-sal / lang-agents
-// (default: ~/.cache/appr-ai-sal/lang-agents)
-//
-// Mirrors the env-var resolution in repoagents.CacheDir so users only
-// have to set one variable to relocate the whole cache tree.
+// Layout: <cache>/lang-agents (default: ~/.cache/appr-ai-sal/lang-agents).
+// Path resolution lives in internal/appdirs so relocating the cache tree via
+// APPR_AI_SAL_CACHE_DIR / XDG_CACHE_HOME behaves identically everywhere.
 func CacheDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CACHE_DIR"); v != "" {
-		return filepath.Clean(filepath.Join(v, "..", "lang-agents"))
-	}
-	if v := os.Getenv("XDG_CACHE_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal", "lang-agents")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(".cache", "appr-ai-sal", "lang-agents")
-	}
-	return filepath.Join(home, ".cache", "appr-ai-sal", "lang-agents")
+	return appdirs.CacheSubdir("lang-agents")
 }
 
 // FilePath returns the on-disk path that stores the cache JSON for ALL
@@ -45,19 +34,14 @@ func FilePath() string {
 // back to bundled briefs and offer to regenerate."
 func LoadCache() (*LangAgents, error) {
 	out := &LangAgents{Agents: map[Language]Agent{}}
-	p := FilePath()
-	b, err := os.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return out, nil
-		}
-		return nil, fmt.Errorf("read %s: %w", p, err)
-	}
 	var raw LangAgents
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", p, err)
+	found, err := agentstore.ReadJSONFile(FilePath(), &raw)
+	if err != nil {
+		return nil, err
 	}
-	out.Agents = map[Language]Agent{}
+	if !found {
+		return out, nil
+	}
 	for k, v := range raw.Agents {
 		c := Canonical(k)
 		if c == "" {
@@ -82,10 +66,6 @@ func SaveCache(l *LangAgents) error {
 	if l.Agents == nil {
 		l.Agents = map[Language]Agent{}
 	}
-	dir := CacheDir()
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
-	}
 	// Clean copy so we don't surprise callers by mutating their map keys.
 	clean := LangAgents{Agents: map[Language]Agent{}}
 	for k, v := range l.Agents {
@@ -99,17 +79,7 @@ func SaveCache(l *LangAgents) error {
 		v.Language = c
 		clean.Agents[c] = v
 	}
-	b, err := json.MarshalIndent(&clean, "", "  ")
-	if err != nil {
-		return fmt.Errorf("marshal lang-agents: %w", err)
-	}
-	b = append(b, '\n')
-	p := FilePath()
-	tmp := p + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", tmp, err)
-	}
-	return os.Rename(tmp, p)
+	return agentstore.WriteJSONAtomic(FilePath(), &clean)
 }
 
 // SaveAgent merges a single Agent into the user-global cache. Other

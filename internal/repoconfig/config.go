@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
 )
 
 const defaultMaxBytes = 24576
@@ -102,7 +102,7 @@ func Default() *Config {
 
 // DefaultPath is ~/.config/appr-ai-sal/repo-context.json (or APPR_AI_SAL_CONFIG_DIR).
 func DefaultPath() string {
-	return filepath.Join(aiconfig.ConfigDir(), "repo-context.json")
+	return filepath.Join(appdirs.ConfigDir(), "repo-context.json")
 }
 
 // boolPresence mirrors Config's boolean fields as pointers so JSON decoding

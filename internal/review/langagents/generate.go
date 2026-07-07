@@ -2,16 +2,13 @@ package langagents
 
 import (
 	"context"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/llmjson"
@@ -101,63 +98,19 @@ func Generate(ctx context.Context, opts GenerateOpts) (*Agent, error) {
 		Manual:      false,
 		Provider:    string(opts.AICfg.Provider),
 		Model:       opts.AICfg.AIModelOrDefault(),
-		SourceHash:  sourceHash(srcHashInputs...),
+		SourceHash:  agentstore.SourceHash(srcHashInputs...),
 	}
 	return agent, nil
 }
 
-func sourceHash(parts ...string) string {
-	h := sha256.New()
-	for _, p := range parts {
-		_, _ = h.Write([]byte(p))
-		_, _ = h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil)[:8])
-}
-
 func loadGeneratorPrompt() (string, error) {
-	if override, ok, err := readPromptOverride(); err != nil {
-		return "", err
-	} else if ok {
-		return override, nil
-	}
-	b, err := fs.ReadFile(promptFS, "prompts/lang-generator.md")
-	if err != nil {
-		return "", fmt.Errorf("load lang-generator prompt: %w", err)
-	}
-	return string(b), nil
+	return agentstore.LoadPrompt(promptFS, "prompts/lang-generator.md", "lang-generator.md")
 }
 
 // PromptOverridePath is where users may write a custom generator prompt
 // to replace the embedded one.
 func PromptOverridePath() string {
-	return filepath.Join(configDir(), "prompts", "lang-generator.md")
-}
-
-func readPromptOverride() (string, bool, error) {
-	p := PromptOverridePath()
-	b, err := os.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("read override %s: %w", p, err)
-	}
-	return string(b), true, nil
-}
-
-func configDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CONFIG_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".appr-ai-sal"
-	}
-	return filepath.Join(home, ".config", "appr-ai-sal")
+	return agentstore.PromptOverridePath("lang-generator.md")
 }
 
 // buildGeneratorUserPrompt assembles the user message the generator

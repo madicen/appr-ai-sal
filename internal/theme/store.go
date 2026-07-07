@@ -6,13 +6,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
 )
 
 // DefaultPath is ~/.config/appr-ai-sal/theme.json (honours
-// APPR_AI_SAL_CONFIG_DIR / XDG_CONFIG_HOME via aiconfig.ConfigDir).
+// APPR_AI_SAL_CONFIG_DIR / XDG_CONFIG_HOME via appdirs.ConfigDir).
 func DefaultPath() string {
-	return filepath.Join(aiconfig.ConfigDir(), "theme.json")
+	return filepath.Join(appdirs.ConfigDir(), "theme.json")
 }
 
 // Load reads theme.json if present and returns the merged theme. A missing
