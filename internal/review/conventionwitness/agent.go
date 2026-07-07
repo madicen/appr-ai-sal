@@ -108,7 +108,10 @@ func Run(ctx context.Context, cfg *aiconfig.Config, complete ai.CompleteFunc, wo
 		return Result{Err: err}
 	}
 	user := buildUserPrompt(pr, findings, evidence)
-	out, err := complete(ctx, cfg, system, user, worktree)
+	// The witness emits strict JSON; opt into native JSON mode. The injected
+	// complete func (review.Complete) reads this off the context and requests
+	// json_object / responseMimeType where the provider supports it.
+	out, err := complete(ai.WithJSONMode(ctx), cfg, system, user, worktree)
 	if err != nil {
 		return Result{Err: fmt.Errorf("convention witness: %w", err)}
 	}

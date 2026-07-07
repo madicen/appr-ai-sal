@@ -76,7 +76,7 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, hasContext)
 
-	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
+	out, err := completeJSON(ctx, cfg, systemPrompt, userPrompt, worktree)
 	if err != nil {
 		res.Err = err
 		return res
@@ -208,7 +208,7 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	userPrompt := buildVibeCoachUserPrompt(pr, specialists, cfg.ReviewStrictness, repoContext)
 	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, strings.TrimSpace(repoContext) != "")
 
-	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
+	out, err := completeJSON(ctx, cfg, systemPrompt, userPrompt, worktree)
 	if err != nil {
 		res.Err = err
 		return res

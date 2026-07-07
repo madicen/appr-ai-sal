@@ -75,7 +75,7 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 	// so non-Claude backends get the diff-only tooling hint.
 	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, false)
 
-	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
+	out, err := completeJSON(ctx, cfg, systemPrompt, userPrompt, worktree)
 	if err != nil {
 		res.Err = err
 		return res

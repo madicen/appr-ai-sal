@@ -21,8 +21,10 @@ type geminiProvider struct {
 func (p *geminiProvider) Name() string { return string(aiconfig.ProviderGemini) }
 
 func (p *geminiProvider) Capabilities() Capabilities {
-	// HTTP providers review the diff blind — no repo tools.
-	return Capabilities{}
+	// HTTP providers review the diff blind — no repo tools. Gemini supports
+	// native JSON mode via generationConfig.responseMimeType (+ responseSchema
+	// when a schema is supplied) (R5).
+	return Capabilities{NativeJSON: true}
 }
 
 func (p *geminiProvider) Complete(ctx context.Context, req Request) (Result, error) {
@@ -52,6 +54,17 @@ func (p *geminiProvider) Complete(ctx context.Context, req Request) (Result, err
 				"parts": []map[string]string{{"text": req.User}},
 			},
 		},
+	}
+	if req.wantsJSON() {
+		// Native JSON mode. responseMimeType constrains output to JSON;
+		// responseSchema (when a schema is supplied) constrains its shape. The
+		// salvage ladder (llmjson.Parse) still runs on the response as a
+		// fallback.
+		genCfg := map[string]any{"responseMimeType": "application/json"}
+		if len(req.JSONSchema) > 0 {
+			genCfg["responseSchema"] = json.RawMessage(req.JSONSchema)
+		}
+		reqBody["generationConfig"] = genCfg
 	}
 	raw, err := json.Marshal(reqBody)
 	if err != nil {

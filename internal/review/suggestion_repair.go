@@ -71,7 +71,8 @@ func repairMissingSuggestions(ctx context.Context, cfg *aiconfig.Config, worktre
 	}
 	fired = len(items)
 	systemPrompt, userPrompt := buildRepairPrompt(name, items)
-	resp, err := repairComplete(ctx, cfg, systemPrompt, userPrompt, worktree)
+	// The repair pass emits strict JSON; opt it into native JSON mode too.
+	resp, err := repairComplete(ai.WithJSONMode(ctx), cfg, systemPrompt, userPrompt, worktree)
 	if err != nil {
 		return findings, fired, 0
 	}

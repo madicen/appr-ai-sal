@@ -23,8 +23,17 @@ type Request struct {
 	// Worktree is the checked-out PR directory; used only by tool-capable
 	// providers (Claude reads files there).
 	Worktree string
-	// JSONSchema, when set, requests native JSON mode from providers that
-	// support it. Wiring is deferred (R5); the field is carried through today.
+	// WantJSON requests native JSON mode (schema-less) from providers that
+	// support it: OpenAI-compatible/Ollama get response_format json_object,
+	// Gemini gets responseMimeType application/json. It is an independent
+	// signal from JSONSchema so a caller can opt a JSON stage into native mode
+	// before per-agent schemas exist (R5). A non-empty JSONSchema also implies
+	// JSON mode.
+	WantJSON bool
+	// JSONSchema, when set, requests schema-constrained native JSON mode from
+	// providers that support it (Gemini responseSchema). It also implies
+	// WantJSON. Providers that only support schema-less JSON mode ignore the
+	// schema and fall back to plain JSON mode.
 	JSONSchema json.RawMessage
 	// Stage is a telemetry label (e.g. "specialist security"). Logging today
 	// reads the stage from the context via applog.WithStage; the field is

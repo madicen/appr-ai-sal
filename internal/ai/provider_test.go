@@ -153,9 +153,18 @@ func TestCapabilitiesPerProvider(t *testing.T) {
 		if caps.RepoTools {
 			t.Fatalf("%s should have RepoTools=false", p)
 		}
-		if caps.NativeJSON || caps.Streaming {
-			t.Fatalf("%s NativeJSON/Streaming should default to false, got %+v", p, caps)
+		// R5 enabled native JSON mode on the HTTP providers (json_object /
+		// responseMimeType); Streaming is still off.
+		if !caps.NativeJSON {
+			t.Fatalf("%s should have NativeJSON=true after R5, got %+v", p, caps)
 		}
+		if caps.Streaming {
+			t.Fatalf("%s Streaming should default to false, got %+v", p, caps)
+		}
+	}
+	// Claude keeps NativeJSON off (it goes through the CLI subprocess).
+	if CapabilitiesFor(&aiconfig.Config{Provider: aiconfig.ProviderClaude}).NativeJSON {
+		t.Fatal("claude NativeJSON should stay false")
 	}
 	// Unknown providers report the zero value rather than panicking.
 	if CapabilitiesFor(&aiconfig.Config{Provider: aiconfig.Provider("bogus")}) != (Capabilities{}) {

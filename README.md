@@ -380,6 +380,15 @@ optional JSON file **`~/.config/appr-ai-sal/ai.json`** (or under
 | `ollama` | OpenAI-style `POST {base}/v1/chat/completions`. Default base `http://127.0.0.1:11434/v1` if `base_url` is empty. Bearer uses the string `ollama` when no API key is set (local servers). |
 | `openai_compatible` | Same chat schema as Ollama; you must set `APPR_AI_SAL_AI_BASE_URL` to your server’s OpenAI root (e.g. `https://api.example.com/v1`). |
 
+The HTTP providers request **native JSON mode** on the pipeline's JSON stages
+(specialists, PR agents, arbiter, witness, vibe-coach, and the suggestion-repair
+pass — not the markdown-brief calls): `ollama`/`openai_compatible` send
+`response_format: {"type":"json_object"}` and `gemini` sends
+`generationConfig.responseMimeType: "application/json"` (plus a `responseSchema`
+when one is supplied). This reduces parse-failure retries; the JSON-salvage
+ladder still runs on every response, so nothing breaks if a backend ignores the
+hint. Claude (CLI subprocess) is unchanged.
+
 ### Environment variables
 
 | Variable | Meaning |

@@ -481,7 +481,7 @@ func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, 
 	}
 	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses)
 	sys, user = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, sys, user, true)
-	out, err := Complete(ctx, cfg, sys, user, worktree)
+	out, err := completeJSON(ctx, cfg, sys, user, worktree)
 	if err != nil {
 		ar.Err = err
 		return ar

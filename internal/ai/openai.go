@@ -22,8 +22,9 @@ type openAIProvider struct {
 func (p *openAIProvider) Name() string { return string(p.cfg.Provider) }
 
 func (p *openAIProvider) Capabilities() Capabilities {
-	// HTTP providers review the diff blind — no repo tools.
-	return Capabilities{}
+	// HTTP providers review the diff blind — no repo tools. They do support
+	// native JSON mode via response_format (R5).
+	return Capabilities{NativeJSON: true}
 }
 
 func httpClientFor(cfg *aiconfig.Config) *http.Client {
@@ -49,6 +50,14 @@ func (p *openAIProvider) Complete(ctx context.Context, req Request) (Result, err
 			{"role": "system", "content": req.System},
 			{"role": "user", "content": req.User},
 		},
+	}
+	if req.wantsJSON() {
+		// Native JSON mode. response_format:{"type":"json_object"} is the
+		// portable OpenAI-compatible choice and is honoured by Ollama's
+		// OpenAI-compat /chat/completions endpoint. The salvage ladder
+		// (llmjson.Parse) still runs on the response, since models can ignore
+		// this and some proxies drop it.
+		body["response_format"] = map[string]string{"type": "json_object"}
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
