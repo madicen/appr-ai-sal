@@ -34,11 +34,19 @@ type repairHunkLine struct {
 }
 
 // repairResult is the model's verdict for one item: either a concrete
-// {anchorLine, replacement} or a decline.
+// {anchorLine, replacement, anchorExcerpt} or a decline.
 type repairResult struct {
 	AnchorLine  int    `json:"anchor_line"`
 	Replacement string `json:"replacement"`
-	Decline     bool   `json:"decline"`
+	// AnchorExcerpt is the model's verbatim copy of the line at AnchorLine
+	// (Q6.6). It gives the repaired suggestion the SAME deterministic
+	// anchor-excerpt verification a first-pass suggestion gets: applyRepairs
+	// runs it through anchorExcerptVerdict, so a repair that names a line but
+	// quotes different text is rejected (or relocated) exactly as a
+	// first-pass mis-anchor would be. Empty is tolerated (the gate is a
+	// silent no-op then, matching first-pass semantics for a missing excerpt).
+	AnchorExcerpt string `json:"anchor_excerpt"`
+	Decline       bool   `json:"decline"`
 }
 
 // repairMissingSuggestions is the batched AI fallback that runs after the
@@ -156,10 +164,11 @@ Rules:
 - "anchor_line" MUST be one of the line numbers shown for that item.
 - Choose the line the comment is actually about — not necessarily the item's "current_anchor_line", which may be wrong.
 - "replacement" is drop-in valid text at that line: code/config only, no prose, no markdown fences, no placeholders, matching the file's language and indentation. It may span multiple lines (each replaces nothing extra — only the one anchor line is removed).
+- "anchor_excerpt" is a VERBATIM copy of the post-image line you chose as "anchor_line" (the exact text shown after "NNN| " for that number, with its own indentation). The tool cross-checks this against the real line and rejects the repair on a mismatch, so quote it exactly.
 - Only emit a repair when the comment unambiguously specifies a contiguous fix of 10 lines or fewer. If the fix is multi-file, non-contiguous, ambiguous, or you are unsure it parses cleanly, DECLINE — a wrong suggestion is worse than none.
 
 Return STRICT JSON only, no prose, no fencing:
-{"repairs":[{"id":<int>,"anchor_line":<int>,"replacement":"<text>"} | {"id":<int>,"decline":true}]}
+{"repairs":[{"id":<int>,"anchor_line":<int>,"anchor_excerpt":"<text>","replacement":"<text>"} | {"id":<int>,"decline":true}]}
 Every id you were given must appear exactly once. Escape newlines in "replacement" as \n.`
 
 // buildRepairPrompt renders the batched user message listing each item with
@@ -202,10 +211,11 @@ func buildRepairPrompt(name string, items []repairItem) (string, string) {
 // delegated to the shared llmjson ladder.
 func parseRepairResponse(raw string) (map[int]repairResult, error) {
 	type repairEnvelopeEntry struct {
-		ID          int    `json:"id"`
-		AnchorLine  int    `json:"anchor_line"`
-		Replacement string `json:"replacement"`
-		Decline     bool   `json:"decline"`
+		ID            int    `json:"id"`
+		AnchorLine    int    `json:"anchor_line"`
+		AnchorExcerpt string `json:"anchor_excerpt"`
+		Replacement   string `json:"replacement"`
+		Decline       bool   `json:"decline"`
 	}
 	type repairEnvelope struct {
 		Repairs []repairEnvelopeEntry `json:"repairs"`
@@ -222,16 +232,24 @@ func parseRepairResponse(raw string) (map[int]repairResult, error) {
 		if e.AnchorLine <= 0 || strings.TrimSpace(e.Replacement) == "" {
 			continue
 		}
-		out[e.ID] = repairResult{AnchorLine: e.AnchorLine, Replacement: e.Replacement}
+		out[e.ID] = repairResult{AnchorLine: e.AnchorLine, Replacement: e.Replacement, AnchorExcerpt: e.AnchorExcerpt}
 	}
 	return out, nil
 }
 
 // applyRepairs writes each accepted repair onto its finding after the repair
 // passes the same safety gates a model-authored suggestion would. A repair
-// that names a line outside the hunk, or whose replacement would break the
-// file or mismatch the anchor kind, is dropped — the finding stays
-// suggestion-less rather than receiving a bad fix.
+// that names a line outside the hunk, whose replacement would break the file,
+// mismatches the anchor kind, or (Q6.6) whose quoted anchor_excerpt does not
+// match the chosen line is dropped — the finding stays suggestion-less rather
+// than receiving a bad fix.
+//
+// The excerpt check gives the repair pass PARITY with the first pass: a
+// first-pass suggestion is verified against the model's anchor_excerpt by
+// validateAnchorExcerpt (relocate on a unique match elsewhere, strip on a
+// mismatch); a repaired suggestion now runs the identical anchorExcerptVerdict
+// via its own anchor_excerpt. A missing excerpt is tolerated (silent no-op),
+// exactly as the first-pass gate skips findings whose excerpt the model omitted.
 func applyRepairs(findings []Finding, files []FileDiff, results map[int]repairResult) ([]Finding, int) {
 	applied := 0
 	for id, r := range results {
@@ -256,7 +274,7 @@ func applyRepairs(findings []Finding, files []FileDiff, results map[int]repairRe
 		tmp := *f
 		tmp.Line = r.AnchorLine
 		tmp.Suggestion = r.Replacement
-		tmp.AnchorExcerpt = ""
+		tmp.AnchorExcerpt = r.AnchorExcerpt
 		tmp.SuggestionStrippedReason = ""
 		if reason := suggestionBreaksFile(tmp, files); reason != "" {
 			continue
@@ -264,10 +282,24 @@ func applyRepairs(findings []Finding, files []FileDiff, results map[int]repairRe
 		if reason := anchorKindMismatch(tmp, files); reason != "" {
 			continue
 		}
-		if r.AnchorLine != f.Line {
+		// Q6.6 excerpt parity: run the same verdict the first pass uses.
+		// match → accept at the chosen line; relocate → accept at the unique
+		// match line; strip → reject the repair entirely (a mis-anchored
+		// repair must not ship a suggestion any more than a first-pass one).
+		if strings.TrimSpace(tmp.AnchorExcerpt) != "" {
+			v := anchorExcerptVerdict(tmp, files)
+			switch v.outcome {
+			case anchorOutcomeMatch:
+			case anchorOutcomeRelocate:
+				tmp.Line = v.relocateTo
+			case anchorOutcomeStrip:
+				continue
+			}
+		}
+		if tmp.Line != f.Line {
 			f.AnchorRelocatedFrom = f.Line
 		}
-		f.Line = r.AnchorLine
+		f.Line = tmp.Line
 		f.Suggestion = r.Replacement
 		f.AnchorExcerpt = ""
 		f.SuggestionStrippedReason = ""

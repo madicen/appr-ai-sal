@@ -45,9 +45,12 @@ func TestRegistryPreservesBuiltinDispatchBehavior(t *testing.T) {
 	//   (repo_experts.go), actionability (actionability.go), constrainPRAgentScope
 	//   + downrankAuthorRebuttedThreads (pragents.go).
 	cases := map[string]want{
-		SpecSecurity:    {lane: 0, suppressible: false, demotable: false, kind: KindCode},
-		SpecTech:        {lane: 1, witnessable: true, convEvidence: true, suppressible: true, demotable: true, reqTech: true, kind: KindCode},
-		SpecFormatting:  {lane: 2, suppressible: true, demotable: true, kind: KindCode},
+		SpecSecurity: {lane: 0, suppressible: false, demotable: false, kind: KindCode},
+		SpecTech:     {lane: 1, witnessable: true, convEvidence: true, suppressible: true, demotable: true, reqTech: true, kind: KindCode},
+		// Q6.5 made formatting witnessable (its findings now get an
+		// identifier-style census fed to the convention witness); the rest of
+		// its dispatch behaviour is unchanged.
+		SpecFormatting:  {lane: 2, witnessable: true, suppressible: true, demotable: true, kind: KindCode},
 		SpecDesign:      {lane: 3, suppressible: true, demotable: true, kind: KindCode},
 		SpecTesting:     {lane: 4, witnessable: true, wantsEvidence: true, suppressible: true, demotable: true, actionability: true, kind: KindCode},
 		SpecDocs:        {lane: 5, witnessable: true, wantsEvidence: true, suppressible: true, demotable: true, actionability: true, kind: KindCode},

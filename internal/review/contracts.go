@@ -87,16 +87,27 @@ const reviewOutputContractHead = `Return your review as a single JSON object and
     {
       "path": "<file path relative to the repo root, or empty string for PR-wide / general feedback>",
       "line": <integer: RIGHT-side line number in the unified diff for inline comments; use 0 with empty path for general feedback only>,
+      "start_line": <integer: OPTIONAL first line of a MULTI-LINE fix. Omit or use 0 for a single-line finding. When your 'suggestion' replaces MORE THAN ONE existing line, set start_line to the first line of the range and 'line' to the LAST line; the tool posts a multi-line suggestion spanning start_line..line. Both must be in the same diff hunk on the same side and start_line < line, or the tool drops the range and strips the suggestion.>,
       "side": "RIGHT",
       "severity": `
 
 const reviewOutputContractTail = `,
       "comment": "<the full human-readable review text: finding, rationale, and what to do. Use plain text or simple markdown. Put ALL narrative, questions, and explanations here.>",
       "suggestion": "<EXACT literal replacement text GitHub will apply at path/line — see the suggestion contract below. Required for any local fix; empty string for findings whose fix is non-local or non-mechanical.>",
-      "anchor_excerpt": "<VERBATIM copy of the post-image line at path:line, including leading whitespace exactly as it appears in the diff. REQUIRED whenever you fill in 'suggestion' on an inline finding — the review tool deterministically compares this against the actual line and STRIPS your suggestion on mismatch (or auto-relocates the finding when the excerpt uniquely matches a different line in the same hunk), so getting this wrong is worse than leaving suggestion empty. Use empty string for general findings (path '', line 0) and for inline findings whose 'suggestion' is empty.>"
+      "anchor_excerpt": "<VERBATIM copy of the post-image line at path:line, including leading whitespace exactly as it appears in the diff. REQUIRED whenever you fill in 'suggestion' on an inline finding — the review tool deterministically compares this against the actual line and STRIPS your suggestion on mismatch (or auto-relocates the finding when the excerpt uniquely matches a different line in the same hunk), so getting this wrong is worse than leaving suggestion empty. Use empty string for general findings (path '', line 0) and for inline findings whose 'suggestion' is empty.>",
+      "confidence": <OPTIONAL number 0.0–1.0: how confident you are this finding is correct AND anchored at the right line. Omit when you have no calibrated view. File a finding you could not fully verify at a LOWER confidence (and say what would confirm it in 'comment'). The tool may lower this further when its deterministic checks distrust the anchor.>,
+      "verified": <OPTIONAL boolean: true only if you confirmed the finding against the actual code (via the repo tools or the diff/context), false if you are filing it unverified. Omit when not applicable.>
     }
   ]
 }
+
+MULTI-LINE FIXES (start_line):
+
+Most suggestions replace a single line — leave 'start_line' omitted / 0. When the correct fix rewrites a CONTIGUOUS BLOCK of existing lines (e.g. reordering three struct fields, replacing a two-line call, rewrapping a multi-line string), set 'start_line' to the block's first line and 'line' to its last line, and make 'suggestion' the FULL replacement for the whole block. The 'anchor_excerpt' still quotes the post-image line at 'line' (the last line of the range). The range must be a contiguous run of post-image lines inside ONE hunk on ONE side, with start_line < line; otherwise the tool drops the range and strips the suggestion (the prose comment survives).
+
+CONFIDENCE & VERIFICATION (confidence / verified):
+
+These optional fields feed the review's confidence axis. Prefer to fill them: a high-confidence, verified finding is surfaced more prominently than a speculative one, and an unverified finding filed at low confidence is honest rather than confidently wrong. They are advisory only — they never let you file a finding that fails the actionability bar.
 
 SPECIALTY SCOPE (HARD — this gates EVERY finding, not just the summary):
 
@@ -394,6 +405,8 @@ func jsonObject(props map[string]any, required ...string) map[string]any {
 
 func stringSchema() map[string]any  { return map[string]any{"type": "string"} }
 func integerSchema() map[string]any { return map[string]any{"type": "integer"} }
+func numberSchema() map[string]any  { return map[string]any{"type": "number"} }
+func booleanSchema() map[string]any { return map[string]any{"type": "boolean"} }
 
 func enumSchema(values []string) map[string]any {
 	return map[string]any{"type": "string", "enum": values}
@@ -417,16 +430,21 @@ func mustSchema(v any) json.RawMessage {
 
 // findingItemProps returns the properties shared by every code-specialist
 // finding. side/severity are the only enum-constrained fields; severity is
-// registry-sourced.
+// registry-sourced. start_line (Q6.1) is the optional first line of a
+// multi-line inline finding; confidence/verified (Q3.4) are the optional
+// self-reported confidence axis.
 func findingItemProps() map[string]any {
 	return map[string]any{
 		"path":           stringSchema(),
 		"line":           integerSchema(),
+		"start_line":     integerSchema(),
 		"side":           enumSchema([]string{"LEFT", "RIGHT"}),
 		"severity":       enumSchema(severityStrings()),
 		"comment":        stringSchema(),
 		"suggestion":     stringSchema(),
 		"anchor_excerpt": stringSchema(),
+		"confidence":     numberSchema(),
+		"verified":       booleanSchema(),
 	}
 }
 

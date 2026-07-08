@@ -66,15 +66,113 @@ func applyAnchorExcerptVerdict(f *Finding, files []FileDiff) {
 	switch v.outcome {
 	case anchorOutcomeMatch:
 	case anchorOutcomeRelocate:
+		// A multi-line finding (Q6.1) anchors a RANGE (StartLine..Line);
+		// relocating only the end line desyncs the range, so we do not
+		// relocate it here — the multi-line range gate will drop the range
+		// and strip the suggestion instead. Single-line findings relocate as
+		// before.
+		if f.StartLine > 0 {
+			f.Suggestion = ""
+			f.SuggestionStrippedReason = v.reason
+			return
+		}
 		f.AnchorRelocatedFrom = f.Line
 		f.Line = v.relocateTo
 	case anchorOutcomeStrip:
 		if strings.TrimSpace(f.Suggestion) == "" {
+			// Q6.3: a prose comment whose excerpt does not match the anchored
+			// line and could not be relocated is a false positive to the
+			// reader — it sits on the wrong line. Annotate it, mark it
+			// unverified, and demote one rank so it is not presented with the
+			// same authority as a correctly-anchored finding.
+			annotateWrongLineProse(f, v.reason)
 			return
 		}
 		f.Suggestion = ""
 		f.SuggestionStrippedReason = v.reason
 	}
+}
+
+// annotateWrongLineProse records that a suggestion-less finding's anchor is
+// suspect (Q6.3): its AnchorExcerpt did not match the line at Path:Line and
+// no unique relocation target was found. Rather than silently leaving a prose
+// comment on the wrong line, we surface the mismatch (AnchorMismatchNote),
+// set Verified=false, cap Confidence low, and demote severity one rank.
+func annotateWrongLineProse(f *Finding, reason string) {
+	f.AnchorMismatchNote = reason
+	f.Verified = boolPtr(false)
+	lowerConfidenceTo(f, 0.3)
+	f.Severity = demoteSeverityOneRank(f.Severity)
+}
+
+// validateMultiLineSuggestionRange enforces the Q6.1 multi-line contract:
+// a finding may only keep a StartLine (spanning the range StartLine..Line on
+// its side) when it carries a one-click suggestion AND the whole range is a
+// contiguous run of anchorable post-image lines in the same hunk.
+//
+// It is deliberately fail-closed. When the range is not verifiable — StartLine
+// out of order, a different hunk, a gap of non-post-image lines, or the file
+// not in the diff — we clear StartLine and STRIP the suggestion (a multi-line
+// replacement applied to a single line would corrupt the file), recording a
+// reason so the TUI can explain the missing fix. A multi-line finding that
+// lost its suggestion in an earlier gate keeps only a single-line anchor: the
+// StartLine is cleared so a later synthesized/repaired single-line suggestion
+// can never be posted against a stale range.
+func validateMultiLineSuggestionRange(findings []Finding, files []FileDiff) []Finding {
+	for i := range findings {
+		f := &findings[i]
+		if f.StartLine <= 0 {
+			continue
+		}
+		if !findingIsInlinePostable(*f) {
+			f.StartLine = 0
+			continue
+		}
+		if strings.TrimSpace(f.Suggestion) == "" {
+			// Multi-line span is only meaningful for a suggestion; without
+			// one, fall back to a single-line-anchored prose comment.
+			f.StartLine = 0
+			continue
+		}
+		if !multiLineRangeValid(*f, files) {
+			reason := "multi-line suggestion range invalid (start_line " +
+				itoa(f.StartLine) + " → line " + itoa(f.Line) +
+				" is not a contiguous post-image range in one hunk)"
+			f.StartLine = 0
+			f.Suggestion = ""
+			f.SuggestionStrippedReason = reason
+		}
+	}
+	return findings
+}
+
+// multiLineRangeValid reports whether the finding's StartLine..Line range is a
+// contiguous run of post-image lines inside the single hunk that contains
+// Line. It requires 0 < StartLine < Line, both endpoints in the same hunk, and
+// every intermediate line present as a post-image line (so GitHub can anchor
+// the whole range on one side).
+func multiLineRangeValid(f Finding, files []FileDiff) bool {
+	if f.StartLine <= 0 || f.StartLine >= f.Line {
+		return false
+	}
+	file := FindFile(files, f.Path)
+	if file == nil {
+		return false
+	}
+	h, _ := HunkAroundLine(file, f.Line)
+	if h == nil {
+		return false
+	}
+	hStart, _ := HunkAroundLine(file, f.StartLine)
+	if hStart != h {
+		return false
+	}
+	for n := f.StartLine; n <= f.Line; n++ {
+		if idx, _ := findAnchorLine(h, n); idx < 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // anchorExcerptOutcome enumerates the three resolution outcomes:
@@ -165,6 +263,18 @@ func anchorExcerptVerdict(f Finding, files []FileDiff) anchorExcerptVerdictResul
 			relocateTo: matches[0],
 		}
 	case 0:
+		// Second chance (Q6.2): the excerpt matched no line in THIS hunk, but
+		// the anchored content may live in a DIFFERENT hunk (a cross-hunk
+		// mis-anchor). FindUniqueExcerptInFile searches every hunk in the file
+		// for a unique post-image match — the same whole-file relocation the
+		// TUI uses for stale diffs. When it finds exactly one, re-anchor there
+		// before giving up and stripping.
+		if line, ok := FindUniqueExcerptInFile(file, f.AnchorExcerpt); ok && line != f.Line {
+			return anchorExcerptVerdictResult{
+				outcome:    anchorOutcomeRelocate,
+				relocateTo: line,
+			}
+		}
 		return anchorExcerptVerdictResult{
 			outcome: anchorOutcomeStrip,
 			reason: "anchor excerpt mismatch (model quoted " +

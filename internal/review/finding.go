@@ -62,9 +62,30 @@ type Finding struct {
 	Side     string   `json:"side,omitempty"` // LEFT or RIGHT; default RIGHT
 	Severity Severity `json:"severity"`
 	Comment  string   `json:"comment"`
+	// StartLine is the optional FIRST line of a multi-line inline finding
+	// (Q6.1). When set (> 0 and < Line) the finding spans the post-image
+	// range StartLine..Line on Side, which GitHub renders as a multi-line
+	// review comment and — for a ```suggestion block — a multi-line
+	// replacement. Zero means the finding is single-line (anchored only at
+	// Line), the historical behaviour. validateMultiLineSuggestionRange
+	// verifies the whole range is anchorable and clears StartLine (and any
+	// suggestion) when it is not, so a malformed range can never post.
+	StartLine int `json:"start_line,omitempty"`
 	// Suggestion is optional: only GitHub-ready replacement text for ```suggestion
 	// (see SuggestionPostsToGitHub). Narrative belongs in Comment alone.
 	Suggestion string `json:"suggestion,omitempty"`
+	// Confidence is the model's optional self-reported confidence in the
+	// finding, 0.0–1.0 (Q3.4). nil when the model omitted it (older runs /
+	// backends that strip unknown keys). Deterministic gates may lower it
+	// (e.g. a wrong-line prose comment). Never posted to GitHub as a field;
+	// the TUI may sort/badge by it (deferred — see the Q3.4 report note).
+	Confidence *float64 `json:"confidence,omitempty"`
+	// Verified is the model's optional self-report of whether it confirmed
+	// the finding against the code (Q3.4). nil when omitted. The
+	// anchor-excerpt gate sets it false when the finding's quoted excerpt did
+	// not match the anchored line and could not be relocated (a prose comment
+	// on the wrong line). Never posted to GitHub as a field.
+	Verified *bool `json:"verified,omitempty"`
 	// AnchorExcerpt is the model's verbatim copy of the post-image line at
 	// Path:Line. The reviewOutputContract asks specialists to include it on
 	// every inline finding so we can deterministically check that the model
@@ -89,6 +110,14 @@ type Finding struct {
 	// info in that case; this field records why so the TUI can hint at the
 	// reason. Never posted to GitHub.
 	ActionabilityNote string `json:"-"`
+	// AnchorMismatchNote is set when validateAnchorExcerpt found that a
+	// suggestion-less finding's AnchorExcerpt did not match the line at
+	// Path:Line and could not be relocated (Q6.3). A prose comment left on
+	// the wrong line is a false positive to the reader, so the gate records
+	// why the anchor is suspect (and sets Verified=false + lowers Confidence)
+	// so the TUI can badge it and the reviewer can double-check the location.
+	// Never posted to GitHub.
+	AnchorMismatchNote string `json:"-"`
 	// AnchorRelocatedFrom records the original (wrong) line number when
 	// validateAnchorExcerpt moved this finding to a different line in the
 	// same hunk because the model's AnchorExcerpt uniquely matched there.
@@ -117,6 +146,36 @@ type Finding struct {
 // findingIsInlinePostable reports whether f should become a GitHub inline comment.
 func findingIsInlinePostable(f Finding) bool {
 	return strings.TrimSpace(f.Path) != "" && f.Line > 0 && strings.TrimSpace(f.Comment) != ""
+}
+
+// boolPtr / floatPtr build pointers for the optional Confidence/Verified
+// fields (Q3.4) so callers can distinguish "unset" (nil) from a real value.
+func boolPtr(b bool) *bool        { return &b }
+func floatPtr(f float64) *float64 { return &f }
+
+// lowerConfidenceTo lowers f.Confidence to at most c (never raising it). A nil
+// Confidence becomes c: a deterministic gate that distrusts a finding always
+// caps its confidence even when the model never reported one.
+func lowerConfidenceTo(f *Finding, c float64) {
+	if f.Confidence == nil || *f.Confidence > c {
+		f.Confidence = floatPtr(c)
+	}
+}
+
+// demoteSeverityOneRank drops a severity by exactly one rank (critical→error→
+// warning→info), matching the repo arbiter's one-rank demotion semantics.
+// info is the floor. Used by the wrong-line-prose gate (Q6.3).
+func demoteSeverityOneRank(s Severity) Severity {
+	switch s {
+	case SeverityCritical:
+		return SeverityError
+	case SeverityError:
+		return SeverityWarning
+	case SeverityWarning:
+		return SeverityInfo
+	default:
+		return SeverityInfo
+	}
 }
 
 // generalFindings returns findings meant for the review body (no inline anchor).

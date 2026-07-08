@@ -733,39 +733,16 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 	if pr == nil {
 		return nil
 	}
-	var inputs []conventionwitness.FindingInput
-	var techFindings []Finding
-	for _, s := range specialists {
-		if s.Err != nil {
-			continue
-		}
-		if !specWitnessable(s.Specialist) {
-			continue
-		}
-		for _, f := range s.Findings {
-			if strings.TrimSpace(f.Path) == "" || f.Line <= 0 {
-				continue
-			}
-			inputs = append(inputs, conventionwitness.FindingInput{
-				Specialist: s.Specialist,
-				Path:       f.Path,
-				Line:       f.Line,
-				Side:       f.Side,
-				Severity:   string(f.Severity),
-				Comment:    f.Comment,
-			})
-			if specWantsConventionEvidence(s.Specialist) {
-				techFindings = append(techFindings, f)
-			}
-		}
-	}
+	inputs, techFindings, formattingFindings := witnessInputsForSpecialists(specialists)
 	if len(inputs) == 0 {
 		return nil
 	}
 	// Append tech-specific sibling-sampling evidence so tech findings have
 	// repo-grounding signal of their own; the shared prEvidence pack is
-	// testing/docs-oriented and rarely covers IaC findings.
+	// testing/docs-oriented and rarely covers IaC findings. Formatting
+	// findings get their own identifier-style census evidence (Q6.5).
 	evidence = appendTechConventionEvidence(evidence, worktree, techFindings)
+	evidence = appendFormattingConventionEvidence(evidence, worktree, formattingFindings)
 	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("start (%d findings)", len(inputs))}
 	// Wrap in stageWithRetry so a transient parse/transport glitch on this
 	// (previously non-retried) path re-runs like every other AI stage.
@@ -787,6 +764,41 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 	}
 	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("done (%d witnesses)", len(res.Witnesses))}
 	return res.Witnesses
+}
+
+// witnessInputsForSpecialists collects the convention-witness inputs from a
+// specialist set: one FindingInput per witnessable finding, plus the tech and
+// formatting findings that get their own harvested evidence blocks. Both
+// inline (path+line) and PR-wide (path "", line 0) comment-bearing findings
+// are included (Q6.5) — path-history evidence speaks to PR-wide testing/docs
+// findings, and formatting findings get an identifier-style census. Extracted
+// from runConventionWitnessPhase so the selection logic is unit-testable.
+func witnessInputsForSpecialists(specialists []SpecialistResult) (inputs []conventionwitness.FindingInput, techFindings, formattingFindings []Finding) {
+	for _, s := range specialists {
+		if s.Err != nil || !specWitnessable(s.Specialist) {
+			continue
+		}
+		for _, f := range s.Findings {
+			if !findingIsInlinePostable(f) && strings.TrimSpace(f.Comment) == "" {
+				continue
+			}
+			inputs = append(inputs, conventionwitness.FindingInput{
+				Specialist: s.Specialist,
+				Path:       f.Path,
+				Line:       f.Line,
+				Side:       f.Side,
+				Severity:   string(f.Severity),
+				Comment:    f.Comment,
+			})
+			if specWantsConventionEvidence(s.Specialist) {
+				techFindings = append(techFindings, f)
+			}
+			if specWantsFormattingEvidence(s.Specialist) {
+				formattingFindings = append(formattingFindings, f)
+			}
+		}
+	}
+	return inputs, techFindings, formattingFindings
 }
 
 // degradedDetail formats a one-line summary of degraded stages for the

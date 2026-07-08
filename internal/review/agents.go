@@ -129,6 +129,12 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// stripping the suggestion when no/ambiguous match. See
 		// anchor_excerpt.go for the full posture.
 		res.Findings = validateAnchorExcerpt(res.Findings, parsedFiles)
+		// Q6.1: verify any multi-line suggestion's StartLine..Line range is a
+		// contiguous, anchorable post-image run in one hunk; clear the range
+		// (and strip the suggestion) when it is not, so a malformed multi-line
+		// replacement can never post. Runs after the anchor-excerpt gate so it
+		// sees the finding's final Line.
+		res.Findings = validateMultiLineSuggestionRange(res.Findings, parsedFiles)
 		// Demote bare "X lacks a comment / lacks tests" findings to info
 		// when no proposed wording or suggestion is present. Docs/testing
 		// only — see actionability.go for the rationale.

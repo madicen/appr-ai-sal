@@ -75,12 +75,18 @@ type Review struct {
 	Comments []ReviewComment `json:"comments,omitempty"`
 }
 
-// ReviewComment is a single inline review comment.
+// ReviewComment is a single inline review comment. StartLine/StartSide are
+// set only for multi-line comments (a suggestion spanning StartLine..Line);
+// GitHub requires start_line < line and both on the same side. They are
+// omitted for the single-line default so existing single-line posts are byte
+// identical.
 type ReviewComment struct {
-	Path string `json:"path"`
-	Line int    `json:"line"`
-	Side string `json:"side,omitempty"` // LEFT (old) or RIGHT (new); default RIGHT
-	Body string `json:"body"`
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Side      string `json:"side,omitempty"`       // LEFT (old) or RIGHT (new); default RIGHT
+	StartLine int    `json:"start_line,omitempty"` // multi-line: first line of the range
+	StartSide string `json:"start_side,omitempty"` // multi-line: side of StartLine (default RIGHT)
+	Body      string `json:"body"`
 }
 
 // CheckAuth returns nil if gh is installed, recent enough (see MinGHVersion),
@@ -421,11 +427,13 @@ func PostReview(ctx context.Context, ref Ref, review Review) error {
 
 // pullReviewCommentInput is the JSON body for POST .../pulls/{n}/comments.
 type pullReviewCommentInput struct {
-	Body     string `json:"body"`
-	CommitID string `json:"commit_id"`
-	Path     string `json:"path"`
-	Line     int    `json:"line"`
-	Side     string `json:"side,omitempty"`
+	Body      string `json:"body"`
+	CommitID  string `json:"commit_id"`
+	Path      string `json:"path"`
+	Line      int    `json:"line"`
+	Side      string `json:"side,omitempty"`
+	StartLine int    `json:"start_line,omitempty"`
+	StartSide string `json:"start_side,omitempty"`
 }
 
 // CreatePullReviewComment posts a single inline review comment on the PR diff.
@@ -446,6 +454,16 @@ func CreatePullReviewComment(ctx context.Context, ref Ref, commitID string, c Re
 		Path:     c.Path,
 		Line:     c.Line,
 		Side:     side,
+	}
+	// Multi-line comment: carry the start of the range. GitHub requires
+	// start_line < line and defaults start_side to the comment's side.
+	if c.StartLine > 0 && c.StartLine < c.Line {
+		payload.StartLine = c.StartLine
+		startSide := c.StartSide
+		if startSide == "" {
+			startSide = side
+		}
+		payload.StartSide = startSide
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

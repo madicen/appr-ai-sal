@@ -146,6 +146,11 @@ type SpecialistSpec struct {
 	// ConventionEvidence marks a spec whose findings get sibling-file
 	// convention evidence harvested for the witness (the tech specialist).
 	ConventionEvidence bool
+	// FormattingEvidence marks a spec whose findings get formatting-specific
+	// sibling-file evidence harvested for the witness (Q6.5): token presence
+	// plus an identifier-style census. Built-in: formatting. See
+	// BuildFormattingConventionEvidence.
+	FormattingEvidence bool
 	// FormatterSilenceAware marks a spec whose formatting-mechanics findings
 	// are downgraded when a formatter/linter ran CLEAN on the same file in the
 	// static-analysis pre-pass (Q5.d). Built-in: formatting. The signal is a
@@ -192,7 +197,9 @@ var builtinSpecs = []SpecialistSpec{
 		Inputs:                InputSet{InputDiff},
 		LanePriority:          2,
 		ArbiterPolicy:         ArbiterPolicy{Suppressible: true, Demotable: true},
+		Witnessable:           true,
 		FormatterSilenceAware: true,
+		FormattingEvidence:    true,
 	},
 	{
 		Name:          SpecDesign,
@@ -404,6 +411,14 @@ func specWantsEvidence(name string) bool {
 func specWantsConventionEvidence(name string) bool {
 	s, ok := lookupSpec(name)
 	return ok && s.ConventionEvidence
+}
+
+// specWantsFormattingEvidence reports whether the named spec's findings get
+// formatting-specific sibling-file evidence harvested for the witness
+// (built-in: formatting). See BuildFormattingConventionEvidence.
+func specWantsFormattingEvidence(name string) bool {
+	s, ok := lookupSpec(name)
+	return ok && s.FormattingEvidence
 }
 
 // specFormatterSilenceAware reports whether the named spec's formatting

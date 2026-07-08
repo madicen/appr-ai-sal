@@ -26,12 +26,21 @@ func InlineReviewComment(specialist string, f Finding) gh.ReviewComment {
 	if side == "" {
 		side = "RIGHT"
 	}
-	return gh.ReviewComment{
+	c := gh.ReviewComment{
 		Path: f.Path,
 		Line: f.Line,
 		Side: side,
 		Body: ReviewCommentBody(specialist, f),
 	}
+	// Multi-line finding (Q6.1): carry the range start so GitHub renders a
+	// multi-line comment and applies the suggestion across StartLine..Line.
+	// The gate (validateMultiLineSuggestionRange) guarantees StartLine < Line
+	// and both anchorable when it survives to here.
+	if f.StartLine > 0 && f.StartLine < f.Line {
+		c.StartLine = f.StartLine
+		c.StartSide = side
+	}
+	return c
 }
 
 // DryRunFullReview renders the preview for posting the entire draft review
@@ -52,12 +61,14 @@ func DryRunSingleFinding(ref gh.Ref, pr *gh.PR, specialist string, f Finding) Dr
 	c := InlineReviewComment(specialist, f)
 	preview := fmt.Sprintf("POST %s/%s/pulls/%d/comments\n\n%s",
 		ref.Owner, ref.Repo, ref.Number, prettyJSON(struct {
-			Body     string `json:"body"`
-			CommitID string `json:"commit_id"`
-			Path     string `json:"path"`
-			Line     int    `json:"line"`
-			Side     string `json:"side"`
-		}{Body: c.Body, CommitID: pr.HeadSHA, Path: c.Path, Line: c.Line, Side: c.Side}))
+			Body      string `json:"body"`
+			CommitID  string `json:"commit_id"`
+			Path      string `json:"path"`
+			Line      int    `json:"line"`
+			Side      string `json:"side"`
+			StartLine int    `json:"start_line,omitempty"`
+			StartSide string `json:"start_side,omitempty"`
+		}{Body: c.Body, CommitID: pr.HeadSHA, Path: c.Path, Line: c.Line, Side: c.Side, StartLine: c.StartLine, StartSide: c.StartSide}))
 	return DryRunPayload{Title: "Dry-run: single comment (not posted)", Payload: preview}
 }
 

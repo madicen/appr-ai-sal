@@ -29,18 +29,10 @@ func (d *Draft) ToReviewForEvent(event string) gh.Review {
 	}
 	var comments []gh.ReviewComment
 	for _, ff := range d.FlatPostableFindingsForPost() {
-		f := ff.Finding
-		body := ReviewCommentBody(ff.Specialist, f)
-		side := f.Side
-		if side == "" {
-			side = "RIGHT"
-		}
-		comments = append(comments, gh.ReviewComment{
-			Path: f.Path,
-			Line: f.Line,
-			Side: side,
-			Body: body,
-		})
+		// InlineReviewComment is the single source of truth for turning a
+		// (specialist, finding) pair into the wire payload, including the
+		// multi-line StartLine/StartSide fields (Q6.1).
+		comments = append(comments, InlineReviewComment(ff.Specialist, ff.Finding))
 	}
 	return gh.Review{
 		CommitID: d.PR.HeadSHA,

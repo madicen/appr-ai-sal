@@ -185,12 +185,15 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 	if in.RunWitness && in.PR != nil {
 		var inputs []conventionwitness.FindingInput
 		var techFindings []Finding
+		var formattingFindings []Finding
 		for _, s := range specResults {
 			if s.Err != nil || !specWitnessable(s.Specialist) {
 				continue
 			}
 			for _, f := range s.Findings {
-				if strings.TrimSpace(f.Path) == "" || f.Line <= 0 {
+				// Q6.5: include PR-wide witnessable findings (comment-bearing)
+				// alongside inline ones, matching runConventionWitnessPhase.
+				if !findingIsInlinePostable(f) && strings.TrimSpace(f.Comment) == "" {
 					continue
 				}
 				inputs = append(inputs, conventionwitness.FindingInput{
@@ -200,10 +203,14 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 				if specWantsConventionEvidence(s.Specialist) {
 					techFindings = append(techFindings, f)
 				}
+				if specWantsFormattingEvidence(s.Specialist) {
+					formattingFindings = append(formattingFindings, f)
+				}
 			}
 		}
 		if len(inputs) > 0 {
 			evidence := appendTechConventionEvidence(in.Evidence, in.Worktree, techFindings)
+			evidence = appendFormattingConventionEvidence(evidence, in.Worktree, formattingFindings)
 			wctx := applog.WithStage(ctx, "convention-witness")
 			res := conventionwitness.Run(wctx, cfg, Complete, in.Worktree,
 				conventionwitness.PrWideRef{Repository: in.PR.Repository, Number: in.PR.Number, Title: in.PR.Title},
