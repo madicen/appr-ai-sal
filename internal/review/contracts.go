@@ -376,6 +376,61 @@ If a clean PR doesn't warrant any follow-up prompts and verdict is approve, retu
 
 String values must be valid JSON only (escape newlines as \n); never use Python """ triple-quoted strings inside the JSON.`, vibeFindingRefSpecialistEnum())
 
+// challengeSystemAddendum is spliced onto the challenged specialist's own
+// persona (SpecialistPrompt) so the same lane that filed a finding reconsiders
+// it under a scoped B4 challenge. It stays strictly in-lane (the persona above
+// already defines the lens) and frames the binary withdraw/uphold decision.
+const challengeSystemAddendum = `A human reviewer is CHALLENGING one specific finding you filed earlier in this review. Below you are given that finding, the exact diff hunk it anchors to, any prior exchange, and the reviewer's message.
+
+Reconsider the finding HONESTLY, using only your own specialty (defined above). You have exactly two outcomes:
+
+- WITHDRAW: the reviewer is right (or you can no longer justify the finding against the evidence). Concede it. A withdrawn finding is auto-skipped and will not be posted. Withdrawing a genuinely wrong finding is the CORRECT, high-value outcome — it removes noise. Do NOT cling to a weak finding just to appear consistent.
+- UPHOLD: the finding still stands. Give a STRONGER, concrete justification grounded in the hunk (name the symbol/line and the consequence if it ships). Optionally supply a revised comment (clearer wording) and/or a revised severity if the exchange changed your assessment.
+
+Rules:
+- Stay strictly in your specialty. Do not reach into another lane to defend or replace the finding.
+- Ground everything in the provided hunk and finding — do not invent code that is not shown.
+- Be decisive: pick withdraw or uphold. Do not hedge or ask the reviewer a question back.
+- If the reviewer's point is partially right, prefer UPHOLD with a revised (narrower) comment/severity over a full withdrawal, unless nothing in-lane survives — then WITHDRAW.`
+
+// challengeOutputContract is the strict-JSON instruction appended to a
+// challenge call's user prompt. Its only registry-sourced substitution is the
+// severity enum (severityLadderEnum) for the optional revised_severity field,
+// so the ladder can never drift from the Severity constants — the same Q2
+// drift-proofing the other contracts use.
+var challengeOutputContract = challengeOutputContractHead + severityLadderEnum() + challengeOutputContractTail
+
+const challengeOutputContractHead = `Return your answer as a single JSON object and nothing else — no prose before, no prose after, no markdown fencing. The object must conform to:
+
+{
+  "decision": "withdraw" | "uphold",
+  "justification": "<REQUIRED. If withdrawing: one or two sentences conceding the finding and why. If upholding: a strengthened, concrete case grounded in the hunk — name the symbol/line and the consequence if it ships as-is.>",
+  "revised_comment": "<OPTIONAL, uphold only: a rewritten finding comment (clearer or narrower) in light of the reviewer's message. Omit or empty string to keep the original comment.>",
+  "revised_severity": `
+
+const challengeOutputContractTail = `  // OPTIONAL, uphold only: a re-graded severity if the exchange changed your assessment. Omit to keep the original severity.
+}
+
+Rules:
+- "decision" is REQUIRED and must be exactly "withdraw" or "uphold".
+- On "withdraw", "revised_comment" and "revised_severity" are ignored — leave them out.
+- All prose must be written in English.
+- String values must be valid JSON: escape newlines as \n and quotes as \". No comments, no trailing commas, no triple-quoted strings.`
+
+// challengeSchema is the schema for a challenge call's output (B4). The
+// revised_severity enum is registry-sourced (severityStrings) so it can never
+// drift from the severity ladder; decision is a fixed two-value enum. Kept in
+// the same OpenAPI subset as the other schemas so a schema-capable provider
+// (Gemini responseSchema) can constrain it.
+var challengeSchema = sync.OnceValue(func() json.RawMessage {
+	return mustSchema(jsonObject(map[string]any{
+		"decision":         enumSchema([]string{string(ChallengeWithdraw), string(ChallengeUphold)}),
+		"justification":    stringSchema(),
+		"revised_comment":  stringSchema(),
+		"revised_severity": enumSchema(severityStrings()),
+	}, "decision", "justification"))
+})
+
 // --- Per-agent JSON schemas (R5 native JSON mode) ------------------------
 //
 // Each JSON stage can hand its schema to a schema-capable provider (Gemini

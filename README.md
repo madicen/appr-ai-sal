@@ -465,15 +465,51 @@ happen in.
 7. **Vibe coach** consumes the post-arbiter findings and produces the
    verdict + paste-ready author prompts.
 8. **Review overlay** opens. You walk findings one card at a time
-   (`y` to post, `n` / `s` to skip, `x` to resurface a memory-suppressed
-   finding, `←` / `→` to navigate, `f` to skip the rest), then confirm the
-   summary. **Nothing hits GitHub until you press `y` on the final
-   confirmation.**
+   (`y` to post, `n` / `s` to skip, `c` to
+   [challenge the finding](#challenge-a-finding-chat-with-the-specialist),
+   `x` to resurface a memory-suppressed finding, `←` / `→` to navigate, `f` to
+   skip the rest), then confirm the summary. **Nothing hits GitHub until you
+   press `y` on the final confirmation.**
 
 The chrome `[-]` button collapses the modal to its tab strip so you
 can keep browsing the diff while the pipeline runs; flip **Start
 review minimized** in the Run options pane to open the modal that way
 by default.
+
+### Challenge a finding (chat with the specialist)
+
+Not sure a finding is right? Press **`c`** on its approval card to open a
+**scoped challenge exchange** with the specialist that filed it. The specialist
+gets *only* its own original finding, the surrounding diff hunk, and your
+question — one cheap, targeted call (the same shape as the suggestion-repair
+pass, never the whole PR) — and must do one of two things:
+
+- **withdraw** the finding — you were right; the card is **auto-skipped**
+  (badged *"withdrawn by the specialist under challenge"*) and will not post, or
+- **uphold** it — the finding stands, with a **strengthened justification** and
+  optionally a revised comment / severity that is applied to the card for you.
+
+The exchange is **multi-turn**: after an uphold you can type a follow-up and the
+specialist sees the whole conversation, so you can push back until it either
+concedes or gives you a case you accept. `ctrl+s` sends your message; `esc`
+closes the exchange (the card returns to its prior state unless it was
+withdrawn). A failed call is shown inline and leaves the card unchanged
+(fail-open).
+
+**Routing & cost.** The challenge call is its own pipeline stage, `challenge`,
+so you can point it at a cheap/fast model with
+`stage_models["challenge"]` (see [Per-stage model routing](#per-stage-model-routing--ensembles)).
+It respects the same usage metering and concurrency cap every other call does.
+
+**Feeds reviewer memory.** A withdrawal is a strong negative signal for that
+finding's pattern, so it is folded into
+[reviewer memory](#reviewer-memory-learns-from-acceptskip) as a *skipped*
+signal at challenge time (fail-open) — a pattern the specialists keep conceding
+under challenge starts getting suppressed on future runs.
+
+**Demo mode** ships a canned, offline exchange (the specialist upholds the
+finding on the first turn, then withdraws it on a follow-up) so the feature is
+fully demoable without a live model.
 
 ### Reviewer memory (learns from accept/skip)
 
@@ -896,9 +932,12 @@ and key are reused, so every stage/ensemble model must be servable by this
 profile's provider. Recognized stage names are the code specialists
 (`formatting`, `design`, `testing`, `docs`, `security`, `tech`), the PR agents
 (`description`, `checks`, `discussion`, `scope`), the synthesis stages
-(`arbiter`, `witness`, `vibe-coach`), and the `intent` pre-pass (a cheap
+(`arbiter`, `witness`, `vibe-coach`), the `intent` pre-pass (a cheap
 description/linked-issue extraction — a natural fit for `stage_models["intent"]`
-pointing at a small model); a user-defined specialist's name works too.
+pointing at a small model), and `challenge` (the
+[challenge-a-finding](#challenge-a-finding-chat-with-the-specialist) exchange, a
+good candidate for a cheap/fast model); a user-defined specialist's name works
+too.
 
 **Ensemble mode** (opt-in, off by default) runs a stage on two or more models
 and unions their findings through the same cross-specialist dedupe the pipeline

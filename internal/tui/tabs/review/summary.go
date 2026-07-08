@@ -345,10 +345,13 @@ func (m *Model) helpForPhase() string {
 	case phaseRunning:
 		return "tab/[ ] switch tab · j/k focus row · space expand · q abort · ↑/↓ scroll · wheel"
 	case phaseApprove:
+		if m.challengeActive {
+			return "ctrl+s send · esc close challenge"
+		}
 		if !m.done {
 			return "tab/[ ] switch tab · ↑/↓ scroll · q abort · wheel"
 		}
-		return "tab/[ ] switch tab · y post · n/s skip · x resurface · ←/→ finding · R refresh PR · q abort · wheel"
+		return "tab/[ ] switch tab · y post · n/s skip · c challenge · x resurface · ←/→ finding · R refresh PR · q abort · wheel"
 	case phaseGeneratingSummary:
 		return "refining summary with your final selections… · q abort"
 	case phaseSummary:

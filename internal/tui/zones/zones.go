@@ -57,13 +57,17 @@ const (
 	// (offered when reopening a PR that has an in-progress saved review
 	// session for the current head SHA). Yes rehydrates the saved draft +
 	// decisions; No discards the session and starts fresh.
-	ResumeYes                = "zone:resume:yes"
-	ResumeNo                 = "zone:resume:no"
-	ErrorDismiss             = "zone:error:dismiss"
-	ErrorCopy                = "zone:error:copy"
-	DryDismiss               = "zone:dry:dismiss"
-	StagedPost               = "zone:staged:post"
-	StagedSkip               = "zone:staged:skip"
+	ResumeYes    = "zone:resume:yes"
+	ResumeNo     = "zone:resume:no"
+	ErrorDismiss = "zone:error:dismiss"
+	ErrorCopy    = "zone:error:copy"
+	DryDismiss   = "zone:dry:dismiss"
+	StagedPost   = "zone:staged:post"
+	StagedSkip   = "zone:staged:skip"
+	// StagedChallenge is the clickable "Challenge (c)" button on a finding
+	// card that opens the B4 scoped challenge exchange with the finding's
+	// specialist.
+	StagedChallenge          = "zone:staged:challenge"
 	StagedQuit               = "zone:staged:quit"
 	StagedPrev               = "zone:staged:prev"
 	StagedNext               = "zone:staged:next"

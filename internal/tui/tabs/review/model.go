@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
@@ -397,6 +398,11 @@ type approvalCard struct {
 	// Empty means the historical top-level post. Populated by routeCardsToThreads
 	// once the PR's review threads are fetched.
 	threadReplyID string
+	// withdrawnViaChallenge is set when the specialist withdrew this finding
+	// during a B4 challenge exchange. The card is auto-skipped (state ==
+	// cardSkipped) and the detail view badges it as withdrawn-via-challenge
+	// rather than a plain skip, so the reviewer can tell the difference.
+	withdrawnViaChallenge bool
 }
 
 // Model is the persistent overlay that hosts the entire review flow:
@@ -537,6 +543,22 @@ type Model struct {
 	// to a single atomic write. See session.go.
 	sessionDirty   bool
 	sessionSaveSeq int
+
+	// B4 "challenge this finding" sub-state. When challengeActive is true the
+	// approve phase renders the scoped challenge exchange for the card at
+	// challengeCardIdx instead of the normal card detail: a textarea for the
+	// reviewer's question and a scrollable transcript of the multi-turn
+	// exchange. challengeInput is the bubbles textarea; challengeTranscript is
+	// the in-memory []review.ChallengeTurn carried into each scoped call so the
+	// specialist sees the whole conversation; challengeInFlight guards against
+	// double-submitting while a call is running; challengeErr holds the last
+	// call error (shown in the overlay, card left unchanged). See challenge.go.
+	challengeActive     bool
+	challengeCardIdx    int
+	challengeInput      textarea.Model
+	challengeTranscript []review.ChallengeTurn
+	challengeInFlight   bool
+	challengeErr        error
 }
 
 func zoneOverlayAgent(i int) string {
@@ -1083,6 +1105,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyPRRefresh(msg.PR, msg.Diff)
 		return m, nil
 
+	case ChallengeDoneMsg:
+		return m, m.onChallengeDone(msg)
+
 	case VibeCoachDoneMsg:
 		m.coachInFlight = false
 		// If the user changed skips again between issue and completion,
@@ -1152,6 +1177,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// B4: while a challenge exchange is open it owns all keyboard input — the
+	// textarea must receive every rune (including tab), so route to the
+	// challenge handler before the tab-navigation / digit shortcuts below can
+	// steal a keystroke. esc/ctrl+s and friends are handled inside it.
+	if m.challengeActive {
+		return m.handleChallengeKey(msg)
+	}
 	// Tab navigation works from every phase: the user can browse the
 	// overview, any finished agent, and (once ready) the summary at will.
 	switch msg.String() {
@@ -1209,6 +1241,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// from suppressed→pending so the reviewer can post it with y. A
 			// no-op on any other card.
 			return m.actResurfaceCurrent()
+		case "c", "C":
+			// B4: open a scoped challenge exchange for the focused finding.
+			// A no-op when there's no challengeable card focused.
+			return m.actOpenChallenge()
 		case "right", "l":
 			return m.actNext()
 		case "left", "h":
@@ -1335,6 +1371,9 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			}
 			if z := zone.Get(zones.StagedSkip); z != nil && z.InBounds(msg) {
 				return m.actSkipCurrent()
+			}
+			if z := zone.Get(zones.StagedChallenge); z != nil && z.InBounds(msg) {
+				return m.actOpenChallenge()
 			}
 			if z := zone.Get(zones.StagedNext); z != nil && z.InBounds(msg) {
 				return m.actNext()

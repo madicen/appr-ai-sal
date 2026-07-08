@@ -179,6 +179,32 @@ func RecordReviewerMemory(d *Draft) {
 	}
 }
 
+// RecordChallengeWithdrawal folds a B4 challenge WITHDRAWAL into the per-repo
+// reviewer memory as a negative (skip) signal for that finding's pattern. When
+// the specialist that filed a finding withdraws it under challenge, that is
+// strong evidence the pattern is noise in this repo — the same signal a manual
+// skip produces — so it counts toward the deterministic suppressor and the
+// arbiter's "previously rejected patterns" section on future runs.
+//
+// It is the single call the TUI makes at challenge time (mirroring
+// RecordReviewerMemory's role at post time) so the fingerprint construction
+// stays in one place. Fail-open: a missing repo key or a store error logs and
+// is swallowed so a memory-write problem never affects the exchange. An uphold
+// records nothing (the finding survives, so there is no reject signal to log).
+func RecordChallengeWithdrawal(pr *gh.PR, specialist string, f Finding) {
+	owner, repo := memoryRepoKey(pr)
+	if owner == "" || repo == "" {
+		return
+	}
+	entry := memory.Entry{
+		Fingerprint: fingerprintForFinding(specialist, f),
+		Decision:    memory.DecisionSkipped,
+	}
+	if err := memory.NewStore().Record(owner, repo, entry); err != nil {
+		applog.Warn("reviewer memory: challenge-withdrawal record failed", "repo", owner+"/"+repo, "err", err.Error())
+	}
+}
+
 // collectMemoryEntries derives the memory entries from a draft's final state.
 // Pure (no IO) so it is directly unit-testable.
 func collectMemoryEntries(d *Draft) []memory.Entry {

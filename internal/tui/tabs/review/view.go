@@ -21,6 +21,10 @@ func (m *Model) rebuildBody() {
 	case phaseRunning:
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderRunningBody(), m.vp.Width))
 	case phaseApprove:
+		if m.challengeActive {
+			m.vp.SetContent(util.EnforceMaxLineWidth(m.renderChallenge(max(8, m.vp.Width)), m.vp.Width))
+			break
+		}
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderAgentTab(m.activeAgent()), m.vp.Width))
 	case phaseGeneratingSummary:
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderGeneratingSummaryBody(), m.vp.Width))
@@ -1221,6 +1225,8 @@ func (m *Model) renderCardDetail(rowW int) string {
 		}
 	case cardSkipped:
 		switch {
+		case cur.withdrawnViaChallenge:
+			b.WriteString(styles.DimStyle.Render("↩ withdrawn by the specialist under challenge — auto-skipped, won't post") + "\n\n")
 		case cur.demoted:
 			b.WriteString(styles.DimStyle.Render("— not posting (demoted); press y to post anyway") + "\n\n")
 		case cur.memorySuppressed:
@@ -1246,8 +1252,9 @@ func (m *Model) renderCardDetail(rowW int) string {
 	right := zone.Mark(zones.StagedNext, styles.DimStyle.Render(" next → "))
 	post := zone.Mark(zones.StagedPost, styles.OkStyle.Render(" Post (y) "))
 	skip := zone.Mark(zones.StagedSkip, styles.DimStyle.Render(" Skip (n) "))
+	challenge := zone.Mark(zones.StagedChallenge, styles.DimStyle.Render(" Challenge (c) "))
 	quit := zone.Mark(zones.StagedQuit, styles.ErrStyle.Render(" Abort (q) "))
-	row := strings.Join([]string{left, post, skip, right, quit}, "  ")
+	row := strings.Join([]string{left, post, skip, challenge, right, quit}, "  ")
 	b.WriteString(lipgloss.NewStyle().Width(rowW).Render(row))
 	b.WriteString("\n")
 	if m.dryRun {
