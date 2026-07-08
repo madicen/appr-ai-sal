@@ -1,0 +1,36 @@
+ security   1 finding(s) · —
+
+Summary
+    no high-severity issues; one input-validation hardening
+
+Finding 1 of 1  ·  0 already on PR  ·  0 posted  ·  0 skipped
+sort: default  ·  filter: all  ·  (S sort · f filter)
+
+ security   cmd/appr-ai-sal/main.go:50  ERROR
+
+Diff context
+· 	reviewStrictness := flag.String("review-strictness", "", "Review intensity: critical_only | lenient |
+balanced | strict (overrides env / config)")
++ 	demoMode := flag.Bool("demo", false, "run in self-contained demo mode with mock services (for VHS
+screenshots / GIFs)")
+· 	flag.Parse()
+· 	dry := *dryRun ◀ here
+· 	if os.Getenv("APPR_AI_SAL_DRY") == "1" {
+
+Comment GitHub will post
+    AI-generated review comment — tool: appr-ai-sal, agent: security
+
+    configureDemoEnv calls os.Setenv on APPR_AI_SAL_CONFIG_DIR and APPR_AI_SAL_CACHE_DIR without restoring
+    them on exit. If the demo binary is exec'd from a host process (e.g. an integration test harness)
+    those env vars leak into the parent's children. Recommend redirecting only inside the demo process via
+    package-level overrides instead of the global env.
+
+      if err := os.Setenv("APPR_AI_SAL_CONFIG_DIR", cfgDir); err != nil {
+          return err
+      }
+      defer os.Unsetenv("APPR_AI_SAL_CONFIG_DIR")
+
+ ← prev    Post (y)    Skip (n)    Challenge (c)    next →    Abort (q)
+e edit · E $EDITOR · ctrl+y copy finding · ctrl+o copy hunk
+
+DRY-RUN — Post shows the GitHub payload only; nothing is sent.

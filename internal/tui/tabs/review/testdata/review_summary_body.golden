@@ -1,0 +1,62 @@
+Final step — post the review summary
+
+┌──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│ Merge recommendation · vibe-coach                                                                        │
+│                                                                                                          │
+│ Request changes                                                                                          │
+└──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+Inline comments: 0 already on PR, 0 posted this session, 0 skipped (5 total)
+Usage · 14 calls · 182k in / 21k out · ~$0.43 · 6m12s
+
+Markdown body GitHub will publish (scroll with wheel or ↑/↓):
+
+    appr-ai-sal summary
+
+    │ AI disclosure: This summary was produced by appr-ai-sal (automated AI tools) to assist the human
+    │ reviewer. Line-level feedback appears as inline comments on the diff where agents cited paths and
+    │ lines. This top-level comment summarises that feedback and offers optional paste-ready AI
+    │ instructions
+    │ for the author.
+
+    │ [!CAUTION] The review is still manually performed by the person using appr-ai-sal — any approve,
+    │ request-changes, or comment signal represents that individual's own review and judgement, not an
+    │ automated decision. It is not a replacement for manual review.
+
+    Merge recommendation (AI agent: vibe-coach)
+
+    Verdict: Request changes
+
+    Solid plumbing for the demo recording path. The synthetic progress generator is a clean way to keep
+    VHS reproducible without coupling the TUI to a real AI provider, and the dry-run-by-default behaviour
+    prevents an accidental real post during a tape session.
+
+    Two things worth tightening before merge:
+
+    1. The demo bool parameter pattern is starting to multiply across
+    internal/tui/data. Now's a reasonable inflection point to introduce
+    a small interface so the production path doesn't accumulate flags
+    for every recording-only feature.
+    2. The new configureDemoEnv helper mutates process env vars without
+    a paired restore. That's fine for the binary's lifetime, but tests
+    that exec it would inherit the demo dirs. Consider a config-dir
+    override that flows through Options instead.
+
+    Verdict: request changes — minor, but the env-leak in particular is worth fixing now while the seam is
+    fresh.
+
+    This is guidance for reviewers; it does not submit GitHub Approve or Request changes automatically.
+
+    Repo expert panel (arbiter over per-specialist briefs)
+
+    Repo arbiter agrees with the specialist panel; one demote applied (testing/docs convention witness
+    flagged a non-divergent claim).
+
+    Rationale:
+
+    • Convention witness saw 'congruent' for the docs finding on api.md; demote one rank.
+    • Security finding stands as-is; the input-validation hardening is consistent with sibling endpoints.
+
+ Post summary (y)    Skip summary (n)    Approve only (a)    Abort (q)
+
+DRY-RUN — Post shows the body payload only.

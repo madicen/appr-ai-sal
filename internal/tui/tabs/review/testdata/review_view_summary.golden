@@ -1,0 +1,30 @@
+
+  Review · post summary
+  ‹ ● docs   ● security   ◌ Description   ◌ Checks   ◌ Discussion   ◌ Scope   ✓ Arbiter   ● Vibe  [★ Summary]
+  findings: 1 error · 2 warning · 2 info
+
+  Final step — post the review summary
+
+  ┌──────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+  │ Merge recommendation · vibe-coach                                                                        │
+  │                                                                                                          │
+  │ Request changes                                                                                          │
+  └──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+
+  Inline comments: 0 already on PR, 0 posted this session, 0 skipped (5 total)
+
+  Markdown body GitHub will publish (scroll with wheel or ↑/↓):
+
+      appr-ai-sal summary
+
+      │ AI disclosure: This summary was produced by appr-ai-sal (automated AI tools) to assist the human
+      │ reviewer. Line-level feedback appears as inline comments on the diff where agents cited paths and
+      │ lines. This top-level comment summarises that feedback and offers optional paste-ready AI
+      │ instructions
+      │ for the author.
+
+      │ [!CAUTION] The review is still manually performed by the person using appr-ai-sal — any approve,
+      │ request-changes, or comment signal represents that individual's own review and judgement, not an
+      │ automated decision. It is not a replacement for manual review.
+
+  y post summary · a approve only · R refresh PR · n skip · q abort · ↑/↓ scroll preview · wheel

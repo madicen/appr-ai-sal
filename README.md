@@ -1335,6 +1335,32 @@ make lint        # golangci-lint run ./...
 `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` or
 `brew install golangci-lint`. The enabled linters live in `.golangci.yml`.
 
+### TUI render tests (golden files + teatest flows)
+
+The terminal UI is covered by two hermetic test styles, both driven entirely
+through **demo mode** (the same offline fixtures the `--demo` flag uses — no
+`gh`, no network, no AI provider):
+
+- **Golden-file render tests** snapshot the big render functions (the review
+  overlay in `internal/tui/tabs/review`, and the root PR list / detail views in
+  `internal/tui/model`) against `testdata/*.golden`. They force a fixed terminal
+  size and a monochrome (`NO_COLOR` / Ascii) profile so the captured text is
+  stable, and redact the few time-dependent spans.
+- **teatest end-to-end flows** drive the real `tea.Model` in demo mode (list →
+  detail → start review → dry-run post, plus the `?` help overlay, `ctrl+k`
+  command palette, and the queue filter) with
+  [`charmbracelet/x/exp/teatest`](https://github.com/charmbracelet/x/tree/main/exp/teatest).
+
+Shared setup (monochrome rendering + the golden machinery) lives in
+`internal/tui/tuitest`. To regenerate the golden files after an intentional UI
+change, pass the standard `-update` flag, then re-run without it to confirm the
+new goldens are stable, and commit the results:
+
+```bash
+go test ./internal/tui/... -run TestGolden -update   # rewrite goldens
+go test ./internal/tui/...                            # verify they match
+```
+
 ### Evals (prompt-quality regression harness)
 
 `internal/evals` is the "quality flywheel": a fixture corpus of small PRs with

@@ -1,0 +1,40 @@
+ appr-ai-sal · madicen/appr-ai-sal#742  Stream review progress events through the persistent overlay
+ 4 file(s)  ·  +33/-2  ·  no review  ·  needs you  ·   view: Diff   ·   open in browser (O)
+╭────────────────────────────────╮╭──────────────────────────────────────────╮╭────────────────────────────────────────╮
+│ PR · Files · focused (tab to … ││ Diff · internal/tui/data/commands.go     ││ Review · c hide · tab                  │
+│ PR overview                    ││ internal/tui/data/commands.go  +5/-1     ││ Strictness                             │
+│   Description            14 ln ││                                          ││   critical only merge blockers         │
+│   Checks        checks pending ││           @@ -72,11 +72,15 @@ func       ││   lenient       error + critical       │
+│   Discussion                 … ││ LoadPRDetailCmd(ref gh.Ref) tea.Cmd {    ││ ● balanced      warning and above      │
+│ ────────────────────────────── ││   72│  72 ·                              ││   strict        info-level nits        │
+│ ▼ cmd/                         ││   72│  72 · // StartReviewCmd starts a r ││                                        │
+│   ▼ appr-ai-sal/               ││             eview.Run goroutine and emit ││ AI profile                             │
+│       main.go +6/-0            ││             s ReviewStartedMsg with      ││ [ default ▼ ]                          │
+│ ▼ internal/                    ││   73│  73 · // the progress channel the  ││ claude · (default)                     │
+│   ▼ demo/                      ││             caller should poll via WaitF ││  edit in settings (o)                  │
+│       review.go +21/-0         ││             orProgressCmd.               ││                                        │
+│   ▼ tui/                       ││   74│     - func StartReviewCmd(ref gh.R ││ Context agents                         │
+│     ▼ data/                    ││             ef, cfg *aiconfig.Config) te ││  ● Repo agents stale — ctrl+r          │
+│       > commands.go +5/-1      ││             a.Cmd {                      ││  ● Tech experts not configured — ctrl… │
+│     ▼ model/                   ││     │  74 + func StartReviewCmd(ref gh.R ││  ● Lang experts fresh — ctrl+l         │
+│         openers.go +1/-1       ││             ef, cfg *aiconfig.Config, de ││                                        │
+│                                ││             mo bool) tea.Cmd {           ││ Run options                            │
+│                                ││   75│  75 ·     snap := cfg.Clone()      ││ [x] Parallel specialists               │
+│                                ││   76│  76 ·     return func() tea.Msg {  ││ [x] Parallel PR agents                 │
+│                                ││   77│  77 ·         ctx :=               ││ [x] Dry run                            │
+│                                ││ context.Background()                     ││ [ ] Start review minimized             │
+│                                ││     │  78 +         if demo {            ││                                        │
+│                                ││     │  79 +             ch := demopkg.Sy ││  Start review (r)                      │
+│                                ││             wProgress(ctx, ref, snap)    ││                                        │
+│                                ││     │  80 +             return ReviewSta ││                                        │
+│                                ││             ch}                          ││                                        │
+│                                ││     │  81 +         }                    ││                                        │
+│                                ││   78│  82 ·         ch, err :=           ││                                        │
+│                                ││ review.Run(ctx,                          ││                                        │
+│                                ││ r                                        ││                                        │
+│                                ││             ef, snap)                    ││                                        │
+│                                ││   79│  83 ·         if err != nil {      ││                                        │
+│                                ││   80│  84 ·             return           ││                                        │
+╰────────────────────────────────╯╰──────────────────────────────────────────╯╰────────────────────────────────────────╯
+ tab pane · j/k nav · space fold · r review · c toggle controls · a reopen approval · O browser · g description · d
+ diff-only · P bulk · ctrl+k commands · ? help · esc back · DRY-RUN
