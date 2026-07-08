@@ -74,11 +74,6 @@ func (m *Model) buildCommandRegistry() *commands.Registry {
 	inDetail := func(c commands.Context) bool { return c.Mode == "detail" }
 	listOrDetail := func(c commands.Context) bool { return c.Mode == "list" || c.Mode == "detail" }
 
-	// wrapModel adapts a handler returning (tea.Model, tea.Cmd) to a
-	// command Run (the model mutation persists via the *Model receiver).
-	wrapModel := func(fn func() (tea.Model, tea.Cmd)) func() tea.Cmd {
-		return func() tea.Cmd { _, cmd := fn(); return cmd }
-	}
 	act := func(fn func()) func() tea.Cmd {
 		return func() tea.Cmd { fn(); return nil }
 	}
@@ -138,7 +133,7 @@ func (m *Model) buildCommandRegistry() *commands.Registry {
 		ID: "detail.review", Title: "Start AI review", Category: "PR detail",
 		Binding: km.DetailReview,
 		Enabled: func(c commands.Context) bool { return c.Mode == "detail" && c.HasPR },
-		Run:     wrapModel(m.startReviewOverlay),
+		Run:     func() tea.Cmd { return m.startReviewOverlay() },
 	})
 	r.Register(commands.Command{
 		ID: "detail.toggle-controls", Title: "Toggle review controls pane", Category: "PR detail",
@@ -159,7 +154,7 @@ func (m *Model) buildCommandRegistry() *commands.Registry {
 		ID: "detail.reopen-approval", Title: "Reopen approval overlay", Category: "PR detail",
 		Binding: km.DetailReopenApproval,
 		Enabled: func(c commands.Context) bool { return c.Mode == "detail" && c.HasDraft },
-		Run:     wrapModel(m.reopenApprovalIfPossible),
+		Run:     func() tea.Cmd { return m.reopenApproval() },
 	})
 	r.Register(commands.Command{
 		ID: "detail.bulk-post", Title: "Bulk-post review draft", Category: "PR detail",
@@ -278,7 +273,7 @@ func (m *Model) buildCommandRegistry() *commands.Registry {
 		},
 		Run: func() tea.Cmd {
 			if m.mode == modeDetail {
-				return m.copyCurrentPRURLCmd()
+				return m.CopyURL()
 			}
 			return m.copyListSelectionURLCmd()
 		},

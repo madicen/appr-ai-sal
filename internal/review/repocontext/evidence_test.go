@@ -10,19 +10,19 @@ import (
 
 func TestLanguageForName(t *testing.T) {
 	cases := map[string]string{
-		"main.go":           "go",
-		"app.py":            "python",
-		"Component.tsx":     "ts",
-		"helpers.test.ts":   "ts",
-		"main.tf":           "hcl",
-		"lib.rs":            "rust",
-		"Item.kt":           "kotlin",
-		"README.md":         "markdown",
-		"build.sh":          "shell",
-		"queries.sql":       "sql",
-		"settings.yaml":     "yaml",
-		"package.json":      "json",
-		"unknown.bizarre":   "other",
+		"main.go":         "go",
+		"app.py":          "python",
+		"Component.tsx":   "ts",
+		"helpers.test.ts": "ts",
+		"main.tf":         "hcl",
+		"lib.rs":          "rust",
+		"Item.kt":         "kotlin",
+		"README.md":       "markdown",
+		"build.sh":        "shell",
+		"queries.sql":     "sql",
+		"settings.yaml":   "yaml",
+		"package.json":    "json",
+		"unknown.bizarre": "other",
 	}
 	for name, want := range cases {
 		if got := languageForName(name); got != want {

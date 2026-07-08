@@ -1,7 +1,6 @@
-package model
+package detail
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
@@ -11,7 +10,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
-	overlay "github.com/madicen/bubble-overlay"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
@@ -19,17 +17,15 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/review"
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
 	"github.com/madicen/appr-ai-sal/internal/tui/diffview"
-	"github.com/madicen/appr-ai-sal/internal/tui/overlays"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
-	reviewtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/review"
 	"github.com/madicen/appr-ai-sal/internal/tui/tabs/settings"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
-func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.Cmd) {
-	if m.opts.MouseYAdjust != 0 {
-		msg.Y += m.opts.MouseYAdjust
+func (m *Model) handleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.Cmd) {
+	if m.host.MouseYAdjust() != 0 {
+		msg.Y += m.host.MouseYAdjust()
 	}
 	if wheel {
 		// Route wheel by which pane bounds contain the cursor.
@@ -86,7 +82,7 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 	// Reopen approval / description toggle / finish (they take precedence over
 	// pane focus changes since they are header chips).
 	if z := zone.Get(zones.ReopenApproval); z != nil && z.InBounds(msg) {
-		return m.reopenApprovalIfPossible()
+		return m, m.host.ReopenApproval()
 	}
 	if z := zone.Get(zones.DescriptionToggle); z != nil && z.InBounds(msg) {
 		// Toggle Description ↔ Diff so the chip stays a one-click affordance
@@ -120,8 +116,8 @@ func (m *Model) detailHandleMouse(msg tea.MouseMsg, wheel bool) (tea.Model, tea.
 		return m, m.ensureCenterDataLoaded()
 	}
 	if z := zone.Get(zones.OpenInBrowser); z != nil && z.InBounds(msg) {
-		if m.currentPR != nil {
-			if u := strings.TrimSpace(m.currentPR.URL); u != "" {
+		if m.currentPR() != nil {
+			if u := strings.TrimSpace(m.currentPR().URL); u != "" {
 				return m, util.OpenInBrowserCmd(u)
 			}
 		}
@@ -196,23 +192,23 @@ func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
 	case zoneInBounds(zones.ControlsProfileDD, msg):
 		// Open the profile dropdown panel; the dropdown trusts the zone
 		// hit, so forwarding the press opens it regardless of coordinates.
-		return m.forwardControlsProfileDropdown(msg), true
+		return m.host.ForwardControlsProfileDropdown(msg), true
 	case zoneInBounds(zones.ControlsProfileEdit, msg):
-		return m.openSettings(settings.StartAI), true
+		return m.host.OpenSettings(settings.StartAI), true
 	case zoneInBounds(zones.ControlsRepoAgents, msg):
 		// Clicking the row is a navigation gesture — open the tab
 		// focused on the current PR's repo. Regeneration is reserved
 		// for the explicit "build" path (ctrl+b), so click-to-view
 		// matches click-to-view-anything-else in the controls pane and
 		// doesn't surprise the user with an expensive LLM run.
-		return m.openRepoAgentsForCurrentPR(false), true
+		return m.host.OpenRepoAgentsForCurrentPR(false), true
 	case zoneInBounds(zones.ControlsTechAgents, msg):
 		// Same as above: tech experts open in navigate-only mode.
 		// ctrl+t is also navigate; the repo-agents tab's own UI is the
 		// regen entry point once the user is there.
-		return m.openRepoAgentsForCurrentPR(false), true
+		return m.host.OpenRepoAgentsForCurrentPR(false), true
 	case zoneInBounds(zones.ControlsLangAgents, msg):
-		return m.openLangAgents(), true
+		return m.host.OpenLangAgents(), true
 	case zoneInBounds(zones.ControlsToggleParallel, msg):
 		// Parallel specialists is a repoconfig knob (persists across
 		// runs), but flipping it inline matches the muscle memory the
@@ -226,7 +222,7 @@ func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
 			// Fall back to opening settings on save failure so the user
 			// still has a way to flip the bit (and can see the error
 			// surface from the settings save flow).
-			return m.openSettings(settings.StartRepoContext), true
+			return m.host.OpenSettings(settings.StartRepoContext), true
 		}
 		return nil, true
 	case zoneInBounds(zones.ControlsToggleParallelPRAgents, msg):
@@ -234,11 +230,11 @@ func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
 		// toggle → save → refresh, falling back to the settings tab on a
 		// save failure so the user still has a path to flip the bit.
 		if err := m.toggleParallelPRAgents(); err != nil {
-			return m.openSettings(settings.StartRepoContext), true
+			return m.host.OpenSettings(settings.StartRepoContext), true
 		}
 		return nil, true
 	case zoneInBounds(zones.ControlsToggleDryRun, msg):
-		m.opts.DryRun = !m.opts.DryRun
+		m.host.SetDryRun(!m.host.DryRun())
 		m.refreshDetailViews()
 		return nil, true
 	case zoneInBounds(zones.ControlsToggleStartMinimized, msg):
@@ -246,17 +242,13 @@ func (m *Model) controlsHandleClick(msg tea.MouseMsg) (tea.Cmd, bool) {
 		m.refreshDetailViews()
 		return nil, true
 	case zoneInBounds(zones.ControlsStartReview, msg):
-		_, cmd := m.startReviewOverlay()
-		return cmd, true
+		return m.host.StartReviewOverlay(), true
 	}
 	return nil, false
 }
 
 func (m *Model) setStrictness(level aiconfig.ReviewStrictness) {
-	if m.opts.AIConfig == nil {
-		m.opts.AIConfig = aiconfig.DefaultConfig()
-	}
-	m.opts.AIConfig.ReviewStrictness = level
+	m.host.SetStrictness(level)
 	m.refreshDetailViews()
 }
 
@@ -308,7 +300,7 @@ func (m *Model) toggleParallelPRAgents() error {
 func (m *Model) detailBackToList() {
 	m.centerView = centerDiff
 	m.diffOnly = false
-	m.mode = modeList
+	m.host.BackToList()
 	// Re-sync the bubbles list height to the current chrome
 	// budget. Opening the PR populated m.prLanguages, which
 	// flips the selected list row's lang-agents freshness from
@@ -355,43 +347,7 @@ func (m *Model) detailToggleControls() {
 	m.refreshDetailViews()
 }
 
-// detailBulkConfirmCmd pushes the bulk-post confirm overlay (the `P`
-// shortcut / "bulk" status hint). Returns nil when there's no draft.
-func (m *Model) detailBulkConfirmCmd() tea.Cmd {
-	if m.draft == nil {
-		return nil
-	}
-	modal := overlays.NewBulkConfirmOverlay(m.draft.Ref.String())
-	cfg := overlay.DefaultOverlayConfig()
-	return tea.Batch(
-		m.overlayStack.Push(modal, cfg),
-		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
-	)
-}
-
-// detailOpenBrowserCmd opens the current PR in the browser (the `O`
-// shortcut / "browser" status hint). Returns nil when there's no URL.
-func (m *Model) detailOpenBrowserCmd() tea.Cmd {
-	if m.currentPR != nil {
-		if u := strings.TrimSpace(m.currentPR.URL); u != "" {
-			return util.OpenInBrowserCmd(u)
-		}
-	}
-	return nil
-}
-
-// copyCurrentPRURLCmd copies the current PR's URL to the clipboard (Phase 5
-// item 9). Returns nil when there's no PR / URL.
-func (m *Model) copyCurrentPRURLCmd() tea.Cmd {
-	if m.currentPR != nil {
-		if u := strings.TrimSpace(m.currentPR.URL); u != "" {
-			return util.CopyPlainTextCmd(u)
-		}
-	}
-	return nil
-}
-
-func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Phase 5 item 8: while the review-history reply prompt is open it owns
 	// every keystroke (the reply field must receive them all).
 	if m.replyingTo != "" {
@@ -453,7 +409,7 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.detailToggleDiffOnly()
 		return m, nil
 	case key.Matches(msg, km.DetailReview):
-		return m.startReviewOverlay()
+		return m, m.host.StartReviewOverlay()
 	case key.Matches(msg, km.DetailToggleControls):
 		m.detailToggleControls()
 		return m, nil
@@ -462,11 +418,11 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// in the same per-repo cache dir), so the build path is the
 		// same: open the repo-agents tab focused on the current PR's
 		// repo and let the user pick the Techs section.
-		return m, m.openRepoAgentsForCurrentPR(false)
+		return m, m.host.OpenRepoAgentsForCurrentPR(false)
 	case key.Matches(msg, km.DetailReopenApproval):
-		return m.reopenApprovalIfPossible()
+		return m, m.host.ReopenApproval()
 	case key.Matches(msg, km.DetailBulk):
-		return m, m.detailBulkConfirmCmd()
+		return m, m.host.BulkConfirm()
 	case key.Matches(msg, km.DetailNavDown):
 		m.detailNavigate(+1)
 		m.refreshDetailViews()
@@ -506,27 +462,27 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.diffView.ScrollUp(max(1, m.diffView.Height/2))
 		return m, nil
 	case key.Matches(msg, km.SettingsAI):
-		return m, m.openSettings(settings.StartAI)
+		return m, m.host.OpenSettings(settings.StartAI)
 	case key.Matches(msg, km.SettingsReview):
-		return m, m.openSettings(settings.StartReview)
+		return m, m.host.OpenSettings(settings.StartReview)
 	case key.Matches(msg, km.RepoCtx):
-		return m, m.openSettings(settings.StartRepoContext)
+		return m, m.host.OpenSettings(settings.StartRepoContext)
 	case key.Matches(msg, km.RepoAgents):
 		// Pre-focus on the current PR's repo so the tab opens on the row
 		// that matters for this PR rather than the alphabetical first repo.
-		return m, m.openRepoAgentsForCurrentPR(false)
+		return m, m.host.OpenRepoAgentsForCurrentPR(false)
 	case key.Matches(msg, km.LangAgents):
-		return m, m.openLangAgents()
+		return m, m.host.OpenLangAgents()
 	case key.Matches(msg, km.BuildAgents):
 		// "Build/refresh repo agents for this PR's repo" — focus on the
 		// PR's repo and immediately fire Regenerate all. This is the
 		// one-key path the user asked for: from a PR, build the per-repo
 		// agents that will be injected into the next review.
-		return m, m.openRepoAgentsForCurrentPR(true)
+		return m, m.host.OpenRepoAgentsForCurrentPR(true)
 	case key.Matches(msg, km.Browser):
-		return m, m.detailOpenBrowserCmd()
+		return m, m.host.OpenBrowser()
 	case key.Matches(msg, km.CopyURL):
-		return m, m.copyCurrentPRURLCmd()
+		return m, m.host.CopyURL()
 	}
 	// fallthrough: pane scroll for the focused pane
 	switch m.focusedPane {
@@ -630,274 +586,24 @@ func (m *Model) applyLeftColumnIndex(idx int) {
 	m.scrollToSelectedFile = true
 }
 
-func (m *Model) startReviewOverlay() (tea.Model, tea.Cmd) {
-	if m.currentPR == nil {
-		return m, nil
-	}
-	ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
-	m.draft = nil
-	// Phase 5 item 3: a cancellable context owned by the model. Closing the
-	// review overlay (or starting another run) cancels it so the runner
-	// goroutine actually stops instead of leaking. Cancel any prior run's
-	// context first — belt-and-braces against a re-run before the old overlay
-	// closed.
-	m.cancelReview()
-	ctx, cancel := context.WithCancel(context.Background())
-	m.reviewCancel = cancel
-	m.recomputeTreeRows()
-	parallelSpec, parallelRE, _ := repoParallelExecutionFlags()
-	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
-	// The tech specialist only runs when this repo has technology-expert
-	// briefs to enforce, so mirror that decision in the overlay: drop its tab
-	// when none are configured rather than show a permanently empty one.
-	ro.SetSpecialists(review.ActiveSpecialists(m.techExpertsConfigured()))
-	m.currentReviewOverlay = ro
-	cfg := reviewWindowConfig()
-	// Consume the "start minimized" preference here so a subsequent
-	// run defaults back to expanded.
-	startMinimized := m.startReviewMinimized
-	m.startReviewMinimized = false
-
-	// Sequence: push the overlay, deliver the synthetic WindowSizeMsg
-	// so the chrome and viewport size before we try to compute a
-	// click location, then (optionally) collapse the modal to its
-	// tab strip. The review run kicks off in parallel — it talks to
-	// the network via a goroutine that emits ProgressMsgs, so it
-	// doesn't need to wait for layout to settle.
-	prep := tea.Sequence(
-		m.overlayStack.Push(ro, cfg),
-		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
-	)
-	if startMinimized {
-		prep = tea.Sequence(prep, func() tea.Msg { return reviewOverlayMinimizeRequestMsg{} })
-	}
-	return m, tea.Batch(prep, data.StartReviewCmd(ctx, ref, m.opts.AIConfig, m.opts.Demo))
-}
-
-// reviewOverlayMinimizeRequestMsg asks the root to collapse the
-// just-opened review overlay to its chrome tab strip. The handler
-// looks up the top entry's chrome regions and dispatches a synthetic
-// mouse press on the [-] minimize button — bubble-overlay only flips
-// LayerState.Minimized from a chrome-handled mouse press, so this
-// indirection is the public API we have for "start collapsed".
-type reviewOverlayMinimizeRequestMsg struct{}
-
-// minimizeReviewOverlay computes the screen position of the active
-// overlay's minimize button and synthesizes a left-button press there,
-// dispatching it through the overlay stack so the chrome's mouse
-// handler toggles LayerState.Minimized. Returns the stack's resulting
-// cmd (typically nil; minimize callbacks may schedule follow-up work).
-//
-// No-ops when no review overlay is on top, when the terminal hasn't
-// been sized yet, or when the chrome doesn't expose a minimize button.
-func (m *Model) minimizeReviewOverlay() tea.Cmd {
-	if m.reviewOverlayOnTop() == nil {
-		return nil
-	}
-	if m.width <= 0 || m.height <= 0 {
-		return nil
-	}
-	top, left, regions, ok := m.overlayStack.TopChromeLayout(m.width, m.height)
-	if !ok || regions.MinimizeW == 0 {
-		return nil
-	}
-	press := tea.MouseMsg{
-		X:      left + regions.MinimizeX + regions.MinimizeW/2,
-		Y:      top + regions.MinimizeY,
-		Action: tea.MouseActionPress,
-		Button: tea.MouseButtonLeft,
-	}
-	return m.overlayStack.Update(press)
-}
-
-// reviewWindowConfig builds the bubble-overlay config for the review
-// modal with every WindowChrome feature the library exposes turned on:
-//
-//   - Draggable tab title (drag the tab to reposition the modal).
-//   - ShowCloseButton ([x] in the tab dismisses via Pop, which fires
-//     reviewtab.Model.OnOverlayClose → CloseMsg so the root model's
-//     CloseMsg handler runs the same cleanup as keyboard dismissal).
-//   - AutoWrap (the library wraps our naked body with the tab + box
-//     border each frame; we don't draw the modal frame ourselves).
-//   - Resizable (drag the right / bottom edges and bottom-right corner
-//     to resize the modal). The chrome remembers the user's preferred
-//     dims in its LayerState across re-renders and fires
-//     OverlayResizedMsg back to the review model so its viewport
-//     reflows live as the user drags.
-//   - Keyboard (Alt+arrow moves the modal, Alt+Shift+arrow resizes it).
-//     KeyStep=2 makes a single keypress move/grow by 2 cells so the
-//     keyboard path keeps up with the trackpad without feeling sluggish.
-//   - MinWidth / MinHeight clamp the user-driven resize so they can't
-//     shrink the modal below something readable.
-//
-// We deliberately leave CenterContent / ContentPadTop off because the
-// review body owns its own padding (reviewBodyStyle's Padding(1, 2)) —
-// asking the chrome to also center or pad would leave a double-pad row
-// at the top and squash one row off the bottom.
-//
-// We also deliberately keep CloseOnEscape and CloseOnClickOutside
-// disabled: the review model owns its own keymap (esc, q, abort
-// prompts) and clicking outside the modal must NOT dismiss in-flight
-// work.
-//
-// The library's DefaultChromeMaskRune is U+E000 (start of the Unicode
-// Private Use Area), which can't appear in normal text — we accept
-// that default rather than setting our own. The static Title here is
-// only the fallback: reviewtab.Model implements OverlayTitler so the
-// stack reads a phase-aware title (e.g. "appr-ai-sal · review · running")
-// off the model each frame.
-//
-// We considered the bubble-overlay Window helper (pane.go) here but
-// it's optimised for state-machine-driven single modals — our review
-// flow lives in the stack so it can coexist with the posted-overlay
-// stack entry and any future overlays.
-func reviewWindowConfig() overlay.OverlayConfig {
-	cfg := overlay.DefaultOverlayConfig()
-	cfg.CloseOnEscape = false
-	cfg.CloseOnClickOutside = false
-	// DimOpacity is intentionally 0 (the library default of 0.35 dims the
-	// background to signal "this isn't interactive"). The review modal
-	// now lets the user click on the PR detail view underneath while the
-	// AI review runs — gated via shouldPassMouseToBackground on the root
-	// model. A dimmed background would make that pass-through feel like
-	// a bug; keeping it bright is the visual cue that "yes, you can
-	// still click here." The chrome's tab strip and box border still
-	// give the modal enough visual weight that the user can find it.
-	cfg.DimOpacity = 0
-	cfg.WindowChrome = overlay.EnableWindowChrome(reviewtab.ChromeTitleFallback)
-	cfg.WindowChrome.Resizable = true
-	cfg.WindowChrome.Keyboard = true
-	cfg.WindowChrome.KeyStep = 2
-	cfg.WindowChrome.MinWidth = 60
-	cfg.WindowChrome.MinHeight = 14
-	// ShowMinimizeButton renders a [-] toggle in the tab strip. While the
-	// review runs in the background it's nice to be able to "tuck the
-	// modal away" to just its title bar and keep the file tree / diff
-	// fully visible. The review model returns a phase-aware title (with
-	// a spinner glyph while running) via OverlayTitler, so the user can
-	// still see at a glance whether the review is in flight or done.
-	cfg.WindowChrome.ShowMinimizeButton = true
-	return cfg
-}
-
-// maybeOfferResumeCmd checks whether the just-opened PR has an in-progress
-// saved review session (U2) for its CURRENT head SHA and, if so, returns a cmd
-// that pushes the resume-prompt overlay. Returns nil (today's behaviour) when
-// there is no valid session to resume: demo mode, no PR / head SHA, another
-// modal already open, or a missing / corrupt / SHA-mismatched session.
-//
-// SHA invalidation is inherent: LoadSession is keyed by the CURRENT head SHA,
-// so a session saved against an older commit is never found and never resumed
-// onto new code — the user just runs a fresh review, which B2 will make
-// incremental. Corrupt / version-mismatched sessions fail-open to no resume.
-func (m *Model) maybeOfferResumeCmd() tea.Cmd {
-	if m.opts.Demo || m.currentPR == nil {
-		return nil
-	}
-	if m.overlayStack.Top() != nil {
-		return nil
-	}
-	sha := strings.TrimSpace(m.currentPR.HeadSHA)
-	if sha == "" {
-		return nil
-	}
-	ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
-	sess, ok := review.NewDraftCache().LoadSession(ref, sha)
-	if !ok || sess.Draft == nil {
-		return nil
-	}
-	m.pendingResume = sess
-	pending := 0
-	for _, d := range sess.Decisions {
-		if d.Decision == "" || d.Decision == "pending" {
-			pending++
-		}
-	}
-	modal := overlays.NewResumeOverlay(ref.String(), sess.SavedAt, pending)
-	cfg := overlay.DefaultOverlayConfig()
-	cfg.CloseOnClickOutside = false
-	return tea.Batch(
-		m.overlayStack.Push(modal, cfg),
-		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
-	)
-}
-
-// resumeFromSession rehydrates a review overlay from the stashed pending
-// session (U2) and returns the cmd sequence that pushes it. popCmd is the
-// resume-prompt overlay's Pop cmd, sequenced first so the prompt is gone before
-// the review overlay is pushed. No LLM pipeline runs — the Draft and decisions
-// are restored from disk.
-func (m *Model) resumeFromSession(popCmd tea.Cmd) tea.Cmd {
-	sess := m.pendingResume
-	m.pendingResume = nil
-	if sess == nil {
-		return popCmd
-	}
-	parallelSpec, parallelRE, _ := repoParallelExecutionFlags()
-	ro, adopt := reviewtab.NewResumed(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo, sess)
-	m.currentReviewOverlay = ro
-	// Surface the rehydrated draft on the detail view behind the overlay so
-	// the file tree shows finding markers and `a` can reopen approval.
-	m.draft = ro.Draft()
-	m.recomputeTreeRows()
-	cfg := reviewWindowConfig()
-	prep := tea.Sequence(
-		popCmd,
-		m.overlayStack.Push(ro, cfg),
-		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
-	)
-	if adopt != nil {
-		return tea.Batch(prep, adopt)
-	}
-	return prep
-}
-
-func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
-	if m.draft == nil {
-		return m, nil
-	}
-	parallelSpec, parallelRE, _ := repoParallelExecutionFlags()
-	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
-	adoptCmd := ro.AdoptDraft(m.draft)
-	m.currentReviewOverlay = ro
-	cfg := reviewWindowConfig()
-	cmds := []tea.Cmd{
-		m.overlayStack.Push(ro, cfg),
-		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
-	}
-	if adoptCmd != nil {
-		cmds = append(cmds, adoptCmd)
-	}
-	if fetch := ro.CmdAfterAdoptIfNeeded(); fetch != nil {
-		cmds = append(cmds, fetch)
-	}
-	return m, tea.Batch(cmds...)
-}
-
-// ensureCenterDataLoaded fires the gh fetch for the currently selected
-// overview pane the first time the user lands on it. Subsequent visits
-// short-circuit on the cached report / timeline so navigation between
-// overview rows feels instant. Returns nil when no fetch is needed (e.g.
-// for centerDiff or centerDescription, both of which use data already
-// resident on the model).
 func (m *Model) ensureCenterDataLoaded() tea.Cmd {
-	if m.currentPR == nil {
+	if m.currentPR() == nil {
 		return nil
 	}
-	ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
+	ref := gh.Ref{Owner: m.currentPR().Owner, Repo: m.currentPR().Repo, Number: m.currentPR().Number}
 	switch m.centerView {
 	case centerChecks:
 		if m.checks != nil || m.checksLoading || m.checksErr != nil {
 			return nil
 		}
 		m.checksLoading = true
-		return data.LoadChecksCmd(ref, m.opts.Demo)
+		return data.LoadChecksCmd(ref, m.host.Demo())
 	case centerDiscussion:
 		if m.discussion != nil || m.discussionLoading || m.discussionErr != nil {
 			return nil
 		}
 		m.discussionLoading = true
-		return data.LoadDiscussionCmd(ref, m.opts.Demo)
+		return data.LoadDiscussionCmd(ref, m.host.Demo())
 	}
 	return nil
 }
@@ -912,21 +618,6 @@ func (m *Model) resetOverviewData() {
 	m.discussion = nil
 	m.discussionLoading = false
 	m.discussionErr = nil
-}
-
-func (m *Model) applyProgress(p review.Progress) {
-	if p.Stage == "done" {
-		m.draft = p.Final
-		m.recomputeTreeRows()
-		if m.mode == modeDetail {
-			m.refreshDetailViews()
-		}
-	}
-}
-
-func (m *Model) recomputeTreeRows() {
-	m.treeRows = buildTreeRows(m.parsedDiff, m.draft)
-	m.recomputeTreeView()
 }
 
 // recomputeTreeView rebuilds the hierarchical view rows + index maps from
@@ -1025,12 +716,16 @@ func (m *Model) toggleFolderCollapse(fullPath string) {
 }
 
 func (m *Model) refreshDetailViews() {
-	if m.width == 0 || m.height == 0 {
+	w, h := m.width, m.host.Height()
+	if w == 0 {
+		w = m.host.Width()
+	}
+	if w == 0 || h == 0 {
 		return
 	}
 	m.relayout()
 
-	if m.currentPR == nil {
+	if m.currentPR() == nil {
 		m.diffView.SetContent(styles.DimStyle.Render("No PR loaded."))
 		return
 	}
@@ -1045,7 +740,7 @@ func (m *Model) refreshDetailViews() {
 	var centerContent string
 	switch view {
 	case centerDescription:
-		centerContent = renderDescriptionPane(m.currentPR.Body, m.diffView.Width)
+		centerContent = renderDescriptionPane(m.currentPR().Body, m.diffView.Width)
 	case centerChecks:
 		centerContent = renderChecksPane(m.checks, m.checksLoading, m.checksErr, m.diffView.Width)
 	case centerDiscussion:
@@ -1055,13 +750,13 @@ func (m *Model) refreshDetailViews() {
 	default:
 		var selFile *review.FileDiff
 		if m.selectedFilePath != "" {
-			selFile = review.FindFile(m.parsedDiff, m.selectedFilePath)
+			selFile = review.FindFile(m.parsedDiff(), m.selectedFilePath)
 		}
 		var comments []gh.PullReviewComment
 		if m.showThreads {
 			comments = m.prComments
 		}
-		centerContent = renderDiffPaneHL(selFile, m.draft, m.focusedPane == paneDiff, m.diffView.Width, m.highlighter(), comments)
+		centerContent = renderDiffPaneHL(selFile, m.draft(), m.focusedPane == paneDiff, m.diffView.Width, m.highlighter(), comments)
 	}
 	wrapped := util.WrapForViewport(centerContent, m.diffView.Width)
 	m.diffView.SetContent(wrapped)
@@ -1106,35 +801,35 @@ func (m *Model) refreshDetailViews() {
 // keyboards-only workflows always know where they are even when the
 // overview selector is offscreen.
 func (m *Model) renderDetailMiniHeader() string {
-	if m.currentPR == nil {
+	if m.currentPR() == nil {
 		return ""
 	}
 	totalA, totalD := 0, 0
-	for _, f := range m.parsedDiff {
+	for _, f := range m.parsedDiff() {
 		totalA += f.Additions
 		totalD += f.Deletions
 	}
-	files := len(m.parsedDiff)
+	files := len(m.parsedDiff())
 	parts := []string{
 		styles.DimStyle.Render(fmt.Sprintf("%d file(s)", files)),
 		fmt.Sprintf("%s/%s",
 			styles.OkStyle.Render(fmt.Sprintf("+%d", totalA)),
 			styles.ErrStyle.Render(fmt.Sprintf("-%d", totalD))),
 	}
-	if badge := reviewStateBadge(m.currentPR.ReviewState); badge != "" {
+	if badge := m.host.ReviewStateBadge(m.currentPR().ReviewState); badge != "" {
 		parts = append(parts, badge)
 	}
-	if hint := viewerActionBadge(m.currentPR.ReviewState); hint != "" {
+	if hint := m.host.ViewerActionBadge(m.currentPR().ReviewState); hint != "" {
 		parts = append(parts, hint)
 	}
 	parts = append(parts, m.renderCenterViewChip())
 	// Repo / lang agent chips moved into the right-hand "Review controls"
 	// pane so the mini-header stays focused on PR meta. The same
 	// freshness state is rendered there with explicit row labels.
-	if strings.TrimSpace(m.currentPR.URL) != "" {
+	if strings.TrimSpace(m.currentPR().URL) != "" {
 		parts = append(parts, zone.Mark(zones.OpenInBrowser, styles.DimStyle.Render(" open in browser (O) ")))
 	}
-	if m.draft != nil {
+	if m.draft() != nil {
 		parts = append(parts, zone.Mark(zones.ReopenApproval, styles.OkStyle.Render(" reopen approval (a) ")))
 	}
 	line := strings.Join(parts, "  ·  ")

@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"fmt"
@@ -25,20 +25,20 @@ import (
 
 // currentRef returns the ref for the loaded PR (zero value when none).
 func (m *Model) currentRef() gh.Ref {
-	if m.currentPR == nil {
+	if m.currentPR() == nil {
 		return gh.Ref{}
 	}
-	return gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
+	return gh.Ref{Owner: m.currentPR().Owner, Repo: m.currentPR().Repo, Number: m.currentPR().Number}
 }
 
 // ensureThreadsCmd fires the existing-comments fetch the first time thread data
 // is needed. Returns nil when already loaded / loading or when there's no PR.
 func (m *Model) ensureThreadsCmd() tea.Cmd {
-	if m.currentPR == nil || m.threadsLoaded || m.threadsLoading {
+	if m.currentPR() == nil || m.threadsLoaded || m.threadsLoading {
 		return nil
 	}
 	m.threadsLoading = true
-	return data.FetchThreadsCmd(m.currentRef(), m.opts.Demo)
+	return data.FetchThreadsCmd(m.currentRef(), m.host.Demo())
 }
 
 // applyThreadsLoaded stores fetched inline comments + threads on the model
@@ -49,7 +49,7 @@ func (m *Model) applyThreadsLoaded(msg data.ThreadsLoadedMsg) {
 	m.prThreads = msg.Threads
 	m.threadsLoaded = true
 	m.threadsLoading = false
-	if m.mode == modeDetail {
+	if true {
 		m.refreshDetailViews()
 	}
 }
@@ -167,7 +167,7 @@ func (m *Model) handleReplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.replyStatus = "posting reply…"
 		m.refreshDetailViews()
-		return m, data.ReplyToThreadCmd(m.currentRef(), threadID, body, m.opts.Demo)
+		return m, data.ReplyToThreadCmd(m.currentRef(), threadID, body, m.host.Demo())
 	case tea.KeyEsc:
 		m.replyingTo = ""
 		m.replyStatus = "reply cancelled"
@@ -187,7 +187,7 @@ func (m *Model) applyThreadReply(msg data.ThreadReplyPostedMsg) {
 	} else {
 		m.replyStatus = "reply posted"
 	}
-	if m.mode == modeDetail {
+	if true {
 		m.refreshDetailViews()
 	}
 }

@@ -51,7 +51,7 @@ func parseHex(s string) (r, g, b byte, ok bool) {
 		if !(ok1 && ok2 && ok3) {
 			return 0, 0, 0, false
 		}
-		return r*17, g*17, b*17, true
+		return r * 17, g * 17, b * 17, true
 	}
 	if len(s) == 7 && s[0] == '#' {
 		rh, ok1 := hexByte(s[1], s[2])

@@ -1,5 +1,7 @@
 # appr-ai-sal — Master Improvement Plan
 
+> **Status (2026-07-08):** Phases 0–6 and deferred Q3/F5 follow-ups are **complete**. Remaining optional items: side-by-side diff view, Q3.4 TUI confidence badges, and library adoptions `go-gitdiff` / `cenkalti/backoff` (larger refactors). See `docs/RELEASE_NOTES_v0.3.0.md` and `docs/evals-report.md`.
+
 > **Audience:** an AI engineer-agent (Claude Opus-class) executing this plan phase by phase, plus human maintainers reviewing the direction.
 > **Basis:** a four-track deep audit (review engine + prompts, whole-repo architecture/duplication, AI-provider + gh layers, TUI layer) of the codebase as of 2026-07-06 (~52k LOC Go, 218 files).
 > **Goal:** make appr-ai-sal the best terminal PR-review tool available — measurably better review quality, dramatically less duplicated code, and a workflow reviewers prefer over the GitHub web UI.

@@ -8,6 +8,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
+	detailtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/detail"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
@@ -75,52 +76,52 @@ func TestChecksRollupChipMapping(t *testing.T) {
 // boundary stays consistent.
 func TestLeftColumnIndexRoundtrip(t *testing.T) {
 	cases := []struct {
-		v    centerView
+		v    detailtab.CenterView
 		tIdx int
 		want int
 	}{
-		{centerDescription, 0, 0},
-		{centerChecks, 0, 1},
-		{centerDiscussion, 0, 2},
-		{centerDiff, 0, 3},
-		{centerDiff, 5, 8},
+		{detailtab.CenterDescription, 0, 0},
+		{detailtab.CenterChecks, 0, 1},
+		{detailtab.CenterDiscussion, 0, 2},
+		{detailtab.CenterDiff, 0, 3},
+		{detailtab.CenterDiff, 5, 8},
 	}
 	for _, tc := range cases {
-		got := leftColumnIndexFor(tc.v, tc.tIdx)
+		got := detailtab.LeftColumnIndexFor(tc.v, tc.tIdx)
 		if got != tc.want {
-			t.Fatalf("leftColumnIndexFor(%v,%d) = %d, want %d", tc.v, tc.tIdx, got, tc.want)
+			t.Fatalf("LeftColumnIndexFor(%v,%d) = %d, want %d", tc.v, tc.tIdx, got, tc.want)
 		}
 	}
 }
 
 // TestKeyboardJWalksOverviewIntoTree presses j repeatedly on a freshly
 // opened detail and asserts that the cursor walks Description → Checks →
-// Discussion → first tree row, with centerView snapping back to centerDiff
+// Discussion → first tree row, with centerView snapping back to detailtab.CenterDiff
 // once the cursor crosses into the tree.
 func TestKeyboardJWalksOverviewIntoTree(t *testing.T) {
 	m := detailFixtureModel(t)
-	m.centerView = centerDescription
+	detailState(t, m).SetCenterView(detailtab.CenterDescription)
 
 	// j → Checks
 	out, _ := m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	m = out.(*Model)
-	if m.centerView != centerChecks {
-		t.Fatalf("after first j: centerView=%v, want centerChecks", m.centerView)
+	if detailState(t, m).CenterView() != detailtab.CenterChecks {
+		t.Fatalf("after first j: centerView=%v, want detailtab.CenterChecks", detailState(t, m).CenterView())
 	}
 	// j → Discussion
 	out, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	m = out.(*Model)
-	if m.centerView != centerDiscussion {
-		t.Fatalf("after second j: centerView=%v, want centerDiscussion", m.centerView)
+	if detailState(t, m).CenterView() != detailtab.CenterDiscussion {
+		t.Fatalf("after second j: centerView=%v, want detailtab.CenterDiscussion", detailState(t, m).CenterView())
 	}
-	// j → centerDiff at treeIdx 0 (first tree row)
+	// j → detailtab.CenterDiff at treeIdx 0 (first tree row)
 	out, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	m = out.(*Model)
-	if m.centerView != centerDiff {
-		t.Fatalf("after crossing into tree: centerView=%v, want centerDiff", m.centerView)
+	if detailState(t, m).CenterView() != detailtab.CenterDiff {
+		t.Fatalf("after crossing into tree: centerView=%v, want detailtab.CenterDiff", detailState(t, m).CenterView())
 	}
-	if m.treeIdx != 0 {
-		t.Fatalf("after crossing into tree: treeIdx=%d, want 0", m.treeIdx)
+	if detailState(t, m).TreeIdx() != 0 {
+		t.Fatalf("after crossing into tree: treeIdx=%d, want 0", detailState(t, m).TreeIdx())
 	}
 }
 
@@ -128,56 +129,56 @@ func TestKeyboardJWalksOverviewIntoTree(t *testing.T) {
 // k from the first tree row pushes the cursor back into the overview rows.
 func TestKeyboardKWalksFromTreeBackIntoOverview(t *testing.T) {
 	m := detailFixtureModel(t)
-	m.centerView = centerDiff
-	m.treeIdx = 0
+	detailState(t, m).SetCenterView(detailtab.CenterDiff)
+	detailState(t, m).SetTreeIdx(0)
 
 	out, _ := m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'k'}})
 	m = out.(*Model)
-	if m.centerView != centerDiscussion {
-		t.Fatalf("k from first tree row should land on centerDiscussion; got %v", m.centerView)
+	if detailState(t, m).CenterView() != detailtab.CenterDiscussion {
+		t.Fatalf("k from first tree row should land on detailtab.CenterDiscussion; got %v", detailState(t, m).CenterView())
 	}
 }
 
 // TestGShortcutJumpsToDescription guards the muscle-memory `g` keybinding:
-// pressing it from any state flips centerView to centerDescription.
+// pressing it from any state flips centerView to detailtab.CenterDescription.
 func TestGShortcutJumpsToDescription(t *testing.T) {
 	m := detailFixtureModel(t)
-	m.centerView = centerDiff
+	detailState(t, m).SetCenterView(detailtab.CenterDiff)
 
 	out, _ := m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
 	m = out.(*Model)
-	if m.centerView != centerDescription {
-		t.Fatalf("g should jump to centerDescription; got %v", m.centerView)
+	if detailState(t, m).CenterView() != detailtab.CenterDescription {
+		t.Fatalf("g should jump to detailtab.CenterDescription; got %v", detailState(t, m).CenterView())
 	}
-	// Pressing g again toggles back to centerDiff (last-diff selection).
+	// Pressing g again toggles back to detailtab.CenterDiff (last-diff selection).
 	out, _ = m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'g'}})
 	m = out.(*Model)
-	if m.centerView != centerDiff {
-		t.Fatalf("g (again) should toggle back to centerDiff; got %v", m.centerView)
+	if detailState(t, m).CenterView() != detailtab.CenterDiff {
+		t.Fatalf("g (again) should toggle back to detailtab.CenterDiff; got %v", detailState(t, m).CenterView())
 	}
 }
 
 // TestEnsureCenterDataLoadedFiresChecksOnce verifies the lazy-load gate:
-// the first visit to centerChecks emits a tea.Cmd and flips checksLoading;
+// the first visit to detailtab.CenterChecks emits a tea.Cmd and flips checksLoading;
 // subsequent visits while loading or after the report is cached are no-ops.
 func TestEnsureCenterDataLoadedFiresChecksOnce(t *testing.T) {
 	m := detailFixtureModel(t)
-	m.centerView = centerChecks
+	detailState(t, m).SetCenterView(detailtab.CenterChecks)
 
 	cmd := m.ensureCenterDataLoaded()
 	if cmd == nil {
-		t.Fatalf("first centerChecks visit should return a load cmd")
+		t.Fatalf("first detailtab.CenterChecks visit should return a load cmd")
 	}
-	if !m.checksLoading {
-		t.Fatalf("first centerChecks visit should set checksLoading=true")
+	if !detailState(t, m).ChecksLoading() {
+		t.Fatalf("first detailtab.CenterChecks visit should set checksLoading=true")
 	}
 	// While loading, the second call must not re-fire.
 	if again := m.ensureCenterDataLoaded(); again != nil {
 		t.Fatalf("second visit while loading should be a no-op")
 	}
 	// Land the report; subsequent visits are also no-ops.
-	m.checksLoading = false
-	m.checks = &gh.ChecksReport{RollupState: "SUCCESS"}
+	detailState(t, m).SetChecksLoading(false)
+	detailState(t, m).SetChecks(&gh.ChecksReport{RollupState: "SUCCESS"})
 	if cmd := m.ensureCenterDataLoaded(); cmd != nil {
 		t.Fatalf("visit after report cached should be a no-op")
 	}
@@ -188,19 +189,19 @@ func TestEnsureCenterDataLoadedFiresChecksOnce(t *testing.T) {
 // context.
 func TestPRDetailMsgResetsOverviewCache(t *testing.T) {
 	m := detailFixtureModel(t)
-	m.checks = &gh.ChecksReport{RollupState: "FAILURE"}
-	m.discussion = []gh.DiscussionEvent{{Author: "a"}}
-	m.checksLoading = true
-	m.discussionLoading = true
+	detailState(t, m).SetChecks(&gh.ChecksReport{RollupState: "FAILURE"})
+	detailState(t, m).SetDiscussion([]gh.DiscussionEvent{{Author: "a"}})
+	detailState(t, m).SetChecksLoading(true)
+	detailState(t, m).SetDiscussionLoading(true)
 
 	pr := gh.PR{Owner: "o", Repo: "r2", Number: 99}
 	out, _ := m.Update(data.PRDetailMsg{PR: &pr, Diff: ""})
 	m = out.(*Model)
-	if m.checks != nil || m.discussion != nil || m.checksLoading || m.discussionLoading {
-		t.Fatalf("PRDetailMsg should reset overview caches; got %+v %+v", m.checks, m.discussion)
+	if detailState(t, m).Checks() != nil || detailState(t, m).Discussion() != nil || detailState(t, m).ChecksLoading() || detailState(t, m).DiscussionLoading() {
+		t.Fatalf("PRDetailMsg should reset overview caches; got %+v %+v", detailState(t, m).Checks(), detailState(t, m).Discussion())
 	}
-	if m.centerView != centerDiff {
-		t.Fatalf("PRDetailMsg should reset centerView to centerDiff; got %v", m.centerView)
+	if detailState(t, m).CenterView() != detailtab.CenterDiff {
+		t.Fatalf("PRDetailMsg should reset centerView to detailtab.CenterDiff; got %v", detailState(t, m).CenterView())
 	}
 }
 
@@ -213,28 +214,29 @@ func TestOverviewClickFlipsCenterView(t *testing.T) {
 	msg := clickCenterOfZone(t, zones.OverviewChecks)
 	out, _ := m.detailHandleMouse(msg, false)
 	m = out.(*Model)
-	if m.centerView != centerChecks {
-		t.Fatalf("OverviewChecks click should flip centerView to centerChecks; got %v", m.centerView)
+	if detailState(t, m).CenterView() != detailtab.CenterChecks {
+		t.Fatalf("OverviewChecks click should flip centerView to detailtab.CenterChecks; got %v", detailState(t, m).CenterView())
 	}
 }
 
 // TestTreeRowClickRestoresDiffAfterOverviewView verifies the "click a file
-// row to go back to the diff" flow: from centerDiscussion, a click on the
-// first tree-file zone snaps centerView back to centerDiff and selects
+// row to go back to the diff" flow: from detailtab.CenterDiscussion, a click on the
+// first tree-file zone snaps centerView back to detailtab.CenterDiff and selects
 // that file.
 func TestTreeRowClickRestoresDiffAfterOverviewView(t *testing.T) {
 	m := detailFixtureModel(t)
-	m.centerView = centerDiscussion
+	detailState(t, m).SetCenterView(detailtab.CenterDiscussion)
 	m.refreshDetailViews()
 	_ = m.View()
 	waitBubbleZone(t, zones.TreeFile(0))
 	msg := clickCenterOfZone(t, zones.TreeFile(0))
 	out, _ := m.detailHandleMouse(msg, false)
 	m = out.(*Model)
-	if m.centerView != centerDiff {
-		t.Fatalf("clicking a tree row should restore centerDiff; got %v", m.centerView)
+	if detailState(t, m).CenterView() != detailtab.CenterDiff {
+		t.Fatalf("clicking a tree row should restore detailtab.CenterDiff; got %v", detailState(t, m).CenterView())
 	}
-	if m.selectedFilePath != m.treeRows[0].Path {
-		t.Fatalf("clicking a tree row should select that file; got %q", m.selectedFilePath)
+	rows := detailState(t, m).TreeRows()
+	if detailState(t, m).SelectedFilePath() != rows[0].Path {
+		t.Fatalf("clicking a tree row should select that file; got %q", detailState(t, m).SelectedFilePath())
 	}
 }

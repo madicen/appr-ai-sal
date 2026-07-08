@@ -13,6 +13,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	techagentsstore "github.com/madicen/appr-ai-sal/internal/review/techagents"
+	detailtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/detail"
 	"github.com/madicen/appr-ai-sal/internal/tui/tabs/repoagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
@@ -88,16 +89,16 @@ func TestControlsProfileDropdownOpensAndSelects(t *testing.T) {
 	msg := clickCenterOfZone(t, zones.ControlsProfileDD)
 	out, _ := m.detailHandleMouse(msg, false)
 	m2 := out.(*Model)
-	if !m2.controlsProfileDropdownOpen() {
+	if !detailState(t, m2).ControlsProfileDropdownOpen() {
 		t.Fatal("clicking the profile trigger should open the dropdown panel")
 	}
 
 	// Choosing the "fast" profile (index 1) makes it active.
-	_ = m2.forwardControlsProfileDropdown(bubbledropdown.ItemChosenMsg{Index: 1})
+	_ = detailState(t, m2).ForwardControlsProfileDropdown(bubbledropdown.ItemChosenMsg{Index: 1})
 	if m2.opts.AIConfig.ActiveProfile != "fast" {
 		t.Fatalf("after choosing index 1: active profile got %q, want fast", m2.opts.AIConfig.ActiveProfile)
 	}
-	if m2.controlsProfileDropdownOpen() {
+	if detailState(t, m2).ControlsProfileDropdownOpen() {
 		t.Fatal("choosing an item should close the dropdown panel")
 	}
 }
@@ -122,7 +123,7 @@ func TestControlsClickStartReviewIssuesCommand(t *testing.T) {
 // chips anymore; that state lives in the controls pane.
 func TestMiniHeaderHasNoAgentChips(t *testing.T) {
 	m := detailFixtureModel(t)
-	header := ansi.Strip(m.renderDetailMiniHeader())
+	header := ansi.Strip(detailState(t, m).RenderMiniHeader())
 	if strings.Contains(header, "build repo agents") {
 		t.Fatalf("mini-header still contains 'build repo agents': %q", header)
 	}
@@ -144,7 +145,7 @@ func TestControlsClickToggleParallelFlipsRepoConfigInline(t *testing.T) {
 	t.Setenv("APPR_AI_SAL_PARALLEL_SPECIALISTS", "")
 
 	m := detailFixtureModel(t)
-	if m.controlsHidden {
+	if detailState(t, m).ControlsHidden() {
 		t.Fatalf("controls pane unexpectedly hidden at fixture width")
 	}
 	_ = m.View()
@@ -196,7 +197,7 @@ func TestControlsClickToggleParallelPRAgentsFlipsRepoConfigInline(t *testing.T) 
 	t.Setenv("APPR_AI_SAL_PARALLEL_PR_AGENTS", "")
 
 	m := detailFixtureModel(t)
-	if m.controlsHidden {
+	if detailState(t, m).ControlsHidden() {
 		t.Fatalf("controls pane unexpectedly hidden at fixture width")
 	}
 	_ = m.View()
@@ -239,17 +240,17 @@ func TestControlsClickToggleParallelPRAgentsFlipsRepoConfigInline(t *testing.T) 
 // Pressing 'c' toggles the controls pane visibility.
 func TestKeyCToggleControlsPane(t *testing.T) {
 	m := detailFixtureModel(t)
-	if m.controlsHidden {
-		t.Fatalf("controls pane unexpectedly hidden at fixture width (controlsUserHidden=%v)", m.controlsUserHidden)
+	if detailState(t, m).ControlsHidden() {
+		t.Fatalf("controls pane unexpectedly hidden at fixture width (controlsUserHidden=%v)", detailState(t, m).ControlsUserHidden())
 	}
 	out, _ := m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	m2 := out.(*Model)
-	if !m2.controlsUserHidden {
+	if !detailState(t, m2).ControlsUserHidden() {
 		t.Fatalf("after pressing c, expected controlsUserHidden=true")
 	}
 	out, _ = m2.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
 	m3 := out.(*Model)
-	if m3.controlsUserHidden {
+	if detailState(t, m3).ControlsUserHidden() {
 		t.Fatalf("after second c press, expected controlsUserHidden=false")
 	}
 }
@@ -259,8 +260,8 @@ func TestKeyCToggleControlsPane(t *testing.T) {
 func TestControlsAutoHideOnNarrowTerminal(t *testing.T) {
 	m := detailFixtureModel(t)
 	m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
-	if !m.controlsHidden {
-		t.Fatalf("controls pane should auto-hide at width=80; controlsUserHidden=%v controlsHidden=%v", m.controlsUserHidden, m.controlsHidden)
+	if !detailState(t, m).ControlsHidden() {
+		t.Fatalf("controls pane should auto-hide at width=80; controlsUserHidden=%v controlsHidden=%v", detailState(t, m).ControlsUserHidden(), detailState(t, m).ControlsHidden())
 	}
 }
 
@@ -337,7 +338,7 @@ func TestControlsClickTechExpertsRowNavigatesWithoutRegen(t *testing.T) {
 // ctrl+b reinforced the wrong mental model and led users to expect
 // (and tolerate) auto-regen on every visit.
 func TestRepoAgentRowHintAdvertisesNavigateShortcut(t *testing.T) {
-	row := ansi.Strip(repoAgentRow(repoagentsstore.FreshnessUnknown))
+	row := ansi.Strip(detailtab.RepoAgentRow(repoagentsstore.FreshnessUnknown))
 	if !strings.Contains(row, "ctrl+r") {
 		t.Fatalf("repo agents row should advertise ctrl+r (navigate); got %q", row)
 	}
@@ -351,7 +352,7 @@ func TestRepoAgentRowHintAdvertisesNavigateShortcut(t *testing.T) {
 // per-repo feature with no canonical expected set, so absence is the
 // normal default state and should read as a hint, not an error.
 func TestTechAgentRowMissingShowsKindFraming(t *testing.T) {
-	row := ansi.Strip(techAgentRow(techagentsstore.FreshnessMissing))
+	row := ansi.Strip(detailtab.TechAgentRow(techagentsstore.FreshnessMissing))
 	if !strings.Contains(row, "not configured") {
 		t.Fatalf("expected 'not configured' for missing tech row; got %q", row)
 	}

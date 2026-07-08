@@ -1,39 +1,13 @@
-package model
+package detail
 
 import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
-	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
 )
-
-// detailModelWithDiff returns a detail-mode model showing a small multi-hunk
-// diff so the diff-nav / thread helpers have content to act on.
-func detailModelWithDiff(t *testing.T) *Model {
-	t.Helper()
-	zone.NewGlobal()
-	m := New(Options{})
-	m.Update(tea.WindowSizeMsg{Width: 140, Height: 44})
-	diff := "diff --git a/main.go b/main.go\n" +
-		"--- a/main.go\n+++ b/main.go\n" +
-		"@@ -1,4 +1,4 @@\n" +
-		" package main\n" +
-		"-func old() int { return 1 }\n" +
-		"+func neu() int { return 2 }\n" +
-		" // tail\n" +
-		" var x = 1\n"
-	m.Update(data.PRDetailMsg{
-		PR:   &gh.PR{Owner: "o", Repo: "r", Number: 7, Title: "t"},
-		Diff: diff,
-	})
-	m.mode = modeDetail
-	m.focusedPane = paneDiff
-	m.refreshDetailViews()
-	return m
-}
 
 func TestBeginAndCommitDiffSearch(t *testing.T) {
 	m := detailModelWithDiff(t)
@@ -41,7 +15,6 @@ func TestBeginAndCommitDiffSearch(t *testing.T) {
 	if !m.diffSearching {
 		t.Fatal("beginDiffSearch should enter search mode")
 	}
-	// Type a query and commit it.
 	m.diffSearchInput.SetValue("neu")
 	m.commitDiffSearch()
 	if m.diffSearching {
@@ -91,13 +64,13 @@ func TestToggleThreadsFetchesAndRenders(t *testing.T) {
 		t.Fatal("first toggle should fire a fetch command")
 	}
 	// Simulate the fetch completing.
-	m.applyThreadsLoaded(data.ThreadsLoadedMsg{
-		Comments: []gh.PullReviewComment{{Path: "main.go", Line: 3, Body: "old comment", AuthorLogin: "octocat"}},
-		Threads: []gh.ReviewThread{{
+	m.ApplyThreadsLoaded(
+		[]gh.PullReviewComment{{Path: "main.go", Line: 3, Body: "old comment", AuthorLogin: "octocat"}},
+		[]gh.ReviewThread{{
 			ID:       "T1",
 			Comments: []gh.ReviewThreadComment{{Author: "octocat", Body: "old comment", Path: "main.go", Line: 3}},
 		}},
-	})
+	)
 	if !m.threadsLoaded {
 		t.Error("threads should be marked loaded")
 	}
@@ -109,12 +82,10 @@ func TestToggleThreadsFetchesAndRenders(t *testing.T) {
 
 func TestReviewHistoryReplyFlowCallsBackend(t *testing.T) {
 	m := detailModelWithDiff(t)
-	m.applyThreadsLoaded(data.ThreadsLoadedMsg{
-		Threads: []gh.ReviewThread{{
-			ID:       "T1",
-			Comments: []gh.ReviewThreadComment{{Author: "octocat", Body: "please fix", Path: "main.go", Line: 3}},
-		}},
-	})
+	m.ApplyThreadsLoaded(nil, []gh.ReviewThread{{
+		ID:       "T1",
+		Comments: []gh.ReviewThreadComment{{Author: "octocat", Body: "please fix", Path: "main.go", Line: 3}},
+	}})
 	m.openReviewHistory()
 	if m.centerView != centerHistory {
 		t.Fatal("openReviewHistory should switch to the history pane")

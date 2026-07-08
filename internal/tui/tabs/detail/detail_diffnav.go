@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"github.com/charmbracelet/bubbles/textinput"
@@ -161,11 +161,11 @@ func (m *Model) handleDiffSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // finding's file in the tree and scrolls the diff so the finding's line sits
 // near the top. Returns false when the file/line can't be located in the
 // current diff. Safe to call from the review overlay via the root model.
-func (m *Model) JumpToFinding(path string, line int) bool {
+func (m *Model) jumpToFinding(path string, line int) bool {
 	if path == "" {
 		return false
 	}
-	file := review.FindFile(m.parsedDiff, path)
+	file := review.FindFile(m.parsedDiff(), path)
 	if file == nil {
 		return false
 	}

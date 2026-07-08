@@ -45,10 +45,6 @@ func (m *Model) View() string {
 	body := m.renderBody()
 	status := m.renderStatus()
 	main := lipgloss.JoinVertical(lipgloss.Left, header, body, status)
-	// Composite the PR-detail controls profile dropdown (if open) onto the
-	// full-screen view before the overlay stack so it anchors to its
-	// trigger using absolute coordinates.
-	main = m.overlayControlsProfile(main)
 	out := m.overlayStack.View(main, m.width, m.height)
 	return zone.Scan(out)
 }
@@ -83,7 +79,6 @@ func (m *Model) renderHeader() string {
 // renderDetailMiniHeader is a one-line strip above the detail body that shows
 // PR meta, diff stats, and quick chips for description / approval reopen.
 func (m *Model) renderBody() string {
-	bodyH := m.chromeBodyHeight()
 	switch m.mode {
 	case modeList:
 		panel := renderListPanel(m)
@@ -95,7 +90,10 @@ func (m *Model) renderBody() string {
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, panel, styles.AppPadding.Render(m.list.View()))
 	case modeDetail:
-		return m.renderPRDetailBody(bodyH)
+		if tab := m.tabs[modeDetail]; tab != nil {
+			return tab.View()
+		}
+		return styles.AppPadding.Render("detail unavailable")
 	case modeSettings:
 		if tab := m.tabs[modeSettings]; tab != nil {
 			return tab.View()

@@ -19,6 +19,7 @@ require (
 	github.com/madicen/bubble-overlay v0.0.0-20260522055727-98ccf9e2a047
 	github.com/muesli/termenv v0.16.0
 	github.com/sahilm/fuzzy v0.1.1
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	golang.org/x/sync v0.20.0
 )
 

@@ -174,9 +174,9 @@ func parseGHError(out []byte, apiPath string) *APIError {
 		if end > start {
 			body := raw[start : end+1]
 			var parsed struct {
-				Message          string         `json:"message"`
-				Errors           []APIErrorItem `json:"errors"`
-				DocumentationURL string         `json:"documentation_url"`
+				Message          string          `json:"message"`
+				Errors           []APIErrorItem  `json:"errors"`
+				DocumentationURL string          `json:"documentation_url"`
 				Status           json.RawMessage `json:"status"`
 			}
 			if err := json.Unmarshal([]byte(body), &parsed); err == nil {

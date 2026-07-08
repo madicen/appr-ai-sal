@@ -2,10 +2,7 @@ package gh
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -43,42 +40,7 @@ func (p PRFileTouches) HasDocs() bool { return p.DocFiles > 0 }
 
 // ListMergedPRs returns up to limit recently updated merged PRs for owner/repo.
 func ListMergedPRs(ctx context.Context, owner, repo string, limit int) ([]MergedPRDigestRow, error) {
-	if limit < 1 {
-		limit = 30
-	}
-	repoPath := owner + "/" + repo
-	args := []string{
-		"pr", "list",
-		"--repo", repoPath,
-		"--state", "merged",
-		"--limit", strconv.Itoa(limit),
-		"--json", "number,title,url,body,updatedAt",
-	}
-	out, err := runJSON(ctx, args)
-	if err != nil {
-		return nil, fmt.Errorf("list merged PRs: %w", err)
-	}
-	var raw []struct {
-		Number    int       `json:"number"`
-		Title     string    `json:"title"`
-		URL       string    `json:"url"`
-		Body      string    `json:"body"`
-		UpdatedAt time.Time `json:"updatedAt"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parse merged PR list: %w", err)
-	}
-	rows := make([]MergedPRDigestRow, 0, len(raw))
-	for _, r := range raw {
-		rows = append(rows, MergedPRDigestRow{
-			Number:        r.Number,
-			Title:         strings.TrimSpace(r.Title),
-			URL:           strings.TrimSpace(r.URL),
-			BodyFirstLine: firstMeaningfulLine(r.Body),
-			UpdatedAt:     r.UpdatedAt,
-		})
-	}
-	return rows, nil
+	return listMergedPRsGraphQL(ctx, owner, repo, limit)
 }
 
 func firstMeaningfulLine(body string) string {
@@ -95,26 +57,11 @@ func firstMeaningfulLine(body string) string {
 	return ""
 }
 
-// PRFiles returns the file list for a single PR (path + additions/deletions),
-// retrieved from `gh pr view --json files`. The caller is responsible for
-// classifying which of those paths matter to the request (filename heuristics).
+// PRFiles returns the file list for a single PR (path + additions/deletions).
+// The caller is responsible for classifying which of those paths matter to
+// the request (filename heuristics).
 func PRFiles(ctx context.Context, owner, repo string, prNumber int) ([]PRFile, error) {
-	args := []string{
-		"pr", "view", strconv.Itoa(prNumber),
-		"--repo", owner + "/" + repo,
-		"--json", "files",
-	}
-	out, err := runJSON(ctx, args)
-	if err != nil {
-		return nil, fmt.Errorf("list files for #%d: %w", prNumber, err)
-	}
-	var raw struct {
-		Files []PRFile `json:"files"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parse files for #%d: %w", prNumber, err)
-	}
-	return raw.Files, nil
+	return prFilesGraphQL(ctx, owner, repo, prNumber)
 }
 
 // PRFile is one entry from `gh pr view --json files`.

@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"testing"
@@ -29,7 +29,7 @@ func dragSeamY(t *testing.T, m *Model) int {
 	t.Helper()
 	top, bottom, ok := m.detailPaneRowYRange()
 	if !ok {
-		t.Fatalf("detailPaneRowYRange unavailable: width=%d height=%d mode=%v", m.width, m.height, m.mode)
+		t.Fatalf("detailPaneRowYRange unavailable: width=%d height=%d", m.width, m.host.Height())
 	}
 	return (top + bottom) / 2
 }
@@ -106,13 +106,13 @@ func TestPaneDragResizesTreeWidth(t *testing.T) {
 	origTree := m.treePaneWidth
 	origDiffW := m.diffView.Width
 
-	out, _ := m.detailHandleMouse(seamPressMsg(treeOuter, y), false)
+	out, _ := m.handleMouse(seamPressMsg(treeOuter, y), false)
 	m = out.(*Model)
 	if m.paneDrag.target != dividerTreeDiff {
 		t.Fatalf("press on tree/diff seam should arm drag; target=%v", m.paneDrag.target)
 	}
 
-	out, _ = m.detailHandleMouse(seamMotionMsg(treeOuter+8, y), false)
+	out, _ = m.handleMouse(seamMotionMsg(treeOuter+8, y), false)
 	m = out.(*Model)
 	if got := m.treePaneWidth; got != origTree+8 {
 		t.Fatalf("treePaneWidth: want %d, got %d", origTree+8, got)
@@ -121,7 +121,7 @@ func TestPaneDragResizesTreeWidth(t *testing.T) {
 		t.Fatalf("diffView.Width: want %d, got %d", origDiffW-8, got)
 	}
 
-	out, _ = m.detailHandleMouse(seamReleaseMsg(treeOuter+8, y), false)
+	out, _ = m.handleMouse(seamReleaseMsg(treeOuter+8, y), false)
 	m = out.(*Model)
 	if m.paneDrag.target != dividerNone {
 		t.Fatalf("release should clear drag; target=%v", m.paneDrag.target)
@@ -139,13 +139,13 @@ func TestPaneDragResizesControlsWidth(t *testing.T) {
 	origCtl := m.controlsPaneWidth
 	origDiffW := m.diffView.Width
 
-	out, _ := m.detailHandleMouse(seamPressMsg(controlsLeft, y), false)
+	out, _ := m.handleMouse(seamPressMsg(controlsLeft, y), false)
 	m = out.(*Model)
 	if m.paneDrag.target != dividerDiffControls {
 		t.Fatalf("press on diff/controls seam should arm drag; target=%v", m.paneDrag.target)
 	}
 
-	out, _ = m.detailHandleMouse(seamMotionMsg(controlsLeft+6, y), false)
+	out, _ = m.handleMouse(seamMotionMsg(controlsLeft+6, y), false)
 	m = out.(*Model)
 	if got := m.controlsPaneWidth; got != origCtl-6 {
 		t.Fatalf("controlsPaneWidth: want %d, got %d", origCtl-6, got)
@@ -162,11 +162,11 @@ func TestPaneDragClampsBelowMin(t *testing.T) {
 	y := dragSeamY(t, m)
 	treeOuter, _ := m.detailSeamColumns()
 
-	out, _ := m.detailHandleMouse(seamPressMsg(treeOuter, y), false)
+	out, _ := m.handleMouse(seamPressMsg(treeOuter, y), false)
 	m = out.(*Model)
 
 	// Aim 100 cells left of the seam — well past min on any fixture width.
-	out, _ = m.detailHandleMouse(seamMotionMsg(treeOuter-100, y), false)
+	out, _ = m.handleMouse(seamMotionMsg(treeOuter-100, y), false)
 	m = out.(*Model)
 	if got := m.treePaneWidth; got != minTreePaneWidth {
 		t.Fatalf("treePaneWidth clamp: want %d, got %d", minTreePaneWidth, got)
@@ -181,10 +181,10 @@ func TestPaneDragClampsDiffMin(t *testing.T) {
 	y := dragSeamY(t, m)
 	_, controlsLeft := m.detailSeamColumns()
 
-	out, _ := m.detailHandleMouse(seamPressMsg(controlsLeft, y), false)
+	out, _ := m.handleMouse(seamPressMsg(controlsLeft, y), false)
 	m = out.(*Model)
 
-	out, _ = m.detailHandleMouse(seamMotionMsg(controlsLeft-200, y), false)
+	out, _ = m.handleMouse(seamMotionMsg(controlsLeft-200, y), false)
 	m = out.(*Model)
 	if m.diffView.Width < controlsAutoHideMinDiffWidth-prDetailPanel.GetHorizontalFrameSize() {
 		t.Fatalf("diff viewport squeezed below clamp threshold: width=%d (frame=%d, threshold=%d)",
@@ -240,7 +240,7 @@ func TestSpuriousMotionWithoutDragIsNoOp(t *testing.T) {
 	origTree := m.treePaneWidth
 	origCtl := m.controlsPaneWidth
 
-	out, _ := m.detailHandleMouse(seamMotionMsg(0, y), false)
+	out, _ := m.handleMouse(seamMotionMsg(0, y), false)
 	m = out.(*Model)
 	if m.treePaneWidth != origTree || m.controlsPaneWidth != origCtl {
 		t.Fatalf("spurious motion should not resize panes; tree=%d ctl=%d", m.treePaneWidth, m.controlsPaneWidth)
@@ -268,7 +268,7 @@ func TestSeamPressTakesPrecedenceOverTreeRow(t *testing.T) {
 	// Y just inside the tree pane content.
 	y := top + 3
 
-	out, _ := m.detailHandleMouse(seamPressMsg(treeOuter-1, y), false)
+	out, _ := m.handleMouse(seamPressMsg(treeOuter-1, y), false)
 	m = out.(*Model)
 	if m.paneDrag.target != dividerTreeDiff {
 		t.Fatalf("seam press should arm drag over tree-row click; target=%v", m.paneDrag.target)

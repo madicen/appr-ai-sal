@@ -9,8 +9,8 @@ import (
 
 func TestEnclosingResourceTypeInText(t *testing.T) {
 	content := strings.Join([]string{
-		`resource "aws_s3_bucket_policy" "x" {`, // 1
-		`  bucket = module.s3_bucket.bucket_id`, // 2
+		`resource "aws_s3_bucket_policy" "x" {`,          // 1
+		`  bucket = module.s3_bucket.bucket_id`,          // 2
 		`  policy = data.aws_iam_policy_document.x.json`, // 3
 		`}`, // 4
 	}, "\n")

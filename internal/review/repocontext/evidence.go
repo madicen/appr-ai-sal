@@ -51,12 +51,12 @@ type FileEvidence struct {
 
 // EvidenceAggregates summarises FileEvidence across the changed file set.
 type EvidenceAggregates struct {
-	ChangedSourceFiles                   int
-	ChangedTestFiles                     int
-	ChangedDocFiles                      int
-	ChangedSourceFilesWithSiblingTest    int
-	ChangedSourceFilesInPackageWithDocGo int
-	TotalExportedSymbolsTouched          int
+	ChangedSourceFiles                    int
+	ChangedTestFiles                      int
+	ChangedDocFiles                       int
+	ChangedSourceFilesWithSiblingTest     int
+	ChangedSourceFilesInPackageWithDocGo  int
+	TotalExportedSymbolsTouched           int
 	TotalDocumentedExportedSymbolsTouched int
 }
 
@@ -113,12 +113,12 @@ func BuildEvidence(ctx context.Context, opts EvidenceOptions) (*Evidence, error)
 
 // dirSample is a cached scan of one directory under the worktree.
 type dirSample struct {
-	dir              string
-	sourceFiles      []string
-	testFiles        []string
-	docFiles         []string
-	hasDocGo         bool
-	readmePath       string
+	dir         string
+	sourceFiles []string
+	testFiles   []string
+	docFiles    []string
+	hasDocGo    bool
+	readmePath  string
 }
 
 const dirEntryScanCap = 400

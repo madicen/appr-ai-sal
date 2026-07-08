@@ -7,7 +7,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
 	overlay "github.com/madicen/bubble-overlay"
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
@@ -15,11 +14,9 @@ import (
 	langagentsstore "github.com/madicen/appr-ai-sal/internal/review/langagents"
 	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/commands"
-	"github.com/madicen/appr-ai-sal/internal/tui/diffview"
 	"github.com/madicen/appr-ai-sal/internal/tui/keys"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
 	reviewtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/review"
-	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
 )
 
 // mode is the root TUI's active top-level screen. It is a type alias for
@@ -82,59 +79,8 @@ const (
 	focusURL
 )
 
-// defaultTreePaneWidth is the initial width allocated to the file-tree
-// pane content (frame is added on top by the panel border). Stored on
-// Model.treePaneWidth so the user can drag the tree/diff seam to resize.
-const defaultTreePaneWidth = 30
-
-// defaultControlsPaneWidth is the initial width of the right-hand
-// "Review controls" pane content (frame is added on top). Stored on
-// Model.controlsPaneWidth so the user can drag the diff/controls seam
-// to resize. Auto-hidden in relayout when the terminal is too narrow
-// to fit all three panes side by side.
-const defaultControlsPaneWidth = 38
-
-// minTreePaneWidth / minControlsPaneWidth bound how narrow the user
-// can drag each pane. Below these the pane is too narrow to host its
-// title strip and content meaningfully; the seam clamps instead of
-// silently auto-hiding.
-const (
-	minTreePaneWidth     = 12
-	minControlsPaneWidth = 16
-)
-
-// controlsAutoHideMinDiffWidth is the minimum diff outer width below
-// which the controls pane is auto-hidden. Keeps the diff readable on
-// narrow terminals; the user can re-show it with `c` once they have
-// more screen real estate. Drags that would starve the diff below
-// this threshold are clamped at the seam.
-const controlsAutoHideMinDiffWidth = 36
-
-// dividerTarget identifies which pane seam an active mouse drag is
-// resizing. dividerNone means no drag is in flight.
-type dividerTarget int
-
-const (
-	dividerNone dividerTarget = iota
-	dividerTreeDiff
-	dividerDiffControls
-)
-
-// paneDrag tracks an in-flight drag on one of the pane seams. Anchored
-// at press time so motion events can compute the absolute width from
-// the original (originX, originTreeW, originControlsW) rather than
-// accumulating per-event deltas (which would amplify rounding error
-// on terminals that batch motion reports).
-type paneDrag struct {
-	target          dividerTarget
-	originX         int
-	originTreeW     int
-	originControlsW int
-}
-
-// Model is the root Bubble Tea model. It owns the PR list and detail
-// screens directly and delegates the settings / repo-agents / lang-agents
-// screens to Tab sub-models held in the tabs registry.
+// Model is the root Bubble Tea model. It owns the PR list and delegates
+// detail / settings / repo-agents / lang-agents to Tab sub-models.
 type Model struct {
 	opts Options
 	mode mode
@@ -161,14 +107,6 @@ type Model struct {
 	// tabPrevMode is the mode to restore when the active tab emits NavBack.
 	// Only one tab is open at a time, so a single field suffices.
 	tabPrevMode mode
-
-	// controlsProfileDD is the AI-profile dropdown in the PR-detail
-	// "Review controls" pane. It is positioned from the trigger's
-	// bubblezone-scanned (absolute) coordinates, cached here so the panel
-	// stays put while open even though the trigger sits under the overlay.
-	controlsProfileDD    *dropdown.Host
-	controlsProfileDDRow int
-	controlsProfileDDCol int
 
 	width  int
 	height int
@@ -204,117 +142,13 @@ type Model struct {
 	diff      string
 	draft     *review.Draft
 
-	// PR detail layout: tree + diff.
-	parsedDiff       []review.FileDiff
-	treeRows         []treeRow
-	treeIdx          int // cursor row into treeViewRows (folders + files)
-	focusedPane      pane
-	selectedFilePath string
-	diffOnly         bool
-
-	// Tree view (hierarchical, with collapsible folders) — derived from
-	// treeRows + collapsedFolders. treeIdx indexes treeViewRows so j/k
-	// can land on folder rows and toggle them with space; files set
-	// selectedFilePath while folder rows leave it sticky. Built by
-	// buildTreeView; rebuilt on every recomputeTreeRows / collapse.
-	treeViewRows     []treeViewRow
-	treeFileToLine   []int // index into treeRows -> line index in treeViewRows
-	treeLineToFile   []int // index into treeViewRows -> index into treeRows (-1 for folders)
-	collapsedFolders map[string]bool
-
-	// scrollToSelectedFile is set on j/k / file click / refresh so the
-	// next refreshDetailViews scrolls the selected row into view; reset
-	// after applying so wheel-scroll doesn't fight with cursor scroll.
-	scrollToSelectedFile bool
-
-	treeView     viewport.Model
-	diffView     viewport.Model
-	controlsView viewport.Model
-
-	// Phase 5 item 4 (diff upgrades). hl syntax-highlights the diff pane
-	// (chroma, lazily built, NO_COLOR-aware). diffAnchors indexes the rendered
-	// rows carrying an inline finding tag for n/p jumping; diffSearch indexes
-	// rows matching the active in-diff search; diffSearchQuery / diffSearchInput
-	// / diffSearching drive the `/` search prompt. All are recomputed whenever
-	// the diff content is rebuilt (refreshDetailViews).
-	hl               *diffview.Highlighter
-	diffAnchors      diffview.AnchorIndex
-	diffSearch       diffview.SearchIndex
-	diffSearchQuery  string
-	diffSearching    bool
-	diffSearchInput  textinput.Model
-	diffContentLines []string // full wrapped diff-pane rows (for nav/search/jump)
-
-	// treePaneWidth / controlsPaneWidth are the user-adjustable inner
-	// widths for the left and right panes of the PR detail body. Seeded
-	// from defaultTreePaneWidth / defaultControlsPaneWidth in New() and
-	// mutated by the drag-resize handler in detail_resize.go. The diff
-	// pane absorbs whatever's left over inside relayout().
-	treePaneWidth     int
-	controlsPaneWidth int
-
-	// paneDrag carries the state of an in-flight seam drag. Zero value
-	// (dividerNone) means no drag is active; press inside a seam arms
-	// it, motion updates the corresponding pane width, release clears
-	// it. See detail_resize.go.
-	paneDrag paneDrag
-
-	// controlsHidden is true when the right-hand "Review controls" pane
-	// is hidden — either because the terminal is too narrow to host all
-	// three panes (set automatically in relayout) or because the user
-	// pressed `c` to collapse it.
-	controlsHidden     bool
-	controlsUserHidden bool
-
-	// startReviewMinimized toggles the "Start minimized" preference
-	// for the next review run kicked from the controls panel. When
-	// true the review overlay opens collapsed to its tab strip so the
-	// PR detail view stays fully visible; reset when a review starts.
-	startReviewMinimized bool
-
-	// treeScrollLines is the line count of tree viewport content after the last
-	// refresh (used for mouse row mapping; must match visible wrapped lines).
-	treeScrollLines int
-
-	// centerView selects which content the centre pane shows. centerDiff
-	// (the default) restores the historical "tree-driven diff" behaviour;
-	// centerDescription / centerChecks / centerDiscussion replace the diff
-	// with the corresponding overview content. Driven by clicks on the new
-	// PR-overview selector at the top of the left column and by the `g`
-	// shortcut. While diffOnly is active centerView is overridden to
-	// centerDiff so the full-width diff pane stays consistent.
-	centerView centerView
-
-	// checks / discussion are populated lazily when the user first lands on
-	// their respective overview rows. Loading flips while the gh fetch is
-	// in flight; *Err sticks until the user retries so the renderer can
-	// show a retry chip. Cleared whenever a fresh PR is loaded so we don't
-	// leak the previous PR's data into the new context.
-	checks            *gh.ChecksReport
-	checksLoading     bool
-	checksErr         error
-	discussion        []gh.DiscussionEvent
-	discussionLoading bool
-	discussionErr     error
+	parsedDiff []review.FileDiff
 
 	urlInput textinput.Model
 
-	// Phase 5 item 8 (thread browsing). prComments / prThreads are the PR's
 	// existing inline review comments + threads (fetched once, lazily, on the
-	// first `t`/`H` press). showThreads toggles rendering them inline in the
-	// diff; threadsLoaded / threadsLoading gate the fetch. historyCursor is the
-	// selected thread in the review-history pane; replyInput / replyingTo drive
 	// the in-pane reply prompt (item 8.3, replies via data.ReplyToThreadCmd →
 	// Backend.ReplyToThread / gh.ReplyToReviewThread).
-	prComments     []gh.PullReviewComment
-	prThreads      []gh.ReviewThread
-	showThreads    bool
-	threadsLoaded  bool
-	threadsLoading bool
-	historyCursor  int
-	replyInput     textinput.Model
-	replyingTo     string // thread ID currently being replied to; "" when idle
-	replyStatus    string // transient status after a reply attempt
 
 	spinner    spinner.Model
 	progressCh <-chan review.Progress

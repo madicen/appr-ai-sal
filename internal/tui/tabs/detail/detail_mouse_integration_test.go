@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"runtime"
@@ -14,6 +14,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
+	"github.com/madicen/appr-ai-sal/internal/tui/keys"
 )
 
 // waitBubbleZone blocks until bubblezone's async worker registers id (Scan posts
@@ -52,8 +53,8 @@ diff --git a/cc.go b/cc.go
 // exceeds the terminal (status bar stays visible; zones stay aligned).
 func TestDetailRenderBodyFitsChromeBudget(t *testing.T) {
 	m := detailFixtureModel(t)
-	budget := m.chromeBodyHeight()
-	got := lipgloss.Height(m.renderBody())
+	budget := m.host.ChromeBodyHeight()
+	got := lipgloss.Height(m.View())
 	if got > budget {
 		t.Fatalf("renderBody height %d > chromeBodyHeight %d", got, budget)
 	}
@@ -62,27 +63,21 @@ func TestDetailRenderBodyFitsChromeBudget(t *testing.T) {
 func detailFixtureModel(t *testing.T) *Model {
 	t.Helper()
 	zone.NewGlobal()
-	m := New(Options{})
-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
-	m.mode = modeDetail
-	m.currentPR = &gh.PR{
-		Repository: "o/r",
-		Number:     1,
-		Title:      "title",
-		Author:     "a",
-		BaseRef:    "main",
-		HeadRef:    "feat",
-		URL:        "https://example.com",
-		HeadSHA:    "abc",
+	host := newTestHost(160, 42)
+	host.pr = &gh.PR{
+		Repository: "o/r", Number: 1, Title: "title", Author: "a",
+		BaseRef: "main", HeadRef: "feat", URL: "https://example.com", HeadSHA: "abc",
 	}
-	m.diff = threeFileDiff
-	m.parsedDiff = review.ParseDiff(m.diff)
-	m.draft = &review.Draft{}
-	m.recomputeTreeRows()
-	m.selectedFilePath = m.treeRows[0].Path
+	host.diff = review.ParseDiff(threeFileDiff)
+	m := New(host, keys.Default())
+	m.Resize(host.Width(), host.ChromeBodyHeight())
+	m.OnPRLoaded(host.diff, nil)
+	if len(m.treeRows) > 0 {
+		m.selectedFilePath = m.treeRows[0].Path
+	}
 	m.focusedPane = paneTree
-	m.refreshDetailViews()
-	_ = m.View()
+	m.RefreshViews()
+	_ = zone.Scan(m.View())
 	waitBubbleZone(t, zones.PaneTreeBody)
 	return m
 }
@@ -146,7 +141,7 @@ func TestDetailMouseFarRightInTreeBodySelectsFirstFile(t *testing.T) {
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
-	out, _ := m.detailHandleMouse(msg, false)
+	out, _ := m.handleMouse(msg, false)
 	m2 := out.(*Model)
 	if m2.treeIdx != 0 {
 		t.Fatalf("far-right click should select first file; treeIdx=%d", m2.treeIdx)
@@ -162,7 +157,7 @@ func TestDetailMouseCenterFirstTreeRowSelectsFirstFile(t *testing.T) {
 	_ = m.View()
 	waitBubbleZone(t, zones.TreeFile(0))
 	msg := clickCenterOfZone(t, zones.TreeFile(0))
-	out, _ := m.detailHandleMouse(msg, false)
+	out, _ := m.handleMouse(msg, false)
 	m2 := out.(*Model)
 	if m2.treeIdx != 0 {
 		t.Fatalf("treeIdx got %d want 0 (row zone misaligned?)", m2.treeIdx)
@@ -176,7 +171,7 @@ func TestDetailMouseBottomTreeRowSelectsLastFile(t *testing.T) {
 	m := detailFixtureModel(t)
 	lastPath := m.treeRows[len(m.treeRows)-1].Path
 	msg := clickBottomOfZone(t, zones.PaneTreeBody)
-	out, _ := m.detailHandleMouse(msg, false)
+	out, _ := m.handleMouse(msg, false)
 	m2 := out.(*Model)
 	if m2.treeIdx != len(m2.treeRows)-1 {
 		t.Fatalf("treeIdx got %d want last index %d", m2.treeIdx, len(m2.treeRows)-1)
@@ -193,7 +188,7 @@ func TestDetailMouseBottomDiffPaneFocusesDiff(t *testing.T) {
 	m := detailFixtureModel(t)
 	m.focusedPane = paneTree
 	msg := clickBottomOfZone(t, zones.PaneDiffBody)
-	out, _ := m.detailHandleMouse(msg, false)
+	out, _ := m.handleMouse(msg, false)
 	m2 := out.(*Model)
 	if m2.focusedPane != paneDiff {
 		t.Fatalf("focusedPane got %v want paneDiff", m2.focusedPane)

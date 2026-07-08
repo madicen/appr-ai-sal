@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"strings"
@@ -316,4 +316,3 @@ func TestRenderHunkLineNoGutterAddedRowBgPaintsFullWidth(t *testing.T) {
 		t.Fatalf("no-gutter added row has %d untinted cell(s); raw=%q", got, out)
 	}
 }
-

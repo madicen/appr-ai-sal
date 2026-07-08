@@ -1,9 +1,10 @@
-// Package gh wraps the gh CLI to avoid a separate auth surface. Anything that
-// needs the GitHub API runs through `gh` so we inherit the user's gh login.
+// Package gh is the GitHub integration layer. Auth, host, and tokens resolve
+// through the user's `gh` CLI configuration; REST and GraphQL traffic runs
+// in-process via go-gh. Git subprocesses (clone/fetch/checkout) remain for
+// worktree setup.
 package gh
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -96,16 +97,12 @@ func CheckAuth() error {
 		return fmt.Errorf("gh not found on PATH; install from https://cli.github.com")
 	}
 	// R6.5: reject a too-old gh CLI with a clear message before the auth
-	// check, while any sugar command still shells out to gh.
+	// check. Credential validity is verified in-process via the GraphQL viewer
+	// query (see checkAuthViaAPI).
 	if err := checkGHVersion(); err != nil {
 		return err
 	}
-	cmd := exec.Command("gh", "auth", "status")
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("gh auth status: %s", strings.TrimSpace(string(out)))
-	}
-	return nil
+	return checkAuthViaAPI(context.Background())
 }
 
 // viewerLoginCache holds the authenticated viewer's login for the process
@@ -256,120 +253,13 @@ func ListReviewRequestedPRs(ctx context.Context, explicitReviewerOnly bool) ([]P
 // fails the PR-wide counters are still filled (only viewer-scoped flags
 // drop to zero).
 func GetPR(ctx context.Context, ref Ref) (*PR, error) {
-	args := []string{
-		"pr", "view", strconv.Itoa(ref.Number),
-		"--repo", ref.Owner + "/" + ref.Repo,
-		"--json", "number,title,url,body,author,headRefName,headRefOid,baseRefName,isDraft,createdAt,updatedAt,reviewDecision,latestReviews,reviewRequests,additions,deletions,changedFiles,statusCheckRollup",
-	}
-	out, err := runJSON(ctx, args)
-	if err != nil {
-		return nil, err
-	}
-	var raw struct {
-		Number       int       `json:"number"`
-		Title        string    `json:"title"`
-		URL          string    `json:"url"`
-		Body         string    `json:"body"`
-		HeadRefName  string    `json:"headRefName"`
-		HeadRefOid   string    `json:"headRefOid"`
-		BaseRefName  string    `json:"baseRefName"`
-		IsDraft      bool      `json:"isDraft"`
-		CreatedAt    time.Time `json:"createdAt"`
-		UpdatedAt    time.Time `json:"updatedAt"`
-		Additions    int       `json:"additions"`
-		Deletions    int       `json:"deletions"`
-		ChangedFiles int       `json:"changedFiles"`
-		Author       struct {
-			Login string `json:"login"`
-		} `json:"author"`
-		ReviewDecision string `json:"reviewDecision"`
-		LatestReviews  []struct {
-			Author struct {
-				Login string `json:"login"`
-			} `json:"author"`
-			State string `json:"state"`
-		} `json:"latestReviews"`
-		ReviewRequests []struct {
-			Typename string `json:"__typename"`
-			Login    string `json:"login"`
-			Slug     string `json:"slug"`
-		} `json:"reviewRequests"`
-		// gh pr view --json statusCheckRollup returns a flat array of
-		// rollup entries (one per check / commit status) — not a single
-		// rollup object. We collapse it to a single state below using
-		// the same severity ladder GitHub's GraphQL `statusCheckRollup`
-		// uses (FAILURE > ERROR > PENDING > SUCCESS).
-		StatusCheckRollup []struct {
-			State      string `json:"state"`      // commit status format
-			Status     string `json:"status"`     // check run format ("COMPLETED" etc.)
-			Conclusion string `json:"conclusion"` // check run format ("SUCCESS", "FAILURE" …)
-		} `json:"statusCheckRollup"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parse pr view output: %w", err)
-	}
-	// Best-effort viewer lookup; failure leaves viewer-scoped flags zeroed.
-	viewer, _ := ViewerLogin(ctx)
-	latest := make([]LatestReview, 0, len(raw.LatestReviews))
-	for _, lr := range raw.LatestReviews {
-		latest = append(latest, LatestReview{
-			AuthorLogin: lr.Author.Login,
-			State:       lr.State,
-		})
-	}
-	requests := make([]ReviewRequest, 0, len(raw.ReviewRequests))
-	for _, rr := range raw.ReviewRequests {
-		switch rr.Typename {
-		case "User":
-			requests = append(requests, ReviewRequest{Login: rr.Login})
-		case "Team":
-			requests = append(requests, ReviewRequest{TeamSlug: rr.Slug})
-		}
-	}
-	rollupStates := make([]string, 0, len(raw.StatusCheckRollup))
-	for _, r := range raw.StatusCheckRollup {
-		switch {
-		case r.Conclusion != "":
-			rollupStates = append(rollupStates, r.Conclusion)
-		case r.Status != "" && !strings.EqualFold(r.Status, "COMPLETED"):
-			// In-flight check runs report status=QUEUED/IN_PROGRESS with
-			// an empty conclusion. Fold those into PENDING.
-			rollupStates = append(rollupStates, "PENDING")
-		case r.State != "":
-			rollupStates = append(rollupStates, r.State)
-		}
-	}
-	return &PR{
-		Number:       raw.Number,
-		Title:        raw.Title,
-		URL:          raw.URL,
-		Body:         raw.Body,
-		Repository:   ref.Owner + "/" + ref.Repo,
-		Owner:        ref.Owner,
-		Repo:         ref.Repo,
-		Author:       raw.Author.Login,
-		BaseRef:      raw.BaseRefName,
-		HeadRef:      raw.HeadRefName,
-		HeadSHA:      raw.HeadRefOid,
-		IsDraft:      raw.IsDraft,
-		CreatedAt:    raw.CreatedAt,
-		UpdatedAt:    raw.UpdatedAt,
-		Additions:    raw.Additions,
-		Deletions:    raw.Deletions,
-		ChangedFiles: raw.ChangedFiles,
-		ChecksState:  CollapseChecksRollup(rollupStates),
-		ReviewState:  DeriveReviewState(viewer, raw.ReviewDecision, latest, requests),
-	}, nil
+	return getPRViaGraphQL(ctx, ref)
 }
 
-// GetDiff returns the unified diff for a PR, exactly as `gh pr diff` produces.
+// GetDiff returns the unified diff for a PR via the REST API (same bytes as
+// `gh pr diff`).
 func GetDiff(ctx context.Context, ref Ref) (string, error) {
-	args := []string{"pr", "diff", strconv.Itoa(ref.Number), "--repo", ref.Owner + "/" + ref.Repo}
-	out, err := run(ctx, args)
-	if err != nil {
-		return "", err
-	}
-	return string(out), nil
+	return getPullDiff(ctx, ref)
 }
 
 // CheckoutPR clones (shallow) and checks out the PR's head into dir. dir must
@@ -605,27 +495,6 @@ func splitRepo(nameWithOwner string) (string, string) {
 		return "", nameWithOwner
 	}
 	return parts[0], parts[1]
-}
-
-// runJSON runs `gh <args...>`, returns stdout. Used for --json-flagged calls.
-func runJSON(ctx context.Context, args []string) ([]byte, error) {
-	return run(ctx, args)
-}
-
-// run executes gh with the given args and returns stdout, or an error
-// containing stderr on failure.
-func run(ctx context.Context, args []string) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	start := time.Now()
-	err := cmd.Run()
-	applog.GHInvocation(args, time.Since(start), err)
-	if err != nil {
-		return nil, fmt.Errorf("gh %s: %s", strings.Join(args, " "), strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
 }
 
 func runPlain(ctx context.Context, name string, args ...string) error {

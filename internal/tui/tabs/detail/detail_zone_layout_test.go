@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"path/filepath"
@@ -54,7 +54,7 @@ func TestSyntheticMouseAtTreeRowZoneOriginSelectsFirstFile(t *testing.T) {
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
-	out, _ := m.detailHandleMouse(msg, false)
+	out, _ := m.handleMouse(msg, false)
 	m2 := out.(*Model)
 	if m2.treeIdx != 0 {
 		t.Fatalf("origin click should select first file; treeIdx=%d", m2.treeIdx)

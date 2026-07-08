@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	tea "github.com/charmbracelet/bubbletea"

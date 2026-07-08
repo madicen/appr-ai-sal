@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"fmt"
@@ -14,7 +14,7 @@ import (
 // debugLogDetailMouse writes one stderr line on left-button press in PR detail:
 // terminal cell, which pane zones contain the point, and key zone Y ranges.
 func (m *Model) debugLogDetailMouse(msg tea.MouseMsg) {
-	if !m.opts.DebugMouse || m.mode != modeDetail {
+	if !m.host.DebugMouse() || false {
 		return
 	}
 	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {

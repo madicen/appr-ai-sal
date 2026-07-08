@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"fmt"
@@ -41,8 +41,8 @@ func (m *Model) renderControlsPane(width int) string {
 
 func (m *Model) renderControlsStrictness(width int) string {
 	cur := aiconfig.ReviewBalanced
-	if m.opts.AIConfig != nil {
-		cur = m.opts.AIConfig.ReviewStrictness
+	if m.host.AIConfig() != nil {
+		cur = m.host.AIConfig().ReviewStrictness
 	}
 	var b strings.Builder
 	b.WriteString(styles.BoldStyle.Render("Strictness") + "\n")
@@ -71,7 +71,7 @@ func (m *Model) renderControlsStrictness(width int) string {
 func (m *Model) renderControlsProfile(width int) string {
 	var b strings.Builder
 	b.WriteString(styles.BoldStyle.Render("AI profile") + "\n")
-	cfg := m.opts.AIConfig
+	cfg := m.host.AIConfig()
 	if cfg == nil || len(cfg.Profiles) == 0 {
 		m.controlsProfileDD.Clear()
 		b.WriteString(styles.DimStyle.Render("(no profiles configured — open settings)") + "\n")
@@ -95,7 +95,7 @@ func (m *Model) renderControlsProfile(width int) string {
 // recreates the component (which has no runtime SetOptions) and skips the
 // rebuild while open.
 func (m *Model) refreshControlsProfileDropdown() {
-	cfg := m.opts.AIConfig
+	cfg := m.host.AIConfig()
 	if cfg == nil || len(cfg.Profiles) == 0 {
 		m.controlsProfileDD.Clear()
 		return
@@ -126,15 +126,22 @@ func (m *Model) controlsProfileDropdownOpen() bool {
 	return m.controlsProfileDD.Open()
 }
 
-// forwardControlsProfileDropdown routes msg to the dropdown; the Host applies
-// a selection change as the new active profile via its OnSelect callback.
+// ForwardControlsProfileDropdown routes msg to the profile dropdown.
+func (m *Model) ForwardControlsProfileDropdown(msg tea.Msg) tea.Cmd {
+	return m.forwardControlsProfileDropdown(msg)
+}
+
+// ControlsProfileDropdownOpen reports whether the profile dropdown is open.
+func (m *Model) ControlsProfileDropdownOpen() bool {
+	return m.controlsProfileDropdownOpen()
+}
+
 func (m *Model) forwardControlsProfileDropdown(msg tea.Msg) tea.Cmd {
 	return m.controlsProfileDD.Forward(msg)
 }
 
-// handleControlsProfileResult applies an ItemChosenMsg / ItemCanceledMsg to
-// the open dropdown (closing it and recording the choice).
-func (m *Model) handleControlsProfileResult(msg tea.Msg) tea.Cmd {
+// HandleControlsProfileResult applies dropdown result messages.
+func (m *Model) HandleControlsProfileResult(msg tea.Msg) tea.Cmd {
 	if !m.controlsProfileDropdownOpen() {
 		return nil
 	}
@@ -145,7 +152,7 @@ func (m *Model) handleControlsProfileResult(msg tea.Msg) tea.Cmd {
 // chosen index and refreshes the detail views (mirrors the old ‹/› cycler;
 // not persisted to disk — the same as cycling).
 func (m *Model) applyControlsProfileSelection(idx int) {
-	cfg := m.opts.AIConfig
+	cfg := m.host.AIConfig()
 	if cfg == nil || idx < 0 || idx >= len(cfg.Profiles) {
 		return
 	}
@@ -165,21 +172,21 @@ func (m *Model) overlayControlsProfile(main string) string {
 		m.controlsProfileDDRow = z.StartY
 		m.controlsProfileDDCol = z.StartX
 	}
-	return m.controlsProfileDD.Composite(main, m.controlsProfileDDRow, m.controlsProfileDDCol, m.width, m.height)
+	return m.controlsProfileDD.Composite(main, m.controlsProfileDDRow, m.controlsProfileDDCol, m.width, m.host.Height())
 }
 
 func (m *Model) renderControlsAgents(width int) string {
 	owner, repo, number := "", "", 0
-	if m.currentPR != nil {
-		owner = m.currentPR.Owner
-		repo = m.currentPR.Repo
-		number = m.currentPR.Number
+	if m.currentPR() != nil {
+		owner = m.currentPR().Owner
+		repo = m.currentPR().Repo
+		number = m.currentPR().Number
 	}
 	var b strings.Builder
 	b.WriteString(styles.BoldStyle.Render("Context agents") + "\n")
-	b.WriteString(zone.Mark(zones.ControlsRepoAgents, fitToWidth(repoAgentRow(m.repoAgentsFreshness(owner, repo)), width)) + "\n")
+	b.WriteString(zone.Mark(zones.ControlsRepoAgents, fitToWidth(repoAgentRow(m.host.RepoAgentsFreshness(owner, repo)), width)) + "\n")
 	b.WriteString(zone.Mark(zones.ControlsTechAgents, fitToWidth(techAgentRow(techAgentsFreshness(owner, repo)), width)) + "\n")
-	b.WriteString(zone.Mark(zones.ControlsLangAgents, fitToWidth(langAgentRow(m.langAgentsFreshness(owner, repo, number)), width)) + "\n")
+	b.WriteString(zone.Mark(zones.ControlsLangAgents, fitToWidth(langAgentRow(m.host.LangAgentsFreshness(owner, repo, number)), width)) + "\n")
 	return b.String()
 }
 
@@ -248,10 +255,11 @@ func techAgentsFreshness(owner, repo string) techagentsstore.Freshness {
 func (m *Model) renderControlsToggles(width int) string {
 	var b strings.Builder
 	b.WriteString(styles.BoldStyle.Render("Run options") + "\n")
-	parallel, _, prAgentsParallel := repoParallelExecutionFlags()
+	parallel := m.host.ParallelSpecialists()
+	prAgentsParallel := m.host.ParallelPRAgents()
 	b.WriteString(zone.Mark(zones.ControlsToggleParallel, fitToWidth(toggleRow("Parallel specialists", parallel), width)) + "\n")
 	b.WriteString(zone.Mark(zones.ControlsToggleParallelPRAgents, fitToWidth(toggleRow("Parallel PR agents", prAgentsParallel), width)) + "\n")
-	b.WriteString(zone.Mark(zones.ControlsToggleDryRun, fitToWidth(toggleRow("Dry run", m.opts.DryRun), width)) + "\n")
+	b.WriteString(zone.Mark(zones.ControlsToggleDryRun, fitToWidth(toggleRow("Dry run", m.host.DryRun()), width)) + "\n")
 	b.WriteString(zone.Mark(zones.ControlsToggleStartMinimized, fitToWidth(toggleRow("Start review minimized", m.startReviewMinimized), width)) + "\n")
 	return b.String()
 }
@@ -268,7 +276,7 @@ func (m *Model) renderControlsStartButton(width int) string {
 	var b strings.Builder
 	startLabel := " Start review (r) "
 	startBtn := styles.OkStyle.Render(startLabel)
-	if m.currentPR == nil {
+	if m.currentPR() == nil {
 		startBtn = styles.DimStyle.Render(startLabel)
 	}
 	b.WriteString(zone.Mark(zones.ControlsStartReview, startBtn) + "\n")
@@ -291,3 +299,9 @@ func fitToWidth(s string, w int) string {
 	}
 	return s
 }
+
+// RepoAgentRow exports row text for integration tests.
+func RepoAgentRow(state repoagentsstore.Freshness) string { return repoAgentRow(state) }
+
+// TechAgentRow exports row text for integration tests.
+func TechAgentRow(state techagentsstore.Freshness) string { return techAgentRow(state) }

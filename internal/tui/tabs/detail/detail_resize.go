@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"github.com/charmbracelet/lipgloss"
@@ -19,11 +19,11 @@ import (
 // Returns ok=false when the model has no useful geometry (zero-size
 // terminal, or not in modeDetail) so callers can early-return.
 func (m *Model) detailPaneRowYRange() (top, bottom int, ok bool) {
-	if m.width == 0 || m.height == 0 || m.mode != modeDetail {
+	if m.width == 0 || m.host.Height() == 0 || false {
 		return 0, 0, false
 	}
-	chromeTop := lipgloss.Height(m.renderHeader())
-	bodyH := m.chromeBodyHeight()
+	chromeTop := lipgloss.Height(m.host.RenderHeader())
+	bodyH := m.host.ChromeBodyHeight()
 	miniH := lipgloss.Height(m.renderDetailMiniHeader())
 	paneTop := chromeTop + miniH
 	paneBot := chromeTop + bodyH - 1

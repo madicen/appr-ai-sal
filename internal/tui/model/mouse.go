@@ -71,32 +71,10 @@ func (m *Model) handleStatusBarMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd, bool
 			return m, m.refreshPRListCmd(), true
 		}
 	case modeDetail:
-		switch {
-		case zoneInBounds(zones.StatusCyclePane, msg):
-			m.cyclePane(+1)
-			m.refreshDetailViews()
-			return m, nil, true
-		case zoneInBounds(zones.StatusReview, msg):
-			mm, cmd := m.startReviewOverlay()
-			return mm, cmd, true
-		case zoneInBounds(zones.StatusToggleControls, msg):
-			m.detailToggleControls()
-			return m, nil, true
-		case zoneInBounds(zones.StatusReopenApproval, msg):
-			mm, cmd := m.reopenApprovalIfPossible()
-			return mm, cmd, true
-		case zoneInBounds(zones.StatusOpenBrowser, msg):
-			return m, m.detailOpenBrowserCmd(), true
-		case zoneInBounds(zones.StatusDescription, msg):
-			return m, m.detailToggleDescription(), true
-		case zoneInBounds(zones.StatusDiffOnly, msg):
-			m.detailToggleDiffOnly()
-			return m, nil, true
-		case zoneInBounds(zones.StatusBulk, msg):
-			return m, m.detailBulkConfirmCmd(), true
-		case zoneInBounds(zones.StatusBack, msg):
-			m.detailBackToList()
-			return m, nil, true
+		if dt := m.detailTab(); dt != nil {
+			if cmd, handled := dt.HandleStatusBarMouse(msg); handled {
+				return m, cmd, true
+			}
 		}
 	}
 	return m, nil, false
@@ -160,12 +138,6 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		var lcmd tea.Cmd
 		m.list, lcmd = m.list.Update(msg)
 		return m, lcmd
-	case modeDetail:
-		// Detail mode routes ALL mouse events (press, motion, release,
-		// wheel) into detailHandleMouse so it can drive the seam-drag
-		// state machine. Filtering for press-only here would drop the
-		// motion + release events the resize handler depends on.
-		return m.detailHandleMouse(msg, wheel)
 	}
 	return m, nil
 }

@@ -19,9 +19,9 @@ import (
 // REST and GraphQL traffic runs through go-gh's clients, which resolve the
 // SAME auth + host as the `gh` CLI — so we keep the "no separate auth surface"
 // design while getting real HTTP status codes (fed into the APIError taxonomy
-// in errors.go) and native Retry-After handling. The sugar commands
-// (`gh pr view` / `gh pr diff` / `gh pr list`) deliberately stay as shell-outs
-// for now (see run/runJSON in gh.go); the plan stages that migration later.
+// in errors.go) and native Retry-After handling. PR view/diff/list and auth
+// verification also run in-process (see rest_pr.go); only git subprocesses and
+// `gh --version` remain as shell-outs.
 //
 // Testability: nothing here spawns a process, and every call goes through the
 // injectable client constructors below. Tests install a fake HTTP transport
@@ -122,6 +122,29 @@ func ghAPIGet(ctx context.Context, apiPath string, out interface{}) error {
 		return apiErrorFrom(derr, apiPath)
 	}
 	return nil
+}
+
+// ghAPIGetAccept issues a REST GET with a custom Accept header and returns the
+// raw response body. Used for PR diffs (application/vnd.github.v3.diff).
+func ghAPIGetAccept(ctx context.Context, apiPath, accept string) ([]byte, error) {
+	opts := clientOptions()
+	opts.Headers = map[string]string{"Accept": accept}
+	c, err := ghapi.NewRESTClient(opts)
+	if err != nil {
+		return nil, fmt.Errorf("gh rest client: %w", err)
+	}
+	start := time.Now()
+	resp, err := c.RequestWithContext(ctx, http.MethodGet, apiPath, nil)
+	applog.GHInvocation([]string{"api", apiPath, "Accept=" + accept}, time.Since(start), err)
+	if err != nil {
+		return nil, apiErrorFrom(err, apiPath)
+	}
+	defer resp.Body.Close()
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // ghAPIPost issues a REST POST to apiPath with a JSON body. It returns the raw

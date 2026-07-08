@@ -12,7 +12,6 @@ import (
 	"github.com/charmbracelet/bubbles/list"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
 	bubbledropdown "github.com/madicen/bubble-dropdown"
@@ -97,16 +96,6 @@ func New(opts Options) *Model {
 		opts.AIConfig = aiconfig.DefaultConfig()
 	}
 
-	tv := viewport.New(0, 0)
-	dv := viewport.New(0, 0)
-	cv := viewport.New(0, 0)
-	for _, vp := range []*viewport.Model{&tv, &dv, &cv} {
-		vp.SetHorizontalStep(4)
-		// Parent routes wheel events to exactly one pane; disable built-in
-		// viewport mouse handling so wheels never hit two panes at once.
-		vp.MouseWheelEnabled = false
-	}
-
 	m := &Model{
 		opts:               opts,
 		mode:               modeList,
@@ -116,13 +105,7 @@ func New(opts Options) *Model {
 		urlInput:           ti,
 		searchInput:        si,
 		spinner:            sp,
-		treeView:           tv,
-		diffView:           dv,
-		controlsView:       cv,
-		focusedPane:        paneTree,
 		listDoubleClickWin: 500 * time.Millisecond,
-		treePaneWidth:      defaultTreePaneWidth,
-		controlsPaneWidth:  defaultControlsPaneWidth,
 	}
 	m.overlayFocus.Stack = &m.overlayStack
 	m.palette = m.buildCommandRegistry()
@@ -239,14 +222,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.mode == modeDetail && m.overlayStack.Top() == nil {
 		switch typed := msg.(type) {
 		case bubbledropdown.ItemChosenMsg, bubbledropdown.ItemCanceledMsg:
-			return m, m.handleControlsProfileResult(msg)
+			if dt := m.detailTab(); dt != nil {
+				return m, dt.HandleControlsProfileResult(msg)
+			}
 		case tea.KeyMsg:
-			if m.controlsProfileDropdownOpen() && typed.String() != "ctrl+c" {
-				return m, m.forwardControlsProfileDropdown(msg)
+			if dt := m.detailTab(); dt != nil && dt.ControlsProfileDropdownOpen() && typed.String() != "ctrl+c" {
+				return m, dt.ForwardControlsProfileDropdown(msg)
 			}
 		case tea.MouseMsg:
-			if m.controlsProfileDropdownOpen() {
-				return m, m.forwardControlsProfileDropdown(msg)
+			if dt := m.detailTab(); dt != nil && dt.ControlsProfileDropdownOpen() {
+				return m, dt.ForwardControlsProfileDropdown(msg)
 			}
 		}
 	}
@@ -352,14 +337,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case data.ThreadsLoadedMsg:
-		// Phase 5 item 8: existing inline comments + threads for the detail
-		// thread-browsing UI arrived.
-		m.applyThreadsLoaded(msg)
+		if dt := m.detailTab(); dt != nil {
+			dt.ApplyThreadsLoaded(msg.Comments, msg.Threads)
+		}
 		return m, nil
 
 	case data.ThreadReplyPostedMsg:
-		// Phase 5 item 8.3: a review-history thread reply completed.
-		m.applyThreadReply(msg)
+		if dt := m.detailTab(); dt != nil {
+			status := "reply posted"
+			if msg.Err != nil {
+				status = "reply failed: " + msg.Err.Error()
+			}
+			dt.ApplyThreadReply(status)
+		}
 		return m, nil
 
 	case state.NavigateMsg:
@@ -395,42 +385,22 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.draft = nil
 		m.parsedDiff = review.ParseDiff(m.diff)
 		m.recordPRLanguages(msg.PR, m.parsedDiff)
-		// Loading a different PR shouldn't carry collapse state forward —
-		// the folder paths from the previous PR are likely irrelevant.
-		m.collapsedFolders = map[string]bool{}
-		m.treeRows = buildTreeRows(m.parsedDiff, m.draft)
-		m.treeIdx = 0
-		m.diffOnly = false
-		m.centerView = centerDiff
-		m.resetOverviewData()
-		m.focusedPane = paneTree
-		m.selectedFilePath = ""
-		if len(m.parsedDiff) > 0 {
-			m.selectedFilePath = m.parsedDiff[0].Path
-		}
-		m.recomputeTreeView()
-		m.scrollToSelectedFile = true
 		m.mode = modeDetail
 		m.ensureDetailTab()
-		m.refreshDetailViews()
-		// U2: if this PR's current head SHA has an in-progress saved review
-		// session, offer to resume it (rehydrate the Draft + decisions, no
-		// re-run) instead of silently discarding a multi-minute run.
+		if dt := m.detailTab(); dt != nil {
+			dt.OnPRLoaded(m.parsedDiff, m.draft)
+			dt.RefreshViews()
+		}
 		return m, m.maybeOfferResumeCmd()
 
 	case data.ChecksMsg:
-		// Stale ref guard: ignore the result if the user has since opened
-		// a different PR.
 		if m.currentPR == nil || msg.Ref.Owner != m.currentPR.Owner ||
 			msg.Ref.Repo != m.currentPR.Repo || msg.Ref.Number != m.currentPR.Number {
 			return m, nil
 		}
-		m.checksLoading = false
-		m.checksErr = msg.Err
-		if msg.Err == nil {
-			m.checks = msg.Report
+		if dt := m.detailTab(); dt != nil {
+			dt.ApplyChecks(msg.Report, msg.Err)
 		}
-		m.refreshDetailViews()
 		return m, nil
 
 	case data.DiscussionMsg:
@@ -438,15 +408,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			msg.Ref.Repo != m.currentPR.Repo || msg.Ref.Number != m.currentPR.Number {
 			return m, nil
 		}
-		m.discussionLoading = false
-		m.discussionErr = msg.Err
-		if msg.Err == nil {
-			m.discussion = msg.Timeline
-			if m.discussion == nil {
-				m.discussion = []gh.DiscussionEvent{}
-			}
+		if dt := m.detailTab(); dt != nil {
+			dt.ApplyDiscussion(msg.Timeline, msg.Err)
 		}
-		m.refreshDetailViews()
 		return m, nil
 
 	case data.ReviewStartedMsg:
@@ -454,7 +418,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, data.WaitForProgressCmd(m.progressCh)
 
 	case data.ProgressMsg:
-		m.applyProgress(review.Progress(msg))
+		p := review.Progress(msg)
+		if p.Stage == "done" {
+			m.draft = p.Final
+			m.recomputeTreeRows()
+		}
 		cmd := data.WaitForProgressCmd(m.progressCh)
 		if ro := m.reviewOverlayOnTop(); ro != nil {
 			_, overlayCmd := ro.Update(msg)
@@ -463,18 +431,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case data.PRRefreshedMsg:
-		// Update root state so the detail view's diff/PR head SHA stay in
-		// sync with whatever the overlay just adopted (force-pushed commits,
-		// renamed files, etc.).
 		if msg.PR != nil {
 			if m.currentPR != nil && m.currentPR.Number == msg.PR.Number && m.currentPR.Owner == msg.PR.Owner && m.currentPR.Repo == msg.PR.Repo {
 				m.currentPR = msg.PR
 				m.diff = msg.Diff
 				m.parsedDiff = review.ParseDiff(m.diff)
 				m.recordPRLanguages(msg.PR, m.parsedDiff)
-				m.treeRows = buildTreeRows(m.parsedDiff, m.draft)
-				m.recomputeTreeView()
-				m.refreshDetailViews()
+				if dt := m.detailTab(); dt != nil {
+					dt.OnDraftUpdated(m.parsedDiff, m.draft)
+					dt.RefreshViews()
+				}
 			}
 			if m.draft != nil && m.draft.PR != nil && m.draft.PR.Number == msg.PR.Number {
 				m.draft.PR = msg.PR
@@ -626,6 +592,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// mouse-outside-modal clicks through to the background).
 		if !m.overlayFocus.InteractiveToBase(msg) {
 			if mm, ok := msg.(tea.MouseMsg); ok && m.shouldPassMouseToBackground(mm) {
+				if m.mode == modeDetail {
+					return m.detailHandleMouse(mm, tea.MouseEvent(mm).IsWheel())
+				}
 				return m.handleMouse(mm)
 			}
 			return m, m.overlayStack.Update(msg)

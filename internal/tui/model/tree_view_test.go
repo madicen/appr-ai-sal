@@ -10,6 +10,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
+	detailtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/detail"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
@@ -45,24 +46,24 @@ diff --git a/top.tf b/top.tf
 +t
 `
 
-func nestedTreeRows(t *testing.T) []treeRow {
+func nestedTreeRows(t *testing.T) []detailtab.TreeRow {
 	t.Helper()
-	return buildTreeRows(review.ParseDiff(nestedDiff), nil)
+	return detailtab.BuildTreeRows(review.ParseDiff(nestedDiff), nil)
 }
 
 // Single-segment paths produce only file rows; no folder headers needed.
 func TestBuildTreeViewFlatPaths(t *testing.T) {
-	rows := buildTreeRows(review.ParseDiff(threeFileDiff), nil)
-	view, fileToLine, lineToFile := buildTreeView(rows, nil)
+	rows := detailtab.BuildTreeRows(review.ParseDiff(threeFileDiff), nil)
+	view, fileToLine, lineToFile := detailtab.BuildTreeView(rows, nil)
 	if len(view) != 3 {
 		t.Fatalf("flat: got %d view rows, want 3", len(view))
 	}
 	for i, vr := range view {
-		if !vr.isFile {
+		if !vr.IsFile() {
 			t.Fatalf("flat row %d: isFile=false (folder leaked into flat output)", i)
 		}
-		if vr.indent != 0 {
-			t.Fatalf("flat row %d: indent=%d, want 0", i, vr.indent)
+		if vr.Indent() != 0 {
+			t.Fatalf("flat row %d: indent=%d, want 0", i, vr.Indent())
 		}
 	}
 	for i := range rows {
@@ -82,7 +83,7 @@ func TestBuildTreeViewFlatPaths(t *testing.T) {
 // after dirs at the same depth.
 func TestBuildTreeViewNested(t *testing.T) {
 	rows := nestedTreeRows(t)
-	view, fileToLine, lineToFile := buildTreeView(rows, nil)
+	view, fileToLine, lineToFile := detailtab.BuildTreeView(rows, nil)
 	if len(view) == 0 {
 		t.Fatal("nested: empty view rows")
 	}
@@ -114,7 +115,7 @@ func TestBuildTreeViewNested(t *testing.T) {
 	}
 	for i, w := range want {
 		got := view[i]
-		if got.isFile != w.isFile || got.indent != w.indent || got.name != w.name {
+		if got.IsFile() != w.isFile || got.Indent() != w.indent || got.Name() != w.name {
 			t.Fatalf("row %d: got %+v, want isFile=%v indent=%d name=%q", i, got, w.isFile, w.indent, w.name)
 		}
 	}
@@ -127,9 +128,9 @@ func TestBuildTreeViewNested(t *testing.T) {
 	// lineToFile maps folder rows to -1, file rows to a valid file index.
 	for i, vr := range view {
 		switch {
-		case !vr.isFile && lineToFile[i] != -1:
+		case !vr.IsFile() && lineToFile[i] != -1:
 			t.Fatalf("folder row %d: lineToFile=%d, want -1", i, lineToFile[i])
-		case vr.isFile && (lineToFile[i] < 0 || lineToFile[i] >= len(rows)):
+		case vr.IsFile() && (lineToFile[i] < 0 || lineToFile[i] >= len(rows)):
 			t.Fatalf("file row %d: lineToFile=%d out of range", i, lineToFile[i])
 		}
 	}
@@ -138,8 +139,8 @@ func TestBuildTreeViewNested(t *testing.T) {
 		if line < 0 || line >= len(view) {
 			t.Fatalf("fileToLine[%d]=%d out of range", fi, line)
 		}
-		if view[line].fileIndex != fi {
-			t.Fatalf("fileToLine[%d]=%d points to row whose fileIndex=%d", fi, line, view[line].fileIndex)
+		if view[line].FileIndex() != fi {
+			t.Fatalf("fileToLine[%d]=%d points to row whose fileIndex=%d", fi, line, view[line].FileIndex())
 		}
 	}
 }
@@ -150,21 +151,21 @@ func TestBuildTreeViewDirsBeforeFiles(t *testing.T) {
 	// Construct: top-level "a/x.tf" and top-level "z.tf" — directory "a"
 	// should appear before file "z.tf" even though "z" > "a" textually
 	// regardless of separators.
-	rows := []treeRow{
+	rows := []detailtab.TreeRow{
 		{Path: "z.tf", Additions: 1},
 		{Path: "a/x.tf", Additions: 1},
 	}
-	view, _, _ := buildTreeView(rows, nil)
+	view, _, _ := detailtab.BuildTreeView(rows, nil)
 	if len(view) != 3 {
 		t.Fatalf("got %d view rows, want 3 (a/, x.tf, z.tf)", len(view))
 	}
-	if view[0].isFile || view[0].name != "a" {
+	if view[0].IsFile() || view[0].Name() != "a" {
 		t.Fatalf("first row should be folder 'a/'; got %+v", view[0])
 	}
-	if !view[1].isFile || view[1].name != "x.tf" {
+	if !view[1].IsFile() || view[1].Name() != "x.tf" {
 		t.Fatalf("second row should be file 'x.tf'; got %+v", view[1])
 	}
-	if !view[2].isFile || view[2].name != "z.tf" {
+	if !view[2].IsFile() || view[2].Name() != "z.tf" {
 		t.Fatalf("third row should be file 'z.tf' (after dirs); got %+v", view[2])
 	}
 }
@@ -174,13 +175,13 @@ func TestBuildTreeViewDirsBeforeFiles(t *testing.T) {
 func TestBuildTreeViewCollapsedFolderHidesDescendants(t *testing.T) {
 	rows := nestedTreeRows(t)
 	collapsed := map[string]bool{"a": true}
-	view, fileToLine, _ := buildTreeView(rows, collapsed)
+	view, fileToLine, _ := detailtab.BuildTreeView(rows, collapsed)
 	for _, vr := range view {
-		if !vr.isFile {
+		if !vr.IsFile() {
 			continue
 		}
-		if strings.HasPrefix(vr.fullPath, "a/") {
-			t.Fatalf("file row %q should be hidden when 'a' is collapsed", vr.fullPath)
+		if strings.HasPrefix(vr.FullPath(), "a/") {
+			t.Fatalf("file row %q should be hidden when 'a' is collapsed", vr.FullPath())
 		}
 	}
 	// All files under "a/" should map to -1 in fileToLine.
@@ -197,8 +198,8 @@ func TestBuildTreeViewCollapsedFolderHidesDescendants(t *testing.T) {
 func TestRenderTreePaneFolderZonesUseTreeFolder(t *testing.T) {
 	zone.NewGlobal()
 	rows := nestedTreeRows(t)
-	view, _, _ := buildTreeView(rows, nil)
-	out := renderTreePane(view, rows, nil, 0, 80, true)
+	view, _, _ := detailtab.BuildTreeView(rows, nil)
+	out := detailtab.RenderTreePane(view, rows, nil, 0, 80, true)
 	out = zone.Scan(out)
 	// The first row in nested fixture is folder "a/" — it must be
 	// registered under TreeFolder(0).
@@ -213,21 +214,23 @@ func TestRenderTreePaneFolderZonesUseTreeFolder(t *testing.T) {
 func TestSpaceTogglesFolderCollapse(t *testing.T) {
 	zone.NewGlobal()
 	m := nestedFixtureModel(t)
+	dt := detailState(t, m)
 	// Cursor lands on row 0 by default; row 0 should be folder "a/".
-	if m.treeViewRows[0].isFile {
-		t.Fatalf("row 0 should be a folder; got %+v", m.treeViewRows[0])
+	if dt.TreeViewRows()[0].IsFile() {
+		t.Fatalf("row 0 should be a folder; got %+v", dt.TreeViewRows()[0])
 	}
-	if m.collapsedFolders["a"] {
+	if dt.CollapsedFolders()["a"] {
 		t.Fatalf("'a' should not start collapsed")
 	}
-	beforeRows := len(m.treeViewRows)
+	beforeRows := len(dt.TreeViewRows())
 	out, _ := m.handleDetailKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
 	m2 := out.(*Model)
-	if !m2.collapsedFolders["a"] {
+	dt2 := detailState(t, m2)
+	if !dt2.CollapsedFolders()["a"] {
 		t.Fatalf("space on folder 'a' should set collapsedFolders[a]=true")
 	}
-	if len(m2.treeViewRows) >= beforeRows {
-		t.Fatalf("collapsing 'a' should reduce visible rows; got %d (was %d)", len(m2.treeViewRows), beforeRows)
+	if len(dt2.TreeViewRows()) >= beforeRows {
+		t.Fatalf("collapsing 'a' should reduce visible rows; got %d (was %d)", len(dt2.TreeViewRows()), beforeRows)
 	}
 }
 
@@ -240,10 +243,11 @@ func TestJKNavigatesAcrossFoldersAndFiles(t *testing.T) {
 	// First move (k from 0 should clamp at 0; j should advance to row 1).
 	out, _ := m.handleDetailKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	m2 := out.(*Model)
-	if m2.treeIdx != 1 {
-		t.Fatalf("j: treeIdx=%d, want 1", m2.treeIdx)
+	dt2 := detailState(t, m2)
+	if dt2.TreeIdx() != 1 {
+		t.Fatalf("j: treeIdx=%d, want 1", dt2.TreeIdx())
 	}
-	if !m2.scrollToSelectedFile {
+	if !dt2.ScrollToSelectedFile() {
 		// scrollToSelectedFile is consumed by refreshDetailViews; check
 		// indirectly: after the next refresh treeView.YOffset stays
 		// reasonable. Here we just check the gate was set during j.
@@ -272,13 +276,15 @@ func nestedFixtureModel(t *testing.T) *Model {
 	m.diff = nestedDiff
 	m.parsedDiff = review.ParseDiff(m.diff)
 	m.draft = &review.Draft{}
-	m.collapsedFolders = map[string]bool{}
-	m.recomputeTreeRows()
-	if len(m.treeRows) > 0 {
-		m.selectedFilePath = m.treeRows[0].Path
+	m.ensureDetailTab()
+	if dt := m.detailTab(); dt != nil {
+		dt.OnPRLoaded(m.parsedDiff, m.draft)
+		dt.SetCollapsedFolders(map[string]bool{})
+		dt.SetTreeIdx(0)
+		dt.SetSelectedFilePath("")
+		dt.SetFocusedPane(detailtab.PaneTree)
+		dt.RefreshViews()
 	}
-	m.focusedPane = paneTree
-	m.refreshDetailViews()
 	_ = m.View()
 	waitBubbleZone(t, zones.PaneTreeBody)
 	return m

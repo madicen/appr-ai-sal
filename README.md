@@ -14,7 +14,7 @@ like before installing.
 ### 1. Install the prerequisites
 
 - **Go 1.22+** — check with `go version`.
-- **GitHub CLI** — install [`gh`](https://cli.github.com/) (**version 2.0.0 or newer**) and run `gh auth login` once. `appr-ai-sal` reuses `gh`'s stored auth for all GitHub access — GraphQL/REST calls now run in-process (no separate token to configure), and a couple of convenience reads still shell out to `gh`. Startup fails with a clear message if `gh` is missing, too old, or not logged in.
+- **GitHub CLI** — install [`gh`](https://cli.github.com/) (**version 2.0.0 or newer**) and run `gh auth login` once. `appr-ai-sal` reuses `gh`'s stored auth for all GitHub access — GraphQL/REST calls run in-process (no separate token to configure). Startup fails with a clear message if `gh` is missing, too old, or not logged in.
 - **Pick one AI backend:**
   - **Claude (default, simplest)** — install the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) so `claude` is on your `PATH`. No extra config needed.
   - **Ollama (local, no API key)** — install [Ollama](https://ollama.com) and pull a model, e.g. `ollama pull llama3.2`.
@@ -135,6 +135,27 @@ defaults on the next app restart.
 <summary>Settings — AI provider, strictness chips, repo-context tab</summary>
 
 ![settings](screenshots/settings.gif)
+
+</details>
+
+<details>
+<summary>Help overlay and command palette (`?`, `ctrl+k`)</summary>
+
+![help and palette](screenshots/help-palette.gif)
+
+Press `?` anywhere for a context-sensitive keymap overlay. `ctrl+k` opens a
+fuzzy command palette — every action available in the current view, without
+memorizing bindings.
+
+</details>
+
+<details>
+<summary>Diff search and finding navigation (`/`, `n`/`p`)</summary>
+
+![diff search](screenshots/detail-diff.gif)
+
+On the PR detail view, `/` searches within the unified diff; `n` and `p` step
+through matches. Syntax-highlighted hunks make scan-heavy reviews easier.
 
 </details>
 

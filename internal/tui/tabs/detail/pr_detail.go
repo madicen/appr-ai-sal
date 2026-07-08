@@ -1,4 +1,4 @@
-package model
+package detail
 
 import (
 	"fmt"
@@ -358,8 +358,8 @@ type ghPRSubset struct {
 // Discussion badge shows a pending count when we have one.
 func (m *Model) overviewBadgesForModel() ghPRSubset {
 	out := ghPRSubset{}
-	if m.currentPR != nil {
-		body := strings.TrimSpace(m.currentPR.Body)
+	if m.currentPR() != nil {
+		body := strings.TrimSpace(m.currentPR().Body)
 		if body == "" {
 			out.descriptionBadge = styles.DimStyle.Render("(empty)")
 		} else {
@@ -371,7 +371,7 @@ func (m *Model) overviewBadgesForModel() ghPRSubset {
 			}
 			out.descriptionBadge = styles.DimStyle.Render(fmt.Sprintf("%d ln", lines))
 		}
-		if c := checksRollupChip(m.currentPR.ChecksState); c != "" {
+		if c := m.host.ChecksRollupChip(m.currentPR().ChecksState); c != "" {
 			out.checksBadge = c
 		} else {
 			out.checksBadge = styles.DimStyle.Render("--")
@@ -383,7 +383,7 @@ func (m *Model) overviewBadgesForModel() ghPRSubset {
 	case m.checksErr != nil:
 		out.checksBadge = styles.ErrStyle.Render("error")
 	case m.checks != nil:
-		out.checksBadge = checksRollupChip(m.checks.RollupState)
+		out.checksBadge = m.host.ChecksRollupChip(m.checks.RollupState)
 		if out.checksBadge == "" {
 			out.checksBadge = styles.DimStyle.Render("no checks")
 		}
