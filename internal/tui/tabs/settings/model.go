@@ -900,6 +900,11 @@ func (m *Model) deleteSelectedProfile() tea.Cmd {
 func (m *Model) submitSave() tea.Cmd {
 	return func() tea.Msg {
 		m.commitEditorToSelectedProfile()
+		// Mirror the active profile onto top-level fields before Save.
+		// normalize() calls syncActiveProfileFromFlat(), which snapshots
+		// top-level fields back into Profiles[active] — without this mirror,
+		// edits to the currently active profile in the editor are reverted.
+		m.draft.ApplyActiveProfile()
 		// Validate every profile (provider + timeout) before persisting so
 		// the on-disk file isn't left half-valid on a typo.
 		for i, p := range m.draft.Profiles {

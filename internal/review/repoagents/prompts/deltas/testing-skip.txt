@@ -1,0 +1,3 @@
+- Generic testing pyramid theory.
+- Whether code is *correct* (not your job).
+- Formatting / docs / security — separate briefs.

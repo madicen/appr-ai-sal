@@ -1,0 +1,15 @@
+- **Doc-comment policy.** Are exported APIs always doc-commented? What about
+  internal helpers? Cite README / CONTRIBUTING / AGENTS.md rules and visible
+  patterns in the bundle.
+- **Where prose docs live.** README structure, `docs/` layout, design notes,
+  changelog or release notes conventions, ADR usage.
+- **Kinds of changes that *require* doc updates here.** From the conventions
+  and review history: do CLI flag changes always update the README? Do API
+  changes always update OpenAPI / docs site? When does a CHANGELOG entry
+  matter?
+- **What the repo deliberately leaves undocumented.** If the team consistently
+  ships internal helpers without comments, or merges PRs that skip "obvious"
+  doc updates, name those patterns explicitly so the specialist does not
+  re-litigate them.
+- **Tone / style of comments.** Length, GoDoc-style imperative phrasing,
+  emoji policy, links to issues — anything visible.

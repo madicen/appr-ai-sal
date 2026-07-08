@@ -146,6 +146,7 @@ const graphqlPRAgentDataQuery = `query($owner: String!, $name: String!, $number:
                     startedAt
                     completedAt
                     detailsUrl
+                    isRequired
                     title
                     summary
                     checkSuite { app { name } }
@@ -162,6 +163,7 @@ const graphqlPRAgentDataQuery = `query($owner: String!, $name: String!, $number:
                   ... on StatusContext {
                     context
                     state
+                    isRequired
                     description
                     targetUrl
                     createdAt

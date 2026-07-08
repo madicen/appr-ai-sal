@@ -1,0 +1,4 @@
+- Generic OWASP recitation. The specialist already knows the categories;
+  you're providing repo-specific facts.
+- Findings the inputs do not support. Do not invent rules.
+- Topics that other briefs cover (formatting, testing, docs, design).

@@ -82,14 +82,14 @@ func TestFormatChecksSection(t *testing.T) {
 	report := &gh.ChecksReport{
 		RollupState: "FAILURE",
 		Runs: []gh.CheckRun{
-			{Name: "lint", App: "GitHub Actions", Conclusion: "FAILURE", Title: "gofmt failed", Summary: "run.go is not formatted",
+			{Name: "lint", App: "GitHub Actions", Conclusion: "FAILURE", Required: true, Title: "gofmt failed", Summary: "run.go is not formatted",
 				Annotations: []gh.CheckRunAnnotation{{Path: "run.go", Line: 2, Level: "FAILURE", Message: "File is not gofmt-ed"}},
 				DetailsURL:  "https://example.test/run/1"},
 			{Name: "build", Conclusion: "SUCCESS"},
 		},
 	}
 	got := formatChecksSection(report)
-	for _, want := range []string{"## CI checks", "Rollup state: FAILURE", "lint", "gofmt failed", "run.go is not formatted", "run.go:2", "https://example.test/run/1", "Passing / other checks: build"} {
+	for _, want := range []string{"## CI checks", "Rollup state: FAILURE", "lint", "gofmt failed", "run.go is not formatted", "run.go:2", "https://example.test/run/1", "required for merge", "Passing / other checks: build"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("checks section missing %q\n%s", want, got)
 		}

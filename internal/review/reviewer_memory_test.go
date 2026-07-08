@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review/memory"
 )
@@ -29,12 +30,12 @@ func skipRecord(specialist, path, comment, severity string, count int) memory.Re
 // entirely absent so existing arbiter behaviour is unchanged.
 func TestArbiterPromptByteIdenticalWhenMemoryEmpty(t *testing.T) {
 	pr := &gh.PR{Number: 7, Title: "x", Repository: "acme/widget"}
-	base := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, "")
+	base := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, "", aiconfig.ReviewBalanced)
 	if strings.Contains(base, "Previously rejected patterns") {
 		t.Fatalf("empty memory must not add the rejected-patterns section:\n%s", base)
 	}
 	// An empty RejectedPatternsSection produces exactly the same prompt.
-	again := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, RejectedPatternsSection(memWith()))
+	again := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, RejectedPatternsSection(memWith()), aiconfig.ReviewBalanced)
 	if base != again {
 		t.Fatalf("empty-memory prompt must be byte-identical\n--- base ---\n%s\n--- again ---\n%s", base, again)
 	}
@@ -59,12 +60,12 @@ func TestArbiterPromptIncludesRejectedPatternsWhenMemoryPresent(t *testing.T) {
 	if strings.Contains(section, "over-engineered") || strings.Contains(section, "pkg/*.go") {
 		t.Fatalf("a single skip is below the arbiter minimum and must be omitted:\n%s", section)
 	}
-	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, section)
+	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, section, aiconfig.ReviewBalanced)
 	if !strings.Contains(got, "## Previously rejected patterns (reviewer memory)") {
 		t.Fatalf("augmented prompt missing the section header:\n%s", got)
 	}
 	// Removing the injected block recovers the base prompt exactly.
-	base := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, "")
+	base := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, "", aiconfig.ReviewBalanced)
 	block := "## Previously rejected patterns (reviewer memory)\n\n" + strings.TrimSpace(section) + "\n"
 	if recovered := strings.Replace(got, block, "", 1); recovered != base {
 		t.Fatalf("section must be inserted cleanly; recovered != base\n--- recovered ---\n%s\n--- base ---\n%s", recovered, base)

@@ -32,6 +32,7 @@ type CheckRun struct {
 	Title       string // CheckRun.output.title — usually the failing-step summary
 	Summary     string // CheckRun.output.summary — markdown body GitHub renders inline
 	DetailsURL  string // best-effort permalink to the run on GitHub
+	Required    bool   // true when the check is required for merge (branch protection)
 	StartedAt   time.Time
 	CompletedAt time.Time
 	Annotations []CheckRunAnnotation
@@ -83,6 +84,7 @@ type checkContextNode struct {
 	StartedAt   string `json:"startedAt"`
 	CompletedAt string `json:"completedAt"`
 	DetailsURL  string `json:"detailsUrl"`
+	IsRequired  bool   `json:"isRequired"`
 	Title       string `json:"title"`
 	Summary     string `json:"summary"`
 	CheckSuite  struct {
@@ -162,6 +164,7 @@ func checksReportFromData(ref Ref, commitNodes []checksCommitNode) *ChecksReport
 			run.Summary = n.Summary
 			run.DetailsURL = n.DetailsURL
 			run.App = n.CheckSuite.App.Name
+			run.Required = n.IsRequired
 			if t, err := time.Parse(time.RFC3339, n.StartedAt); err == nil {
 				run.StartedAt = t
 			}
@@ -183,6 +186,7 @@ func checksReportFromData(ref Ref, commitNodes []checksCommitNode) *ChecksReport
 			run.Name = n.Context
 			run.State = strings.ToUpper(strings.TrimSpace(n.State))
 			run.Conclusion = run.State
+			run.Required = n.IsRequired
 			run.Title = n.Description
 			run.DetailsURL = n.TargetURL
 			if t, err := time.Parse(time.RFC3339, n.CreatedAt); err == nil {
@@ -261,6 +265,7 @@ const graphqlChecksQuery = `query($owner: String!, $name: String!, $number: Int!
                     startedAt
                     completedAt
                     detailsUrl
+                    isRequired
                     title
                     summary
                     checkSuite { app { name } }
@@ -277,6 +282,7 @@ const graphqlChecksQuery = `query($owner: String!, $name: String!, $number: Int!
                   ... on StatusContext {
                     context
                     state
+                    isRequired
                     description
                     targetUrl
                     createdAt

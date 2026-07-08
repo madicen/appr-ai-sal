@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
 )
@@ -17,7 +18,7 @@ func TestBuildRepoArbiterUserPromptIncludesPerAgentBriefs(t *testing.T) {
 		// design / docs / security intentionally absent.
 	}
 
-	got := buildRepoArbiterUserPrompt(pr, digest, per, "", nil, "")
+	got := buildRepoArbiterUserPrompt(pr, digest, per, "", nil, "", aiconfig.ReviewBalanced)
 
 	if !strings.Contains(got, "## Per-specialist repo-agent briefs") {
 		t.Fatalf("expected briefs section header, got:\n%s", got)
@@ -50,9 +51,9 @@ func TestBuildRepoArbiterUserPromptIncludesPerAgentBriefs(t *testing.T) {
 func TestBuildRepoArbiterUserPromptIncludesWitnessSection(t *testing.T) {
 	pr := &gh.PR{Number: 42, Title: "x", Repository: "acme/widget"}
 	witnesses := []conventionwitness.Witness{
-		{Specialist: "testing", Path: "a.go", Line: 5, Side: "RIGHT", Verdict: conventionwitness.VerdictCongruent, Citation: "no sib tests"},
+		{Specialist: "testing", Path: "a.go", Line: 5, Side: "RIGHT", Verdict: conventionwitness.VerdictContradictsFinding, Citation: "no sib tests"},
 	}
-	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", witnesses, "")
+	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", witnesses, "", aiconfig.ReviewBalanced)
 	if !strings.Contains(got, "## Convention witness") {
 		t.Fatalf("missing witness section header in:\n%s", got)
 	}
@@ -63,7 +64,7 @@ func TestBuildRepoArbiterUserPromptIncludesWitnessSection(t *testing.T) {
 
 func TestBuildRepoArbiterUserPromptOmitsEmptyWitnessSection(t *testing.T) {
 	pr := &gh.PR{Number: 42, Title: "x", Repository: "acme/widget"}
-	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, "")
+	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, "", aiconfig.ReviewBalanced)
 	if strings.Contains(got, "## Convention witness") {
 		t.Fatalf("witness section should be omitted when empty:\n%s", got)
 	}
@@ -90,6 +91,46 @@ func TestRepoArbiterPromptDefaultKeepsPRAgentFindings(t *testing.T) {
 	for _, marker := range mustContain {
 		if !strings.Contains(body, marker) {
 			t.Errorf("repo-arbiter prompt missing PR-agent default-keep marker %q", marker)
+		}
+	}
+}
+
+// Q3.5: the arbiter prompt threads the review intensity through so the model
+// can calibrate demotion aggressiveness. At the default (balanced) level the
+// prompt must be byte-identical to a run that supplies no strictness signal
+// (behavior preservation); at the off-default levels a calibration section
+// appears and names the chosen intensity.
+func TestBuildRepoArbiterUserPromptStrictnessBlock(t *testing.T) {
+	pr := &gh.PR{Number: 42, Title: "x", Repository: "acme/widget"}
+
+	balanced := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, "", aiconfig.ReviewBalanced)
+	if strings.Contains(balanced, "## Review intensity") {
+		t.Fatalf("balanced (default) arbiter prompt must not add a strictness section:\n%s", balanced)
+	}
+
+	for _, tc := range []struct {
+		level aiconfig.ReviewStrictness
+		label string
+	}{
+		{aiconfig.ReviewCriticalOnly, "critical-only"},
+		{aiconfig.ReviewLenient, "lenient"},
+		{aiconfig.ReviewStrict, "strict"},
+	} {
+		got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, "", tc.level)
+		if !strings.Contains(got, "## Review intensity:") {
+			t.Fatalf("%s: expected a review-intensity section, got:\n%s", tc.level, got)
+		}
+		if !strings.Contains(got, tc.label) {
+			t.Fatalf("%s: intensity section must name the chosen level %q, got:\n%s", tc.level, tc.label, got)
+		}
+		// Removing the injected block must recover the balanced prompt exactly —
+		// the section is additive and disturbs nothing else.
+		block := strictnessBlockForArbiter(tc.level)
+		if block == "" {
+			t.Fatalf("%s: expected a non-empty strictness block", tc.level)
+		}
+		if recovered := strings.Replace(got, block, "", 1); recovered != balanced {
+			t.Fatalf("%s: strictness block must be inserted cleanly\n--- recovered ---\n%s\n--- balanced ---\n%s", tc.level, recovered, balanced)
 		}
 	}
 }

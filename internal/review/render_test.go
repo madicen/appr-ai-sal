@@ -441,7 +441,7 @@ func TestRenderBodyOmitsDemotionListAndWitnessTally(t *testing.T) {
 			},
 		},
 		ConventionWitness: []conventionwitness.Witness{
-			{Specialist: SpecDocs, Path: "c.yml", Line: 1, Verdict: conventionwitness.VerdictCongruent},
+			{Specialist: SpecDocs, Path: "c.yml", Line: 1, Verdict: conventionwitness.VerdictContradictsFinding},
 		},
 	}
 	body := d.RenderBody()

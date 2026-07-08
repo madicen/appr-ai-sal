@@ -604,6 +604,14 @@ func (c *Config) findProfileIndex(name string) (int, bool) {
 	return -1, false
 }
 
+// ApplyActiveProfile copies the active profile's fields onto the top-level
+// fields. Callers that mutate Profiles directly (e.g. the settings editor)
+// should invoke this before Save so normalize()'s syncActiveProfileFromFlat
+// snapshots the edited values rather than stale top-level mirrors.
+func (c *Config) ApplyActiveProfile() {
+	c.applyActiveProfile()
+}
+
 // applyActiveProfile copies the active profile's fields onto the top-level
 // fields. Called after loading (or after SetActive) so existing callers
 // reading cfg.Provider / cfg.Model / etc. see the right values.

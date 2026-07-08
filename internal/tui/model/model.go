@@ -190,17 +190,28 @@ func (m *Model) shouldPassMouseToBackground(msg tea.MouseMsg) bool {
 }
 
 // routeToActiveTab forwards msg to the Tab that owns the current mode
-// (settings / repo-agents / lang-agents). It is the single forwarding
+// (settings / repo-agents / lang-agents / detail). It is the single forwarding
 // path — used for both key/mouse and async messages — that collapsed the
 // two hand-written forwarding phases the root Update used to carry.
 //
-// Returns handled=false when modeList / modeDetail is active (they are
-// root-native and handled by handleKey / handleMouse / the list widgets)
+// Returns handled=false when modeList is active (root-native list widgets)
 // or when the tab hasn't been constructed yet.
 func (m *Model) routeToActiveTab(msg tea.Msg) (tea.Cmd, bool) {
+	if m.mode == modeDetail {
+		m.ensureDetailTab()
+	}
 	tab := m.tabs[m.mode]
 	if tab == nil {
 		return nil, false
+	}
+	// Detail mode: while a modal owns input (or pass-through mouse is
+	// active), root Update must keep routing to the overlay stack /
+	// handleMouse — not the tab adapter (see mouse_pass_through_test.go).
+	switch msg.(type) {
+	case tea.KeyMsg, tea.MouseMsg:
+		if m.mode == modeDetail && !m.overlayFocus.InteractiveToBase(msg) {
+			return nil, false
+		}
 	}
 	// ctrl+c always quits, even from inside a tab.
 	if km, ok := msg.(tea.KeyMsg); ok && km.String() == "ctrl+c" {
@@ -400,6 +411,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recomputeTreeView()
 		m.scrollToSelectedFile = true
 		m.mode = modeDetail
+		m.ensureDetailTab()
 		m.refreshDetailViews()
 		// U2: if this PR's current head SHA has an in-progress saved review
 		// session, offer to resume it (rehydrate the Draft + decisions, no
@@ -537,6 +549,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.stagedReset()
 		m.mode = modeDetail
+		m.ensureDetailTab()
 		m.refreshDetailViews()
 		pm := overlays.PostedOverlay{}
 		cfg := overlay.DefaultOverlayConfig()

@@ -1,0 +1,17 @@
+- **Formatter / linter setup.** Which tools are configured (rustfmt, prettier,
+  ESLint flat vs. legacy, ruff, biome, golangci-lint) and what rule sets are
+  enabled. Cite specific config files.
+- **Repo-specific deltas from language norms.** Only mention naming or layout
+  conventions where THIS REPO differs from the language default — e.g. "we
+  use 4-space indent in Python despite PEP 8's 4-space default" is noise;
+  "we use 2-space indent in Python" is signal. "Functions are camelCase in
+  this Java repo" is noise (language default); "we suffix all interface
+  names with `Service`" is signal.
+- **Layout norms** the linter doesn't enforce automatically: import grouping
+  order, file ordering inside a package, header comments, copyright banners.
+- **Spelling / prose conventions.** Whether the repo runs a spell-check, which
+  English variant, any glossary or terminology rules visible in the bundle.
+- **Idioms the repo *deliberately* keeps.** Patterns that look unusual but are
+  established (e.g. "we keep `if err != nil { return ... }` chains rather than
+  early returns", "we tolerate long parameter lists in handlers"). Cite the
+  history digest where applicable.

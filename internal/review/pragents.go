@@ -435,7 +435,11 @@ func formatChecksSection(report *gh.ChecksReport) string {
 		fmt.Fprintf(&b, "Failing / erroring checks (%d):\n\n", len(failing))
 		for _, r := range failing {
 			state := checkRunState(r)
-			fmt.Fprintf(&b, "- %s [%s]\n", checkRunName(r), state)
+			required := "optional"
+			if r.Required {
+				required = "required"
+			}
+			fmt.Fprintf(&b, "- %s [%s] (%s for merge)\n", checkRunName(r), state, required)
 			if t := strings.TrimSpace(r.Title); t != "" {
 				b.WriteString("  Title: " + t + "\n")
 			}
@@ -455,7 +459,11 @@ func formatChecksSection(report *gh.ChecksReport) string {
 	if len(passing) > 0 {
 		names := make([]string, 0, len(passing))
 		for _, r := range passing {
-			names = append(names, checkRunName(r))
+			label := checkRunName(r)
+			if r.Required {
+				label += " (required)"
+			}
+			names = append(names, label)
 		}
 		b.WriteString("Passing / other checks: " + strings.Join(names, ", ") + "\n\n")
 	}

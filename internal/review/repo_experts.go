@@ -71,10 +71,16 @@ func formatPerAgentBriefs(perAgent map[string]string) string {
 	return b.String()
 }
 
-func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness, rejectedMemory string) string {
+func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness, rejectedMemory string, strictness aiconfig.ReviewStrictness) string {
 	var b strings.Builder
 	b.WriteString("PR: " + pr.Repository + "#")
 	fmt.Fprintf(&b, "%d %s\n\n", pr.Number, pr.Title)
+	// Q3.5: calibrate demotion aggressiveness to the chosen intensity. Empty
+	// at the default (balanced) level, so a balanced run's prompt is
+	// byte-identical to pre-Q3.5.
+	if sb := strictnessBlockForArbiter(strictness); sb != "" {
+		b.WriteString(sb)
+	}
 	// B1 reviewer memory: patterns the human has repeatedly declined in this
 	// repo. Injected only when non-empty, so a repo with no memory produces a
 	// byte-identical prompt to pre-B1.
@@ -487,7 +493,7 @@ func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, 
 		ar.Err = err
 		return ar
 	}
-	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses, rejectedMemory)
+	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses, rejectedMemory, cfg.ReviewStrictness)
 	sys, user = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, sys, user, true)
 	// R5: constrain the arbiter's output shape (suppress/demote refs) on
 	// schema-capable providers with the registry-derived arbiter schema.

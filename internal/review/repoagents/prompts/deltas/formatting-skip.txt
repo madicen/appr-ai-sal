@@ -1,0 +1,5 @@
+- Anything that is not formatting / style / prose (testing, design, docs,
+  security live in their own briefs).
+- Speculation. If a convention is not visible in the inputs, do not claim it.
+- Generic best-practice lectures. The reader is already a formatting expert;
+  they only need *what's specific to this repo*.

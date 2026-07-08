@@ -37,25 +37,45 @@ const witnessStageKey = "witness"
 type Verdict string
 
 const (
-	// VerdictCongruent — the finding aligns with the repo's *existing
-	// under-coverage*: the rest of the repo doesn't do what the finding
-	// asks for. The arbiter is willing to demote or suppress here.
-	VerdictCongruent Verdict = "congruent"
-	// VerdictDivergent — the rest of the repo does what the finding asks
-	// for; this PR is bucking the trend. The arbiter should keep the finding.
-	VerdictDivergent Verdict = "divergent"
+	// VerdictContradictsFinding — the repo's own evidence *contradicts* what
+	// the finding asks for: the rest of the repo doesn't do it (sibling files
+	// lack the tests/docs/token, prior PRs shipped without them). The finding
+	// is technically reasonable but asks the author to exceed the repo's own
+	// habit, so the arbiter is willing to demote or suppress here.
+	//
+	// Q3.8: this was previously named "congruent" (from the finding's
+	// perspective: congruent with the repo's under-coverage), which read
+	// backwards to most people. The new name is from the evidence's
+	// perspective. NormalizeVerdict still parses the old "congruent" spelling.
+	VerdictContradictsFinding Verdict = "contradicts_finding"
+	// VerdictSupportsFinding — the repo's own evidence *supports* the finding:
+	// the rest of the repo already does what it asks (sibling tests/docs
+	// exist, prior PRs added them, the token is present in most siblings), and
+	// this PR bucks the trend. The arbiter should keep the finding.
+	//
+	// Q3.8: previously named "divergent" (this PR diverges from the repo's
+	// habit). NormalizeVerdict still parses the old "divergent" spelling.
+	VerdictSupportsFinding Verdict = "supports_finding"
 	// VerdictUnknown — the evidence pack lacks the signal needed to decide.
 	VerdictUnknown Verdict = "unknown"
 )
 
 // NormalizeVerdict maps free-text values to a canonical Verdict (or "" if
-// unknown shape).
+// unknown shape). It accepts both the current terminology
+// (supports_finding / contradicts_finding) and the pre-Q3.8 spelling
+// (divergent / congruent) plus their synonyms, so a prompt override or a model
+// trained on the old vocabulary still parses (the compat alias required by
+// Q3.8).
 func NormalizeVerdict(s string) Verdict {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "congruent", "agrees", "matches":
-		return VerdictCongruent
-	case "divergent", "diverges", "conflicts":
-		return VerdictDivergent
+	// contradicts_finding (was "congruent"): repo does NOT do what the finding
+	// asks → arbiter may soften.
+	case "contradicts_finding", "contradicts", "congruent", "agrees", "matches":
+		return VerdictContradictsFinding
+	// supports_finding (was "divergent"): repo DOES do what the finding asks;
+	// this PR bucks the trend → arbiter keeps.
+	case "supports_finding", "supports", "divergent", "diverges", "conflicts":
+		return VerdictSupportsFinding
 	case "unknown", "unsure", "no_evidence", "insufficient":
 		return VerdictUnknown
 	}
@@ -119,7 +139,11 @@ func Run(ctx context.Context, cfg *aiconfig.Config, complete ai.CompleteFunc, wo
 	if err != nil {
 		return Result{Err: err}
 	}
-	user := buildUserPrompt(pr, findings, evidence)
+	// Q3.5: pass the review intensity through so the witness can calibrate
+	// how much scrutiny to apply when the evidence is ambiguous. cfg.ForStage
+	// preserves ReviewStrictness (it only swaps the model), so this is the
+	// user's chosen level.
+	user := buildUserPrompt(pr, findings, evidence, cfg.ReviewStrictness)
 	// The witness emits strict JSON; opt into native JSON mode and hand the
 	// per-agent schema to schema-capable providers (Gemini responseSchema).
 	// The injected complete func (review.Complete) reads both off the context
@@ -155,7 +179,7 @@ var witnessSchema = sync.OnceValue(func() json.RawMessage {
 			"line":       map[string]any{"type": "integer"},
 			"side":       map[string]any{"type": "string", "enum": []string{"LEFT", "RIGHT"}},
 			"verdict": map[string]any{"type": "string", "enum": []string{
-				string(VerdictCongruent), string(VerdictDivergent), string(VerdictUnknown),
+				string(VerdictSupportsFinding), string(VerdictContradictsFinding), string(VerdictUnknown),
 			}},
 			"citation": map[string]any{"type": "string"},
 		},
@@ -230,7 +254,7 @@ func normalizeAndAlign(out []Witness, in []FindingInput) []Witness {
 	return aligned
 }
 
-func buildUserPrompt(pr PrWideRef, findings []FindingInput, evidence string) string {
+func buildUserPrompt(pr PrWideRef, findings []FindingInput, evidence string, strictness aiconfig.ReviewStrictness) string {
 	var b strings.Builder
 	if pr.Repository != "" {
 		fmt.Fprintf(&b, "PR: %s#%d\n", pr.Repository, pr.Number)
@@ -239,6 +263,13 @@ func buildUserPrompt(pr PrWideRef, findings []FindingInput, evidence string) str
 	}
 	if pr.Title != "" {
 		b.WriteString("Title: " + pr.Title + "\n")
+	}
+	// Q3.5: calibrate the witness's scrutiny to the chosen intensity. Empty
+	// at the default (balanced) level, so a balanced run's witness prompt is
+	// byte-identical to pre-Q3.5.
+	if sb := strictnessScrutinyBlock(strictness); sb != "" {
+		b.WriteString("\n")
+		b.WriteString(sb)
 	}
 	b.WriteString("\n## Per-PR evidence pack\n\n")
 	body := strings.TrimSpace(evidence)
@@ -257,6 +288,26 @@ func buildUserPrompt(pr PrWideRef, findings []FindingInput, evidence string) str
 	b.WriteString("\n```\n\n")
 	b.WriteString("Return only the JSON object specified in your system instructions.")
 	return b.String()
+}
+
+// strictnessScrutinyBlock returns a short "Review intensity" section (Q3.5)
+// that tells the witness how much benefit of the doubt to give a finding when
+// the evidence is ambiguous. It returns "" for the default (balanced) level so
+// a balanced run's witness prompt is byte-identical to pre-Q3.5; the embedded
+// prompt was authored against the balanced posture, so the section would be
+// noise there. The block never asks the witness to invent evidence — it only
+// governs how it breaks genuine ties.
+func strictnessScrutinyBlock(s aiconfig.ReviewStrictness) string {
+	switch s {
+	case aiconfig.ReviewStrict:
+		return "## Review intensity: strict\n\n" +
+			"The reviewer chose the **strict** intensity: they want to see every actionable finding. Apply extra scrutiny before concluding `contradicts_finding` (which invites the arbiter to soften the finding). When the evidence is genuinely ambiguous, prefer `unknown` over `contradicts_finding` so the arbiter keeps the finding. Only assert `contradicts_finding` when the pack clearly shows the repo does not do what the finding asks.\n"
+	case aiconfig.ReviewLenient, aiconfig.ReviewCriticalOnly:
+		return "## Review intensity: lenient\n\n" +
+			"The reviewer chose a **lenient** intensity: they only want higher-severity issues surfaced. When the evidence leans toward the repo not doing what a finding asks, you may conclude `contradicts_finding` on a reasonable (not just overwhelming) reading of the pack, so the arbiter can calibrate the finding away. Still never invent evidence: fall back to `unknown` when the pack is silent.\n"
+	default: // balanced — byte-identical to pre-Q3.5
+		return ""
+	}
 }
 
 func loadPrompt() (string, error) {

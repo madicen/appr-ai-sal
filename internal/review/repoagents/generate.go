@@ -162,7 +162,13 @@ func overrideName(specialist string) string {
 }
 
 func loadGeneratorPrompt(specialist string) (string, error) {
-	return agentstore.LoadPrompt(promptFS, "prompts/repo-agent-"+specialist+".md", overrideName(specialist))
+	// Q3.10: assemble from template + delta; user override wins when present.
+	if override, ok, err := agentstore.ReadPromptOverride(overrideName(specialist)); err != nil {
+		return "", err
+	} else if ok {
+		return override, nil
+	}
+	return RenderRepoAgentPrompt(specialist)
 }
 
 // PromptOverridePath is where users may write a custom generator prompt to
