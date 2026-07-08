@@ -218,6 +218,12 @@ func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 	case "degraded":
 		// R4: partial-degradation summary (which stages failed vs were skipped).
 		m.log = append(m.log, "degraded run — "+p.Detail)
+	case "activity":
+		// P6 streaming token-liveness — bump the running agent row's streamed
+		// token count so a long streaming call visibly progresses.
+		if p.Activity != nil {
+			m.applyActivity(p.Activity)
+		}
 	case "usage":
 		// Running usage/cost total — store the latest snapshot so the overview
 		// and summary can show it climbing live. Totals only grow, so a later
@@ -253,6 +259,9 @@ func (m *Model) applyAgentDetail(name, detail string, p review.Progress) {
 		row.startedAt = time.Now()
 		row.finishedAt = time.Time{}
 		row.err = nil
+		// Reset streaming liveness for the fresh attempt.
+		row.streamTokens = 0
+		row.lastActivity = time.Time{}
 		// Move keyboard focus to the most recently started agent so j/k
 		// hovering tracks "what just happened", but don't override the user's
 		// explicit selection if they've pressed j/k already.
@@ -300,6 +309,26 @@ func (m *Model) applyAgentDetail(name, detail string, p review.Progress) {
 		row.retries++
 		row.lastRetry = strings.TrimSpace(detail)
 	}
+}
+
+// applyActivity records a streaming-liveness heartbeat on the matching agent
+// row. The heartbeat's Stage is the applog label ("specialist security",
+// "pr-agent description", "repo-arbiter", "vibe-coach", …); stripping the
+// specialist/pr-agent prefix yields the row name. Heartbeats for stages with no
+// visible row (e.g. "context-summary", "convention-witness") are dropped.
+func (m *Model) applyActivity(a *review.StreamActivity) {
+	name := a.Stage
+	name = strings.TrimPrefix(name, "specialist ")
+	name = strings.TrimPrefix(name, "pr-agent ")
+	i := m.agentIndex(name)
+	if i < 0 {
+		return
+	}
+	row := &m.agents[i]
+	if a.Tokens > row.streamTokens {
+		row.streamTokens = a.Tokens
+	}
+	row.lastActivity = time.Now()
 }
 
 func (m *Model) agentIndex(name string) int {

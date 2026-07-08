@@ -40,17 +40,42 @@ type Progress struct {
 	// It rides Stage="usage" events (running totals as calls complete) and the
 	// final Stage="done" event (the run total). Nil on every other event.
 	Usage *RunUsage
+	// Activity carries a throttled streaming-liveness heartbeat (P6 streaming).
+	// It rides Stage="activity" events as a streaming stage emits tokens, so
+	// the running overlay can show a long call visibly progressing (a growing
+	// token count on the agent row) instead of looking hung. Nil on every
+	// other event.
+	Activity *StreamActivity
 }
 
-// perStageBudget is the max wall-clock per individual AI stage (specialist,
-// vibe-coach, expert, arbiter). It's intentionally generous — the user can
-// always abort with q from the running overlay, and we no longer wrap the
-// whole review in a single context.WithTimeout that cuts off downstream
-// stages mid-pipeline.
+// StreamActivity is a streaming-liveness heartbeat for the running overlay. It
+// carries the stage label (so the overlay can attach it to the right agent
+// row) and the running token count for that call.
+type StreamActivity struct {
+	// Stage is the applog stage label, e.g. "specialist security",
+	// "pr-agent description", "repo-arbiter", "vibe-coach".
+	Stage string
+	// Tokens is the approximate running count of streamed tokens/chunks for the
+	// call, for a live "~N tok" indicator.
+	Tokens int
+}
+
+// perStageBudget is the ABSOLUTE ceiling per individual AI stage (specialist,
+// vibe-coach, expert, arbiter) — a safety net, not the primary liveness guard.
+//
+// P6 streaming made the idle/first-byte timeouts (derived from TimeoutSec) the
+// real liveness guard: a slow-but-alive stream resets its idle timer and keeps
+// going, so this ceiling must sit comfortably ABOVE the idle timeout or it
+// would re-introduce exactly the "kills a long-but-active generation at
+// TimeoutSec" bug streaming was meant to fix. We therefore size it as a
+// generous multiple of the idle timeout (with a floor), so a genuinely wedged
+// stage still eventually aborts while an actively streaming one never is. The
+// user can always abort with q from the running overlay.
 func perStageBudget(cfg *aiconfig.Config) time.Duration {
-	d := cfg.RunContextTimeout()
-	if d < 5*time.Minute {
-		d = 5 * time.Minute
+	idle := cfg.StreamIdleTimeout()
+	d := 6 * idle
+	if d < 30*time.Minute {
+		d = 30 * time.Minute
 	}
 	return d
 }
@@ -92,6 +117,20 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			// after every inference call has returned.
 			snap := usageAcc.snapshot(time.Since(runStart))
 			out <- Progress{Stage: "usage", Usage: &snap}
+		})
+
+		// P6 streaming: stream every stage this run makes (SSE for HTTP
+		// providers, --output-format stream-json for the claude CLI). This is
+		// the single install point — every stage context derives from ctx, so
+		// the ai.Complete shim sees WithStreaming and sets Request.Stream.
+		ctx = ai.WithStreaming(ctx)
+		// Surface token-liveness: as a streaming stage emits deltas, forward a
+		// throttled heartbeat as a Stage="activity" Progress event so the
+		// running overlay shows the call progressing. The observer may fire
+		// from parallel stage goroutines (like the usage observer); the same
+		// channel-lifetime guarantee applies.
+		ctx = ai.WithActivityObserver(ctx, func(r ai.ActivityReport) {
+			out <- Progress{Stage: "activity", Activity: &StreamActivity{Stage: r.Stage, Tokens: r.Tokens}}
 		})
 
 		pr, err := gh.GetPR(ctx, ref)

@@ -924,6 +924,11 @@ func agentStatusDetail(a *overlayAgentRow) string {
 		return styles.DimStyle.Render("queued")
 	case oaRunning:
 		base := styles.BoldStyle.Render("running") + styles.DimStyle.Render(" · "+humanElapsed(time.Since(a.startedAt)))
+		if a.streamTokens > 0 {
+			// P6 streaming token-liveness: a growing count proves the call is
+			// alive even on a multi-minute generation.
+			base += styles.DimStyle.Render(fmt.Sprintf(" · ~%d tok", a.streamTokens))
+		}
 		if a.retries > 0 {
 			base += styles.DimStyle.Render(" · retried " + fmt.Sprintf("%d×", a.retries))
 		}

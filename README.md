@@ -1010,7 +1010,7 @@ reflects what you set in the **Settings** tab or edited in the file directly.
 
 | Provider | Behavior |
 |----------|----------|
-| `claude` (default) | Subprocess `claude -p --output-format json` with repo tools (`Read,Glob,Grep`) scoped to the PR worktree. Requires the `claude` CLI on `PATH`. |
+| `claude` (default) | Subprocess `claude -p` with repo tools (`Read,Glob,Grep`) scoped to the PR worktree. Streams via `--output-format stream-json --verbose` (falls back to `--output-format json`). Requires the `claude` CLI on `PATH`. |
 | `anthropic` | **Direct Anthropic HTTP API** — `POST {base}/v1/messages` with `x-api-key` + `anthropic-version` headers (no CLI, works headless/CI). Default base `https://api.anthropic.com`. Requires an API key and a model id (e.g. `claude-sonnet-4-20250514`). Reviews the diff blind (no repo tools), so context expansion applies. |
 | `gemini` | `generateContent` on the Google Generative Language API. Requires `APPR_AI_SAL_AI_API_KEY` and a model id (e.g. `gemini-2.0-flash`). Optional `APPR_AI_SAL_AI_BASE_URL` overrides the API origin (default `https://generativelanguage.googleapis.com`). |
 | `ollama` | OpenAI-style `POST {base}/v1/chat/completions`. Default base `http://127.0.0.1:11434/v1` if `base_url` is empty. Bearer uses the string `ollama` when no API key is set (local servers). |
@@ -1065,6 +1065,46 @@ deterministically injects the enclosing functions, referenced types, and
 callers/callees the change touches so design/security lanes off-Claude aren't
 starved of context.
 
+### Streaming (SSE + claude stream-json)
+
+Every inference call in a review **streams by default**. The runner installs
+streaming once per run, so all stages (specialists, PR agents, arbiter, witness,
+vibe-coach, the suggestion-repair pass, and the markdown-brief calls) stream and
+inherit two benefits:
+
+- **Token-liveness in the running overlay.** As tokens arrive, a throttled
+  heartbeat (at most a few per second per call) flows up through the existing
+  Progress channel; the running overlay shows a growing `~N tok` count next to
+  each active agent, so a multi-minute call visibly progresses instead of
+  looking hung.
+- **Idle / first-byte timeouts replace the whole-response timeout.** The old
+  behavior cut a generation off at exactly `TimeoutSec` even if it was still
+  producing output. Streaming replaces that with:
+  - a **first-byte timeout** (connect / response-start) that guards a
+    connection that stalls before producing anything, and
+  - an **idle timeout** (reinterpreted from `TimeoutSec`) that fires *only* when
+    no bytes arrive for that long. A slow-but-alive stream keeps resetting it,
+    so long-but-active generations are no longer killed.
+
+  A generous per-stage absolute ceiling (a multiple of the idle timeout) remains
+  as a last-resort safety net, and you can always abort a run with `q`.
+
+How each backend streams (the accumulated final `Result`/`Usage` is **identical**
+to the non-streaming response for the same logical output, so evals and the
+[headless CLI](#headless-mode-ci) — which consume only the final result — are
+unaffected):
+
+| Backend | Mechanism |
+|---------|-----------|
+| `ollama` / `openai_compatible` / `azure` | `"stream": true` + `stream_options.include_usage` on `/chat/completions`; accumulates `choices[].delta.content`, usage from the final chunk, ends at `data: [DONE]`. |
+| `anthropic` | `"stream": true` on `/v1/messages`; accumulates `content_block_delta` (`text_delta`, or `input_json_delta` on the forced-tool JSON path), reads usage from `message_start` + `message_delta`. |
+| `gemini` | `streamGenerateContent?alt=sse`; accumulates candidate part text, reads `usageMetadata` from the final chunk. |
+| `claude` | `--output-format stream-json --verbose`; reads the NDJSON events and takes the final `result` event (same fields as `--output-format json`: text, usage, `total_cost_usd`). |
+
+Idle and first-byte timeouts are classified as **retryable** transient errors,
+so a stalled stream retries under the normal backoff policy. Providers that
+cannot stream degrade to the whole-response path automatically.
+
 ### Environment variables
 
 | Variable | Meaning |
@@ -1074,7 +1114,7 @@ starved of context.
 | `APPR_AI_SAL_AI_MODEL` | Model id (`--model` for Claude; HTTP model field for others). |
 | `APPR_AI_SAL_MODEL` | Legacy alias for Claude only when `APPR_AI_SAL_AI_MODEL` is unset. |
 | `APPR_AI_SAL_AI_API_KEY` | API key for Gemini / OpenAI-compatible; often unused for local Ollama. |
-| `APPR_AI_SAL_AI_TIMEOUT_SEC` | HTTP client timeout and overall review context floor (default `300`). |
+| `APPR_AI_SAL_AI_TIMEOUT_SEC` | **Streaming idle timeout** (default `300`): a streamed call is aborted only after this many seconds with *no* bytes — a slow-but-alive generation keeps resetting it (see [Streaming](#streaming-sse--claude-stream-json)). It also seeds the shorter first-byte timeout (capped at this value) and the per-stage absolute ceiling. Non-streaming ad-hoc calls still use it as the whole-response HTTP client timeout. |
 | `APPR_AI_SAL_REVIEW_STRICTNESS` | `lenient` \| `balanced` \| `strict` (plus aliases above). |
 | `APPR_AI_SAL_AI_RETRY_MAX_ATTEMPTS` | Max tries per single `Complete` call, including the first (default `5`; `1` disables inner retry). |
 | `APPR_AI_SAL_AI_RETRY_BASE_MS` / `APPR_AI_SAL_AI_RETRY_MAX_MS` | First backoff delay / backoff cap between retries (defaults `1500` / `120000`). |

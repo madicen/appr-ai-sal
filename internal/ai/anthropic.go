@@ -40,8 +40,9 @@ func (p *anthropicProvider) Name() string { return string(aiconfig.ProviderAnthr
 
 func (p *anthropicProvider) Capabilities() Capabilities {
 	// The HTTP API reviews the diff blind — no repo tools (unlike the Claude
-	// subprocess). It supports native JSON mode via tool-use forcing (R5).
-	return Capabilities{NativeJSON: true}
+	// subprocess). It supports native JSON mode via tool-use forcing (R5) and
+	// SSE streaming of the Messages API (P6).
+	return Capabilities{NativeJSON: true, Streaming: true}
 }
 
 func (p *anthropicProvider) Complete(ctx context.Context, req Request) (Result, error) {
@@ -86,6 +87,10 @@ func (p *anthropicProvider) Complete(ctx context.Context, req Request) (Result, 
 			},
 		}
 		body["tool_choice"] = map[string]any{"type": "tool", "name": anthropicJSONToolName}
+	}
+
+	if req.Stream {
+		return anthropicStream(ctx, cfg, endpoint, key, model, body)
 	}
 
 	raw, err := json.Marshal(body)
@@ -162,6 +167,102 @@ func (p *anthropicProvider) Complete(ctx context.Context, req Request) (Result, 
 			OutputTokens: envelope.Usage.OutputTokens,
 		},
 	}, nil
+}
+
+// anthropicStream performs the streaming (SSE) variant of a Messages call. It
+// accumulates text_delta events (plain text) or input_json_delta events (the
+// forced-tool JSON path), and reads usage from message_start (input tokens) and
+// message_delta (output tokens). The accumulated Result/Usage is identical to
+// the non-streaming path: for the JSON tool path the accumulated partial_json
+// is the tool call's input object, exactly what extractAnthropicText returns.
+func anthropicStream(ctx context.Context, cfg *aiconfig.Config, endpoint, key, model string, body map[string]any) (Result, error) {
+	body["stream"] = true
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return Result{}, err
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return Result{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("x-api-key", key)
+	httpReq.Header.Set("anthropic-version", anthropicVersion)
+	return runSSEStream(ctx, cfg, string(aiconfig.ProviderAnthropic), httpReq, model, anthropicSSEHandler)
+}
+
+// anthropicSSEHandler maps one Anthropic Messages SSE event onto streamState.
+func anthropicSSEHandler(event, data string, st *streamState) (string, bool, error) {
+	switch event {
+	case "message_start":
+		var m struct {
+			Message struct {
+				Model string `json:"model"`
+				Usage struct {
+					InputTokens  int `json:"input_tokens"`
+					OutputTokens int `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal([]byte(data), &m); err == nil {
+			if m.Message.Model != "" {
+				st.model = m.Message.Model
+			}
+			st.usage.InputTokens = m.Message.Usage.InputTokens
+			if m.Message.Usage.OutputTokens > 0 {
+				st.usage.OutputTokens = m.Message.Usage.OutputTokens
+			}
+		}
+		return "", false, nil
+	case "content_block_delta":
+		var d struct {
+			Delta struct {
+				Type        string `json:"type"`
+				Text        string `json:"text"`
+				PartialJSON string `json:"partial_json"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(data), &d); err != nil {
+			return "", false, nil
+		}
+		var delta string
+		switch d.Delta.Type {
+		case "text_delta":
+			delta = d.Delta.Text
+		case "input_json_delta":
+			delta = d.Delta.PartialJSON
+		}
+		if delta != "" {
+			st.text.WriteString(delta)
+		}
+		return delta, false, nil
+	case "message_delta":
+		var d struct {
+			Usage struct {
+				OutputTokens int `json:"output_tokens"`
+			} `json:"usage"`
+		}
+		if err := json.Unmarshal([]byte(data), &d); err == nil && d.Usage.OutputTokens > 0 {
+			st.usage.OutputTokens = d.Usage.OutputTokens
+		}
+		return "", false, nil
+	case "message_stop":
+		return "", true, nil
+	case "error":
+		var e struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal([]byte(data), &e)
+		msg := e.Error.Message
+		if msg == "" {
+			msg = "stream error"
+		}
+		return "", false, fmt.Errorf("anthropic API error: %s", msg)
+	}
+	return "", false, nil
 }
 
 // extractAnthropicText returns the assistant output from a Messages response.

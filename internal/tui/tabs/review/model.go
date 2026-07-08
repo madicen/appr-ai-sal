@@ -303,6 +303,14 @@ type overlayAgentRow struct {
 	// row is expanded.
 	lastRetry string
 	expanded  bool
+	// streamTokens is the running count of streamed tokens/chunks for this
+	// agent's in-flight call (P6 streaming token-liveness). Shown as "~N tok"
+	// on a running row so a long call visibly progresses instead of looking
+	// hung. Monotonic within a call.
+	streamTokens int
+	// lastActivity is when the most recent streaming heartbeat arrived, so the
+	// renderer can tell the row is actively producing output.
+	lastActivity time.Time
 }
 
 // tabKind classifies the entries in the review overlay's tab bar.

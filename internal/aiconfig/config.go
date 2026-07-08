@@ -907,6 +907,31 @@ func (c *Config) EffectiveTimeoutSec() int {
 	return c.TimeoutSec
 }
 
+// StreamIdleTimeout is the idle timeout for a streaming inference call (P6
+// streaming): the stream is aborted only if NO bytes arrive for this long. A
+// slow-but-alive generation keeps trickling tokens, each of which resets the
+// timer, so it is never killed at exactly TimeoutSec the way the old
+// whole-response HTTP timeout was. TimeoutSec is reinterpreted as this idle
+// timeout for streaming calls (a live stream never idles that long, so existing
+// configs do not suddenly fail fast).
+func (c *Config) StreamIdleTimeout() time.Duration {
+	return time.Duration(c.EffectiveTimeoutSec()) * time.Second
+}
+
+// StreamFirstByteTimeout is how long a streaming call waits for the FIRST
+// response byte (connect / response-start) before aborting — it guards against
+// a connection that stalls before producing anything, without penalising a
+// stream that starts and then trickles. It is capped at the idle timeout so a
+// tiny TimeoutSec never makes the first-byte budget exceed the idle budget.
+func (c *Config) StreamFirstByteTimeout() time.Duration {
+	idle := c.StreamIdleTimeout()
+	fb := 60 * time.Second
+	if fb > idle {
+		fb = idle
+	}
+	return fb
+}
+
 // AIBaseURLResolved returns the HTTP base URL for OpenAI-compatible and Ollama,
 // or the Gemini API origin. Trailing slashes are stripped where relevant.
 func (c *Config) AIBaseURLResolved() string {

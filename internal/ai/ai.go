@@ -39,6 +39,14 @@ type Request struct {
 	// reads the stage from the context via applog.WithStage; the field is
 	// carried for later use.
 	Stage string
+	// Stream requests a streamed response (SSE for HTTP providers, the claude
+	// CLI's --output-format stream-json for the subprocess). The review.Complete
+	// shim sets it from StreamingFromContext, so the runner enables streaming
+	// once per run. Streaming surfaces token-liveness and swaps the
+	// whole-response HTTP timeout for idle/first-byte timeouts; the accumulated
+	// final Result/Usage is identical to the non-streaming path. Providers that
+	// cannot stream ignore it and use the whole-response path.
+	Stream bool
 }
 
 // Usage captures token counts and cost when the provider reports them; fields

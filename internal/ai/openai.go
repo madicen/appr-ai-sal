@@ -22,9 +22,9 @@ type openAIProvider struct {
 func (p *openAIProvider) Name() string { return string(p.cfg.Provider) }
 
 func (p *openAIProvider) Capabilities() Capabilities {
-	// HTTP providers review the diff blind — no repo tools. They do support
-	// native JSON mode via response_format (R5).
-	return Capabilities{NativeJSON: true}
+	// HTTP providers review the diff blind — no repo tools. They support
+	// native JSON mode via response_format (R5) and SSE streaming (P6).
+	return Capabilities{NativeJSON: true, Streaming: true}
 }
 
 func httpClientFor(cfg *aiconfig.Config) *http.Client {
@@ -69,6 +69,9 @@ func openAIChatComplete(ctx context.Context, cfg *aiconfig.Config, endpoint, mod
 		// (llmjson.Parse) still runs on the response, since models can ignore
 		// this and some proxies drop it.
 		body["response_format"] = map[string]string{"type": "json_object"}
+	}
+	if req.Stream {
+		return openAIChatStream(ctx, cfg, endpoint, model, setAuth, body)
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -137,4 +140,73 @@ func openAIChatComplete(ctx context.Context, cfg *aiconfig.Config, endpoint, mod
 			OutputTokens: envelope.Usage.CompletionTokens,
 		},
 	}, nil
+}
+
+// openAIChatStream performs the streaming (SSE) variant of an OpenAI-style
+// /chat/completions call, accumulating choices[].delta.content into the final
+// text and reading usage from the final chunk (requested via
+// stream_options.include_usage so the streamed Result.Usage matches the
+// whole-response path). Shared by openAIProvider and azureProvider exactly like
+// openAIChatComplete.
+func openAIChatStream(ctx context.Context, cfg *aiconfig.Config, endpoint, model string, setAuth func(http.Header), body map[string]any) (Result, error) {
+	body["stream"] = true
+	// Ask the endpoint to emit a final usage-only chunk; without this OpenAI
+	// omits usage from a streamed response. Ollama/most OpenAI-compat proxies
+	// honour it, and those that ignore it simply report zero usage (as before
+	// streaming existed for them).
+	body["stream_options"] = map[string]any{"include_usage": true}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return Result{}, err
+	}
+	httpReq, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(raw))
+	if err != nil {
+		return Result{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+	if setAuth != nil {
+		setAuth(httpReq.Header)
+	}
+	return runSSEStream(ctx, cfg, string(cfg.Provider), httpReq, model, openAISSEHandler)
+}
+
+// openAISSEHandler maps one OpenAI-style streaming chunk onto streamState.
+func openAISSEHandler(_ /*event*/, data string, st *streamState) (string, bool, error) {
+	if data == "[DONE]" {
+		return "", true, nil
+	}
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				Content string `json:"content"`
+			} `json:"delta"`
+		} `json:"choices"`
+		Usage *struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+		} `json:"usage"`
+		Error *struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		// A non-JSON keep-alive/comment line is not fatal; skip it.
+		return "", false, nil
+	}
+	if chunk.Error != nil && chunk.Error.Message != "" {
+		return "", false, fmt.Errorf("chat API error: %s", chunk.Error.Message)
+	}
+	var delta string
+	if len(chunk.Choices) > 0 {
+		delta = chunk.Choices[0].Delta.Content
+	}
+	if delta != "" {
+		st.text.WriteString(delta)
+	}
+	if chunk.Usage != nil {
+		st.usage.InputTokens = chunk.Usage.PromptTokens
+		st.usage.OutputTokens = chunk.Usage.CompletionTokens
+	}
+	return delta, false, nil
 }

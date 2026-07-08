@@ -37,6 +37,12 @@ func IsRetryableCompleteError(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
+	// Streaming idle / first-byte timeouts are transient by construction (a
+	// stalled connection often recovers on a fresh attempt), so retry them
+	// like the other transient transport failures below.
+	if errors.Is(err, ErrStreamIdleTimeout) || errors.Is(err, ErrStreamFirstByteTimeout) {
+		return true
+	}
 	// Claude subprocess: retry only transient classes (rate-limit / network).
 	var ce *ClaudeExecError
 	if errors.As(err, &ce) {

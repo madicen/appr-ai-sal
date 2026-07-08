@@ -26,8 +26,9 @@ type azureProvider struct {
 func (p *azureProvider) Name() string { return string(aiconfig.ProviderAzure) }
 
 func (p *azureProvider) Capabilities() Capabilities {
-	// Same as the other HTTP providers: no repo tools, native JSON mode.
-	return Capabilities{NativeJSON: true}
+	// Same as the other HTTP providers: no repo tools, native JSON mode, SSE
+	// streaming (P6).
+	return Capabilities{NativeJSON: true, Streaming: true}
 }
 
 func (p *azureProvider) Complete(ctx context.Context, req Request) (Result, error) {

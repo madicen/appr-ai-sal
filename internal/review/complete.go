@@ -40,6 +40,13 @@ func Complete(ctx context.Context, cfg *aiconfig.Config, systemPrompt, userPromp
 		// responseSchema) constrain the output shape; schema-less JSON
 		// providers ignore it and use plain json_object mode.
 		JSONSchema: ai.JSONSchemaFromContext(ctx),
+		// P6 streaming: the runner installs ai.WithStreaming once per run, so
+		// every stage streams (SSE / claude stream-json) — surfacing
+		// token-liveness and swapping the whole-response HTTP timeout for
+		// idle/first-byte timeouts. The accumulated Result/Usage is identical
+		// to the non-streaming path, so ad-hoc callers that do not opt in
+		// (evals, one-off tools) are unaffected.
+		Stream: ai.StreamingFromContext(ctx),
 	})
 	return res.Text, err
 }
