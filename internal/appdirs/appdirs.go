@@ -28,6 +28,14 @@ const appName = "appr-ai-sal"
 // this exact layout.
 const WorktreesSubdir = "worktrees"
 
+// ReposSubdir is the cache subdir holding the shared bare/mirror clones the
+// review runner keeps per owner/repo (R7). Per-run worktrees are added from
+// these bare repos so repeat reviews of the same repo fetch only deltas
+// instead of a full clone every time. Like every non-worktrees subdir it is
+// resolved as a sibling of the worktrees dir under the
+// APPR_AI_SAL_CACHE_DIR override.
+const ReposSubdir = "repos"
+
 // ConfigDir returns the app's configuration directory. Precedence:
 //
 //  1. APPR_AI_SAL_CONFIG_DIR (used verbatim, enabling test/demo isolation)

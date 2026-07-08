@@ -786,25 +786,56 @@ const (
 	worktreeKeepPerPR = 2
 )
 
-// prepareWorktree clones the PR's head into a fresh directory under the
-// user's cache. The directory is named so that repeated runs against the
-// same PR get distinct worktrees (timestamp-suffixed) — keeps things simple
-// and avoids "directory not empty" failures on retries.
+// prepareWorktree returns a working tree with the PR's head checked out under
+// the user's cache. It prefers the R7 shared bare-repo cache — maintain one
+// bare mirror per owner/repo, fetch only the PR head delta, and `git worktree
+// add` a per-run tree (reusing an existing tree when the head SHA is
+// unchanged) — and falls open to the historical fresh-full-clone-per-run
+// behavior if anything in the cache path fails, so a run never dies because
+// of the cache. Either way the returned directory contains the PR head
+// exactly as before and carries the GC marker.
+//
+// The two strategies are indirected through package-level vars so the
+// fail-open wiring can be unit-tested without a live network.
+var (
+	cacheWorktreeStrategy = prepareWorktreeFromCache
+	freshCloneStrategy    = prepareFreshCloneWorktree
+)
+
 func prepareWorktree(ctx context.Context, ref gh.Ref) (string, error) {
 	base := cacheDir()
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", err
 	}
 	// Purge stale worktrees before adding a new one so the cache doesn't grow
-	// without bound. Best-effort: GC failures never block a review.
+	// without bound, then prune the bare repos' worktree bookkeeping so git
+	// forgets the dirs the purge removed. Both are best-effort: GC failures
+	// never block a review.
 	purgeStaleWorktrees(base)
-	dir := filepath.Join(base, fmt.Sprintf("%s-%s-%d-%d",
-		ref.Owner, ref.Repo, ref.Number, time.Now().Unix()))
+	pruneBareRepoWorktrees(ctx)
+
+	if dir, err := cacheWorktreeStrategy(ctx, ref, base); err == nil {
+		return dir, nil
+	} else {
+		applog.Warn("worktree cache unavailable; falling back to fresh clone",
+			"ref", ref.String(), "err", err.Error())
+	}
+	return freshCloneStrategy(ctx, ref, base)
+}
+
+// prepareFreshCloneWorktree is the historical strategy: a fresh full clone of
+// the PR head into a timestamp-suffixed directory. It is the fail-open path
+// when the shared bare-repo cache can't be used.
+func prepareFreshCloneWorktree(ctx context.Context, ref gh.Ref, base string) (string, error) {
+	dir := filepath.Join(base, worktreeDirName(ref))
 	if err := gh.CheckoutPR(ctx, ref, dir); err != nil {
 		return "", err
 	}
-	// Drop a marker so the GC knows the dir is ours (see purgeStaleWorktrees).
-	_ = os.WriteFile(filepath.Join(dir, worktreeMarkerName), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+	// Record the checked-out head SHA in the marker when we can resolve it so
+	// a later cache-path run could reuse this tree; empty is fine (the marker
+	// only needs to exist for the GC to recognise the dir as ours).
+	sha, _ := gh.WorktreeHeadSHA(ctx, dir)
+	writeWorktreeMarker(dir, sha)
 	return dir, nil
 }
 

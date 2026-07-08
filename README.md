@@ -336,9 +336,14 @@ happen in.
 
 ### Run order
 
-1. **Worktree + diff** — clone the PR head into
+1. **Worktree + diff** — check the PR head out into
    `~/.cache/appr-ai-sal/worktrees/`, fetch the unified diff. No LLM
-   calls yet.
+   calls yet. The checkout is backed by a shared bare-repo cache: one bare
+   mirror per `owner/repo` is kept under `~/.cache/appr-ai-sal/repos/`, so a
+   repeat review fetches only the delta and adds a per-run `git worktree`
+   instead of a full clone (and reuses the existing worktree when the head
+   SHA hasn't changed). If anything in the cache path fails it falls back to
+   a fresh full clone, so a run never dies because of the cache.
 2. **Context injection** — load the per-specialist repo agent briefs,
    tech expert briefs, language briefs, the repository context block,
    and (for `testing` / `docs`) the per-PR evidence pack. Progress for
@@ -442,6 +447,11 @@ Large PRs may exceed smaller models’ context windows; prefer a large-context m
 - `APPR_AI_SAL_CACHE_DIR` — directory for PR worktrees.
   Defaults to `$XDG_CACHE_HOME/appr-ai-sal/worktrees` or
   `~/.cache/appr-ai-sal/worktrees`.
+- Shared bare-repo clones live next to that layout under `repos`
+  (e.g. `~/.cache/appr-ai-sal/repos/<owner>-<repo>.git`). One bare mirror per
+  repository lets repeat reviews fetch only the delta and add cheap per-run
+  worktrees. These bare repos accumulate objects over time; they are safe to
+  delete when reclaiming disk (the next run re-creates them).
 - Repository profiles (merged-PR digest cache) live next to that layout under
   `repo-profiles` (e.g. `~/.cache/appr-ai-sal/repo-profiles` when using the
   default cache root).
@@ -557,6 +567,9 @@ make lint        # golangci-lint run ./...
 Early MVP. Built for one user (the author) to validate the loop, then
 shareable with a team. Known gaps: no in-app editing of the draft body
 yet, no draft persistence between runs, and no resume of a review for a PR
-already reviewed. Worktrees under the cache dir are garbage-collected on
-startup (older than 7 days, or beyond the newest 2 per PR). Issues and PRs
-welcome once it's stable.
+already reviewed. Per-run worktrees under the cache dir are garbage-collected
+on startup (older than 7 days, or beyond the newest 2 per PR), and the shared
+bare repos backing them have their `git worktree` bookkeeping pruned at the
+same time. The bare repos themselves are not size-capped yet — delete
+`~/.cache/appr-ai-sal/repos/` to reclaim disk. Issues and PRs welcome once
+it's stable.
