@@ -105,6 +105,20 @@ func run() error {
 		return err
 	}
 
+	// Record the resolved AI config for diagnosability (keys masked — the
+	// real key is only ever written by aiconfig.Save at 0600).
+	applog.Debug("ai config resolved", "config", aiCfg.RedactedJSON())
+
+	// R8: surface provider-specific misconfiguration early (base URL for
+	// openai_compatible, a key for gemini, the claude CLI on PATH, well-formed
+	// URLs) instead of failing at the first inference call. Non-fatal at
+	// startup — the user can fix it in the settings tab — so we log a warning
+	// rather than aborting; a review that truly cannot proceed still fails
+	// loudly at run time.
+	if err := aiCfg.ValidateForProvider(); err != nil {
+		applog.Warn("active AI profile is not fully configured", "err", err.Error())
+	}
+
 	// Apply any user-saved theme overrides before the TUI renders its first
 	// frame so colour-keyed rows match the user's palette from the start.
 	if t, err := theme.Load(); err == nil && t != nil {

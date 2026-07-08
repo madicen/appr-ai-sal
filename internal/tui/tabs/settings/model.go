@@ -890,6 +890,14 @@ func (m *Model) submitSave() tea.Cmd {
 			rs = strictnessAt(m.strictnessDD.SelectedIndex())
 		}
 		m.draft.ReviewStrictness = rs
+		// R8: surface provider-specific configuration problems here — on
+		// save — instead of at first inference. Validate the active profile
+		// (the one a review will actually use) and block the save with a
+		// clear message when it is not runnable (missing base URL / key, or
+		// the claude CLI not on PATH).
+		if err := m.draft.Active().ValidateForProvider(); err != nil {
+			return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: err}}
+		}
 		if err := aiconfig.Save(m.draft, ""); err != nil {
 			return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: err}}
 		}

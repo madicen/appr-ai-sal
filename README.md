@@ -376,6 +376,12 @@ Resolution order: **CLI flags** (`-ai-*`) **>** environment variables **>**
 optional JSON file **`~/.config/appr-ai-sal/ai.json`** (or under
 `$APPR_AI_SAL_CONFIG_DIR`) **>** defaults.
 
+CLI flags and environment variables are treated as **one-shot overrides**:
+they apply to the current run but are **never written back into your
+`ai.json` profile** when the config is saved (see
+[Secrets & validation](#secrets--validation)). The persisted profile always
+reflects what you set in the **Settings** tab or edited in the file directly.
+
 ### Providers
 
 | Provider | Behavior |
@@ -409,13 +415,70 @@ hint. Claude (CLI subprocess) is unchanged.
 | `APPR_AI_SAL_AI_RETRY_BASE_MS` / `APPR_AI_SAL_AI_RETRY_MAX_MS` | First backoff delay / backoff cap between retries (defaults `1500` / `120000`). |
 | `APPR_AI_SAL_AI_RETRY_STAGE_BUDGET` | **Shared attempt budget (R4):** total provider invocations allowed for one pipeline stage, across both the stage-level retry and the inner `Complete` retry, so the two can't multiply. Also `retry_stage_attempt_budget` in `ai.json`. Default `5`; floored at 1, capped at 30. |
 
+An environment override with a **malformed value** (e.g. a non-integer
+`APPR_AI_SAL_AI_TIMEOUT_SEC`, or an unknown `APPR_AI_SAL_AI_PROVIDER`) is now
+**logged as a warning and skipped** rather than being silently dropped —
+valid overrides in the same run still apply. See the [log file](#logging).
+
+### Secrets & validation
+
+**Secret indirection.** A profile can reference its API key instead of
+storing it inline, so `ai.json` never has to hold the secret:
+
+| Profile field (`ai.json`) | Meaning |
+|---------------------------|---------|
+| `api_key` | The key, stored inline. The file is written `0600`. |
+| `api_key_env` | Name of an environment variable to read the key from at resolution time. |
+| `api_key_cmd` | A shell command whose trimmed stdout is the key (e.g. `op read op://vault/gemini/key`, `pass show gemini`). Run once per process and cached. |
+
+Precedence when more than one is set (highest wins):
+**`api_key` › `api_key_env` › `api_key_cmd`**. A one-shot
+`--ai-api-key` / `APPR_AI_SAL_AI_API_KEY` arrives on the inline `api_key`
+path, so it takes precedence for that run — but is not persisted.
+
+Example profile using 1Password:
+
+```json
+{
+  "active_profile": "gemini",
+  "profiles": [
+    {
+      "name": "gemini",
+      "provider": "gemini",
+      "model": "gemini-2.0-flash",
+      "api_key_cmd": "op read op://Private/gemini/credential"
+    }
+  ]
+}
+```
+
+**Startup / save validation.** On startup and on every profile save the
+active profile is checked for the settings its provider needs, so a
+misconfiguration surfaces up front instead of at the first (slow) inference
+call:
+
+| Provider | Requirement checked |
+|----------|---------------------|
+| `openai_compatible` | A well-formed `http(s)` base URL is required. |
+| `gemini` | An API key source is required (`api_key`, a set `api_key_env`, `api_key_cmd`, or `APPR_AI_SAL_AI_API_KEY`). |
+| `claude` | The `claude` CLI must be on your `PATH`. |
+| `ollama` | No key required; the base URL defaults to `http://127.0.0.1:11434/v1` and is only shape-checked when set. |
+
+At **startup** a failure is a non-fatal warning (fix it in **Settings**). On
+**save** an invalid *active* profile blocks the save with a clear message.
+Validation is purely structural — it never makes a network call.
+
+Whenever the config is stringified for logs or debugging it goes through a
+redacting marshaller that masks key material (`****`); only the real `Save`
+path writes the actual key to disk (`0600`).
+
 ### CLI flags
 
 ```text
 -ai-provider string       claude | gemini | ollama | openai_compatible
 -ai-base-url string      HTTP base URL when applicable
 -ai-model string         model id for the active provider
--ai-api-key string       prefer env for secrets
+-ai-api-key string       one-shot key for this run (not persisted; prefer env or api_key_env/api_key_cmd)
 -ai-timeout-sec int      default 300; use -1 to leave unchanged from file/env
 -review-strictness string lenient | balanced | strict
 -version                 print the version and exit
