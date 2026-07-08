@@ -32,6 +32,7 @@ type fakeBackend struct {
 
 	startCh  chan review.Progress
 	startErr error
+	startCtx context.Context // ctx the run was started with (Phase 5 item 3)
 
 	// recorded calls
 	listMode      gh.ListMode
@@ -66,7 +67,8 @@ func (f *fakeBackend) Diff(_ context.Context, ref gh.Ref) (string, error) {
 	f.diffRef = ref
 	return f.diff, f.diffErr
 }
-func (f *fakeBackend) StartReview(_ context.Context, _ gh.Ref, _ *aiconfig.Config) (<-chan review.Progress, error) {
+func (f *fakeBackend) StartReview(ctx context.Context, _ gh.Ref, _ *aiconfig.Config) (<-chan review.Progress, error) {
+	f.startCtx = ctx
 	return f.startCh, f.startErr
 }
 func (f *fakeBackend) ExistingComments(_ context.Context, _ gh.Ref) ExistingComments {
@@ -178,13 +180,85 @@ func TestExistingCommentsMsg(t *testing.T) {
 func TestStartReviewMsg(t *testing.T) {
 	ch := make(chan review.Progress)
 	b := &fakeBackend{startCh: ch}
-	msg := startReviewMsg(b, ref(), nil)
+	msg := startReviewMsg(context.Background(), b, ref(), nil)
 	if _, ok := msg.(ReviewStartedMsg); !ok {
 		t.Fatalf("got %T want ReviewStartedMsg", msg)
 	}
 
-	if _, ok := startReviewMsg(&fakeBackend{startErr: errors.New("x")}, ref(), nil).(ErrMsg); !ok {
+	if _, ok := startReviewMsg(context.Background(), &fakeBackend{startErr: errors.New("x")}, ref(), nil).(ErrMsg); !ok {
 		t.Fatalf("start error should surface ErrMsg")
+	}
+}
+
+// Phase 5 item 3: the caller-owned context is threaded into the runner so
+// cancelling it (on overlay close / cancel key) actually stops the run. The
+// fake backend records the ctx it was started with; cancelling the parent must
+// fire that ctx's Done so the runner observes the cancellation.
+func TestStartReviewThreadsCancellableContext(t *testing.T) {
+	ch := make(chan review.Progress)
+	b := &fakeBackend{startCh: ch}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	if _, ok := startReviewMsg(ctx, b, ref(), nil).(ReviewStartedMsg); !ok {
+		t.Fatal("expected ReviewStartedMsg")
+	}
+	if b.startCtx == nil {
+		t.Fatal("the run should have captured the caller's context")
+	}
+	select {
+	case <-b.startCtx.Done():
+		t.Fatal("ctx should not be cancelled before the caller cancels it")
+	default:
+	}
+
+	cancel()
+	select {
+	case <-b.startCtx.Done():
+		if b.startCtx.Err() == nil {
+			t.Fatal("cancelled ctx should report an error")
+		}
+	default:
+		t.Fatal("cancelling the parent must cancel the run's context (no leaked runner)")
+	}
+}
+
+// StartQueueReviewCmd's message body emits a QueueReviewStartedMsg (distinct
+// from the interactive ReviewStartedMsg) carrying the ref + channel, and a
+// QueueReviewErrMsg (not a fatal ErrMsg) when a run fails to start so the queue
+// can advance rather than abort the batch.
+func TestStartQueueReviewMsg(t *testing.T) {
+	ch := make(chan review.Progress)
+	b := &fakeBackend{startCh: ch}
+	msg := startQueueReviewMsg(context.Background(), b, ref(), nil)
+	started, ok := msg.(QueueReviewStartedMsg)
+	if !ok {
+		t.Fatalf("got %T want QueueReviewStartedMsg", msg)
+	}
+	if started.Ref != ref() || started.Ch == nil {
+		t.Fatalf("queue-started msg should carry the ref + channel: %#v", started)
+	}
+
+	errMsg := startQueueReviewMsg(context.Background(), &fakeBackend{startErr: errors.New("boom")}, ref(), nil)
+	qerr, ok := errMsg.(QueueReviewErrMsg)
+	if !ok {
+		t.Fatalf("a failed queue start should be a QueueReviewErrMsg (not ErrMsg), got %T", errMsg)
+	}
+	if qerr.Ref != ref() || qerr.Err == nil {
+		t.Fatalf("queue-err msg should carry the ref + error: %#v", qerr)
+	}
+}
+
+// WaitForQueueProgressCmd relays one progress event, then emits
+// QueueReviewClosedMsg when the run's channel closes (so the queue advances).
+func TestWaitForQueueProgress(t *testing.T) {
+	ch := make(chan review.Progress, 1)
+	ch <- review.Progress{Stage: "specialists", Detail: "docs:start"}
+	if _, ok := WaitForQueueProgressCmd(ch)().(QueueProgressMsg); !ok {
+		t.Fatal("a buffered progress event should surface as QueueProgressMsg")
+	}
+	close(ch)
+	if _, ok := WaitForQueueProgressCmd(ch)().(QueueReviewClosedMsg); !ok {
+		t.Fatal("a closed channel should surface as QueueReviewClosedMsg")
 	}
 }
 

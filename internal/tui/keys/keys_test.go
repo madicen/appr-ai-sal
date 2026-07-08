@@ -106,6 +106,59 @@ func TestEveryFunctionalBindingResolves(t *testing.T) {
 	}
 }
 
+// TestPhase5BindingsRegistered is the P5-B seam guard: the new edit / copy /
+// queue bindings must carry their keys and appear in the help sections so
+// they surface in the ? overlay automatically.
+func TestPhase5BindingsRegistered(t *testing.T) {
+	km := Default()
+
+	// The functional keys each new binding advertises.
+	cases := map[string]struct {
+		b    key.Binding
+		keys []string
+	}{
+		"ListQueue":      {km.ListQueue, []string{"A"}},
+		"CopyURL":        {km.CopyURL, []string{"y"}},
+		"ReviewEdit":     {km.ReviewEdit, []string{"e"}},
+		"ReviewEditor":   {km.ReviewEditor, []string{"E"}},
+		"ReviewCopyFind": {km.ReviewCopyFind, []string{"ctrl+y"}},
+		"ReviewCopyHunk": {km.ReviewCopyHunk, []string{"ctrl+o"}},
+	}
+	for name, c := range cases {
+		if len(c.b.Keys()) == 0 {
+			t.Errorf("binding %s has no keys", name)
+		}
+		if c.b.Help().Key == "" {
+			t.Errorf("binding %s has no help key", name)
+		}
+	}
+
+	// Each new binding shows up in exactly the expected help section.
+	secs := km.Sections()
+	inSection := func(title string, want key.Binding) bool {
+		for _, s := range secs {
+			if s.Title != title {
+				continue
+			}
+			for _, b := range s.Bindings {
+				if b.Help().Key == want.Help().Key && b.Help().Desc == want.Help().Desc {
+					return true
+				}
+			}
+		}
+		return false
+	}
+	if !inSection("Review queue (list)", km.ListQueue) {
+		t.Error("ListQueue should appear in the list help section")
+	}
+	if !inSection("Review overlay", km.ReviewEdit) {
+		t.Error("ReviewEdit should appear in the review-overlay help section")
+	}
+	if !inSection("Review overlay", km.ReviewCopyFind) {
+		t.Error("ReviewCopyFind should appear in the review-overlay help section")
+	}
+}
+
 // TestSegText renders "key desc" or bare "key" so the status bar and help
 // overlay share one label producer.
 func TestSegText(t *testing.T) {

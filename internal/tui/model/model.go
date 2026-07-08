@@ -319,6 +319,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reviewtab.CloseMsg:
 		_, c := m.overlayStack.Pop()
 		m.currentReviewOverlay = nil
+		// Phase 5 item 3: closing the review overlay cancels the run's
+		// context so the runner goroutine stops instead of leaking behind a
+		// dismissed overlay.
+		m.cancelReview()
 		if m.mode == modeDetail {
 			m.refreshDetailViews()
 		}
@@ -459,7 +463,47 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.recomputeTreeRows()
 			m.refreshDetailViews()
 		}
-		return m, nil
+		// Phase 5 item 3: the run finished — ring the bell + fire an OSC-9
+		// desktop notification so a reviewer who backgrounded the terminal
+		// while the multi-minute run churned gets pinged. The terminal
+		// decides whether to surface it (focused terminals ignore/flash),
+		// so it stays unobtrusive. Skipped in demo mode / recordings.
+		return m, m.reviewCompleteNotifyCmd()
+
+	case data.QueueReviewStartedMsg:
+		if !m.queue.active {
+			return m, nil
+		}
+		m.queue.ch = msg.Ch
+		m.queue.stage = "running"
+		m.updateListTitle()
+		return m, data.WaitForQueueProgressCmd(msg.Ch)
+
+	case data.QueueReviewErrMsg:
+		if !m.queue.active {
+			return m, nil
+		}
+		// A run that failed to start is counted as failed and the queue
+		// advances rather than aborting the whole batch.
+		m.queue.failed++
+		return m, m.advanceQueue()
+
+	case data.QueueProgressMsg:
+		if !m.queue.active {
+			return m, nil
+		}
+		if s := review.Progress(msg).Stage; s != "" {
+			m.queue.stage = s
+			m.updateListTitle()
+		}
+		return m, data.WaitForQueueProgressCmd(m.queue.ch)
+
+	case data.QueueReviewClosedMsg:
+		if !m.queue.active {
+			return m, nil
+		}
+		m.queue.done++
+		return m, m.advanceQueue()
 
 	case data.PostDoneMsg:
 		// Either summary (from review overlay) or bulk (legacy P key) just
@@ -489,6 +533,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			ro.NoteStatusReplies(msg.Posted, msg.Failed)
 		}
 		return m, nil
+
+	case util.ClipboardCopiedMsg:
+		// Phase 5 item 9: a copy attempt finished. Route the outcome to the
+		// top overlay (the review overlay's copy-status footer, or the error
+		// overlay's "Copied!" badge) so it can reflect success / OSC52
+		// fallback / failure. Fail-open — never surfaces its own error modal.
+		return m, m.overlayStack.Update(msg)
 
 	case util.BrowserOpenedMsg:
 		if msg.Err == nil {

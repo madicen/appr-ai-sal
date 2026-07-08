@@ -46,6 +46,7 @@ type Map struct {
 	ListURL         key.Binding // u — focus the URL field
 	ListFilter      key.Binding // f — cycle the review-queue filter
 	ListRefresh     key.Binding // R — refetch the PR list
+	ListQueue       key.Binding // A — queue review over all listed PRs (item 10)
 	ListQuit        key.Binding // q — quit
 
 	// Detail screen.
@@ -76,6 +77,7 @@ type Map struct {
 	LangAgents     key.Binding // ctrl+l — language experts tab
 	BuildAgents    key.Binding // ctrl+b — build/refresh repo agents
 	Browser        key.Binding // O — open the PR in the browser
+	CopyURL        key.Binding // y — copy the PR URL to the clipboard (item 9)
 
 	// Review overlay — documentation-only. The review tab owns its own
 	// phase-dependent handling; these are listed so the `?` overlay is a
@@ -88,6 +90,10 @@ type Map struct {
 	ReviewPrev      key.Binding // ←/h — previous finding
 	ReviewRefresh   key.Binding // r — refresh the PR (head drift)
 	ReviewFileLevel key.Binding // F — post as a file-level comment
+	ReviewEdit      key.Binding // e — edit the finding comment inline (item 2)
+	ReviewEditor    key.Binding // E — edit the finding comment in $EDITOR (item 2)
+	ReviewCopyFind  key.Binding // ctrl+y — copy the finding (item 9)
+	ReviewCopyHunk  key.Binding // ctrl+o — copy the finding's hunk (item 9)
 	ReviewTabs      key.Binding // tab/[ ] — switch overlay tabs
 	ReviewClose     key.Binding // esc/q — close the overlay
 }
@@ -122,6 +128,7 @@ func Default() Map {
 		ListURL:         b("u", "URL", "u"),
 		ListFilter:      b("f", "filter", "f"),
 		ListRefresh:     b("R", "refresh", "R"),
+		ListQueue:       b("A", "queue all", "A"),
 		ListQuit:        b("q", "quit", "q"),
 
 		// Detail.
@@ -151,6 +158,7 @@ func Default() Map {
 		LangAgents:     b("ctrl+l", "lang experts", "ctrl+l"),
 		BuildAgents:    b("ctrl+b", "build agents", "ctrl+b"),
 		Browser:        b("O", "browser", "O"),
+		CopyURL:        b("y", "copy URL", "y"),
 
 		// Review overlay (reference only).
 		ReviewPost:      b("y", "post finding", "y"),
@@ -161,6 +169,10 @@ func Default() Map {
 		ReviewPrev:      b("←/h", "prev finding", "left", "h"),
 		ReviewRefresh:   b("r", "refresh PR", "r"),
 		ReviewFileLevel: b("F", "post file-level", "F"),
+		ReviewEdit:      b("e", "edit comment", "e"),
+		ReviewEditor:    b("E", "edit in $EDITOR", "E"),
+		ReviewCopyFind:  b("ctrl+y", "copy finding", "ctrl+y"),
+		ReviewCopyHunk:  b("ctrl+o", "copy hunk", "ctrl+o"),
 		ReviewTabs:      b("tab/[ ]", "switch tabs", "tab", "[", "]"),
 		ReviewClose:     b("esc", "close", "esc", "q"),
 	}
@@ -195,18 +207,19 @@ func (m Map) Sections() []Section {
 		{Title: "Review queue (list)", Bindings: []key.Binding{
 			m.ListNav, m.ListOpen, m.ListOpenClick, m.ListSearch, m.ListURL,
 			m.ListFilter, m.ListCycleFocus, m.ListClearSearch, m.ListRefresh,
-			m.Browser, m.SettingsAI, m.SettingsReview, m.RepoCtx, m.RepoAgents,
-			m.LangAgents, m.BuildAgents, m.ListQuit,
+			m.ListQueue, m.CopyURL, m.Browser, m.SettingsAI, m.SettingsReview,
+			m.RepoCtx, m.RepoAgents, m.LangAgents, m.BuildAgents, m.ListQuit,
 		}},
 		{Title: "PR detail", Bindings: []key.Binding{
 			m.DetailNav, m.DetailCyclePane, m.DetailFold, m.DetailReview,
 			m.DetailToggleControls, m.DetailReopenApproval, m.DetailDescription,
 			m.DetailDiffOnly, m.DetailBulk, m.DetailHalfDown, m.DetailHalfUp,
-			m.Browser, m.SettingsAI, m.RepoCtx, m.RepoAgents, m.LangAgents,
-			m.DetailTech, m.BuildAgents, m.DetailBack,
+			m.CopyURL, m.Browser, m.SettingsAI, m.RepoCtx, m.RepoAgents,
+			m.LangAgents, m.DetailTech, m.BuildAgents, m.DetailBack,
 		}},
 		{Title: "Review overlay", Bindings: []key.Binding{
 			m.ReviewPost, m.ReviewSkip, m.ReviewResurface, m.ReviewChallenge,
+			m.ReviewEdit, m.ReviewEditor, m.ReviewCopyFind, m.ReviewCopyHunk,
 			m.ReviewNext, m.ReviewPrev, m.ReviewRefresh, m.ReviewFileLevel,
 			m.ReviewTabs, m.ReviewClose,
 		}},

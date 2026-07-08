@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"time"
 
 	"github.com/charmbracelet/bubbles/list"
@@ -285,6 +286,15 @@ type Model struct {
 
 	spinner    spinner.Model
 	progressCh <-chan review.Progress
+
+	// reviewCancel cancels the context threaded into the active interactive
+	// review run (Phase 5 item 3). Set when startReviewOverlay kicks off a
+	// run; invoked (and nilled) by cancelReview when the review overlay closes
+	// or another run starts, so the runner goroutine stops instead of leaking.
+	reviewCancel context.CancelFunc
+
+	// queue holds the Phase 5 item 10 "run review on all listed PRs" state.
+	queue queueState
 
 	err error
 

@@ -120,11 +120,18 @@ func (m *Model) collectSession() *review.SessionState {
 	}
 	decisions := make([]review.CardDecision, 0, len(m.cards))
 	for _, c := range m.cards {
-		decisions = append(decisions, review.CardDecision{
+		d := review.CardDecision{
 			Key:        m.cardIdentity(c),
 			Decision:   decisionString(c.state),
 			Resurfaced: c.memorySuppressed && c.state != cardSkipped,
-		})
+		}
+		// Phase 5 item 2: persist an edited comment so a U2 resume restores the
+		// reviewer's own words (the Draft snapshot carries the model's original
+		// comment; the per-card edit lives only here).
+		if c.edited {
+			d.EditedBody = c.finding.Finding.Comment
+		}
+		decisions = append(decisions, d)
 	}
 	return &review.SessionState{
 		HeadSHA:   sha,
@@ -222,6 +229,12 @@ func (m *Model) applySession(s *review.SessionState) tea.Cmd {
 	for i := range m.cards {
 		if d, ok := byKey[m.cardIdentity(m.cards[i])]; ok {
 			m.cards[i].state = parseCardDecision(d.Decision)
+			// Phase 5 item 2: reapply a persisted comment edit onto the
+			// rehydrated card so the posted body is the reviewer's edited text.
+			if strings.TrimSpace(d.EditedBody) != "" {
+				m.cards[i].finding.Finding.Comment = d.EditedBody
+				m.cards[i].edited = true
+			}
 		}
 	}
 	// Restore the vibe-coach cache validity so re-entering the summary with the

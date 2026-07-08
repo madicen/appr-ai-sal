@@ -129,21 +129,87 @@ func loadPRDetailMsg(b Backend, ref gh.Ref) tea.Msg {
 // StartReviewCmd starts a review run and emits ReviewStartedMsg with the
 // progress channel the caller should poll via WaitForProgressCmd.
 //
+// The caller owns ctx (Phase 5 item 3): the root model derives a cancellable
+// context per run and cancels it when the review overlay closes, so the runner
+// goroutine actually stops (in-flight gh / inference calls observe the
+// cancellation) instead of leaking behind a dismissed overlay. A nil ctx is
+// treated as context.Background() so older call sites / tests keep working.
+//
 // In demo mode the channel comes from demo.SyntheticReviewProgress, which
 // emits a scripted sequence of stages with realistic delays so the
 // review-overlay UI replays a believable run for VHS recording.
-func StartReviewCmd(ref gh.Ref, cfg *aiconfig.Config, demoMode bool) tea.Cmd {
+func StartReviewCmd(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, demoMode bool) tea.Cmd {
 	b := selectBackend(demoMode)
 	snap := cfg.Clone()
-	return func() tea.Msg { return startReviewMsg(b, ref, snap) }
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg { return startReviewMsg(ctx, b, ref, snap) }
 }
 
-func startReviewMsg(b Backend, ref gh.Ref, cfg *aiconfig.Config) tea.Msg {
-	ch, err := b.StartReview(context.Background(), ref, cfg)
+func startReviewMsg(ctx context.Context, b Backend, ref gh.Ref, cfg *aiconfig.Config) tea.Msg {
+	ch, err := b.StartReview(ctx, ref, cfg)
 	if err != nil {
 		return ErrMsg{err}
 	}
 	return ReviewStartedMsg{Ch: ch}
+}
+
+// StartQueueReviewCmd is the queue-workflow (Phase 5 item 10) sibling of
+// StartReviewCmd: it starts a review run for one queued PR and emits a
+// QueueReviewStartedMsg (rather than ReviewStartedMsg) so the root model can
+// drive the sequential queue state machine without colliding with the
+// interactive review overlay's own StartReviewCmd flow. The queue runs one PR
+// at a time, so R2's per-run inference semaphore is respected exactly as in a
+// single interactive run (only one run's calls are ever in flight).
+func StartQueueReviewCmd(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, demoMode bool) tea.Cmd {
+	b := selectBackend(demoMode)
+	snap := cfg.Clone()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return func() tea.Msg { return startQueueReviewMsg(ctx, b, ref, snap) }
+}
+
+func startQueueReviewMsg(ctx context.Context, b Backend, ref gh.Ref, cfg *aiconfig.Config) tea.Msg {
+	ch, err := b.StartReview(ctx, ref, cfg)
+	if err != nil {
+		return QueueReviewErrMsg{Ref: ref, Err: err}
+	}
+	return QueueReviewStartedMsg{Ref: ref, Ch: ch}
+}
+
+// QueueReviewStartedMsg carries the progress channel for one queued PR's run.
+type QueueReviewStartedMsg struct {
+	Ref gh.Ref
+	Ch  <-chan review.Progress
+}
+
+// QueueReviewErrMsg reports that a queued PR's run failed to start (the run
+// never produced a channel). The queue treats it as a failed item and advances
+// to the next PR rather than aborting the whole batch.
+type QueueReviewErrMsg struct {
+	Ref gh.Ref
+	Err error
+}
+
+// QueueProgressMsg wraps one progress event from a queued PR's run.
+type QueueProgressMsg review.Progress
+
+// QueueReviewClosedMsg signals that a queued PR's run finished (its progress
+// channel closed) so the queue can advance to the next PR.
+type QueueReviewClosedMsg struct{}
+
+// WaitForQueueProgressCmd reads one progress event off a queued run's channel,
+// emitting QueueReviewClosedMsg on close and QueueProgressMsg otherwise.
+func WaitForQueueProgressCmd(ch <-chan review.Progress) tea.Cmd {
+	return func() tea.Msg {
+		p, ok := <-ch
+		if !ok {
+			return QueueReviewClosedMsg{}
+		}
+		return QueueProgressMsg(p)
+	}
 }
 
 // ReviewStartedMsg carries the progress channel produced by the review run.

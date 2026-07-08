@@ -21,6 +21,10 @@ func (m *Model) rebuildBody() {
 	case phaseRunning:
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderRunningBody(), m.vp.Width))
 	case phaseApprove:
+		if m.editActive {
+			m.vp.SetContent(util.EnforceMaxLineWidth(m.renderEdit(max(8, m.vp.Width)), m.vp.Width))
+			break
+		}
 		if m.challengeActive {
 			m.vp.SetContent(util.EnforceMaxLineWidth(m.renderChallenge(max(8, m.vp.Width)), m.vp.Width))
 			break
@@ -1143,6 +1147,11 @@ func (m *Model) renderCardDetail(rowW int) string {
 			b.WriteString("  " + styles.DimStyle.Render(fmt.Sprintf("(demoted from %s by repo arbiter)", string(orig))))
 		}
 	}
+	if cur.edited {
+		// Phase 5 item 2: flag that the reviewer rewrote this comment so it's
+		// clear the posted text is theirs, not the model's verbatim output.
+		b.WriteString("  " + styles.WarnStyle.Render("✎ edited"))
+	}
 	b.WriteString("\n")
 	if cur.demoted {
 		b.WriteString(styles.WarnStyle.Render("⊘ Demoted below the review threshold by the repo arbiter — it won't post and doesn't affect the verdict.") + "\n")
@@ -1257,6 +1266,12 @@ func (m *Model) renderCardDetail(rowW int) string {
 	row := strings.Join([]string{left, post, skip, challenge, right, quit}, "  ")
 	b.WriteString(lipgloss.NewStyle().Width(rowW).Render(row))
 	b.WriteString("\n")
+	// Phase 5 items 2 + 9: edit / clipboard affordances live one line below
+	// the primary action row (they're less frequent than post/skip).
+	b.WriteString(styles.DimStyle.Render("e edit · E $EDITOR · ctrl+y copy finding · ctrl+o copy hunk") + "\n")
+	if m.copyStatus != "" {
+		b.WriteString(styles.DimStyle.Render("⧉ "+m.copyStatus) + "\n")
+	}
 	if m.dryRun {
 		b.WriteString("\n" + styles.ErrStyle.Render("DRY-RUN") + styles.DimStyle.Render(" — Post shows the GitHub payload only; nothing is sent.") + "\n")
 	}

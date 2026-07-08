@@ -457,6 +457,7 @@ func (m *Model) actNext() (tea.Model, tea.Cmd) {
 	pos := positionOf(idxs, m.idx)
 	if pos >= 0 && pos < len(idxs)-1 {
 		m.idx = idxs[pos+1]
+		m.copyStatus = ""
 		m.vp.GotoTop()
 		m.rebuildBody()
 	}
@@ -468,6 +469,7 @@ func (m *Model) actPrev() (tea.Model, tea.Cmd) {
 	pos := positionOf(idxs, m.idx)
 	if pos > 0 {
 		m.idx = idxs[pos-1]
+		m.copyStatus = ""
 		m.vp.GotoTop()
 		m.rebuildBody()
 	}

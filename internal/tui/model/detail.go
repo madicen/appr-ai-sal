@@ -1,6 +1,7 @@
 package model
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -378,6 +379,17 @@ func (m *Model) detailOpenBrowserCmd() tea.Cmd {
 	return nil
 }
 
+// copyCurrentPRURLCmd copies the current PR's URL to the clipboard (Phase 5
+// item 9). Returns nil when there's no PR / URL.
+func (m *Model) copyCurrentPRURLCmd() tea.Cmd {
+	if m.currentPR != nil {
+		if u := strings.TrimSpace(m.currentPR.URL); u != "" {
+			return util.CopyPlainTextCmd(u)
+		}
+	}
+	return nil
+}
+
 func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Match against the central keymap (m.keys). Space / enter deliberately
 	// do NOT return in every branch: when the focused pane isn't the tree
@@ -477,6 +489,8 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.openRepoAgentsForCurrentPR(true)
 	case key.Matches(msg, km.Browser):
 		return m, m.detailOpenBrowserCmd()
+	case key.Matches(msg, km.CopyURL):
+		return m, m.copyCurrentPRURLCmd()
 	}
 	// fallthrough: pane scroll for the focused pane
 	switch m.focusedPane {
@@ -586,6 +600,14 @@ func (m *Model) startReviewOverlay() (tea.Model, tea.Cmd) {
 	}
 	ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
 	m.draft = nil
+	// Phase 5 item 3: a cancellable context owned by the model. Closing the
+	// review overlay (or starting another run) cancels it so the runner
+	// goroutine actually stops instead of leaking. Cancel any prior run's
+	// context first — belt-and-braces against a re-run before the old overlay
+	// closed.
+	m.cancelReview()
+	ctx, cancel := context.WithCancel(context.Background())
+	m.reviewCancel = cancel
 	m.recomputeTreeRows()
 	parallelSpec, parallelRE, _ := repoParallelExecutionFlags()
 	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
@@ -613,7 +635,7 @@ func (m *Model) startReviewOverlay() (tea.Model, tea.Cmd) {
 	if startMinimized {
 		prep = tea.Sequence(prep, func() tea.Msg { return reviewOverlayMinimizeRequestMsg{} })
 	}
-	return m, tea.Batch(prep, data.StartReviewCmd(ref, m.opts.AIConfig, m.opts.Demo))
+	return m, tea.Batch(prep, data.StartReviewCmd(ctx, ref, m.opts.AIConfig, m.opts.Demo))
 }
 
 // reviewOverlayMinimizeRequestMsg asks the root to collapse the

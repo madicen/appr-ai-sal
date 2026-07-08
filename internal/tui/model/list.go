@@ -221,6 +221,10 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.cyclePanelFocusBackward()
 	case key.Matches(msg, km.ListRefresh):
 		return m, m.refreshPRListCmd()
+	case key.Matches(msg, km.ListQueue):
+		return m, m.startQueueCmd()
+	case key.Matches(msg, km.CopyURL):
+		return m, m.copyListSelectionURLCmd()
 	case key.Matches(msg, km.SettingsAI):
 		return m, m.openSettings(settings.StartAI)
 	case key.Matches(msg, km.SettingsReview):
@@ -401,14 +405,16 @@ func (m *Model) setFilterCmd(mode filterMode) tea.Cmd {
 }
 
 func (m *Model) updateListTitle() {
+	var base string
 	switch m.filter {
 	case filterReviewExplicit:
-		m.list.Title = "PRs · you are explicitly requested"
+		base = "PRs · you are explicitly requested"
 	case filterAuthored:
-		m.list.Title = "PRs · authored by you"
+		base = "PRs · authored by you"
 	default:
-		m.list.Title = "PRs · review requested (@me, incl. teams)"
+		base = "PRs · review requested (@me, incl. teams)"
 	}
+	m.list.Title = base + m.queueTitle()
 }
 
 // applySearchFilter rebuilds the bubbles/list items from prsAll
@@ -445,6 +451,19 @@ func prMatchesQuery(p gh.PR, q string) bool {
 		return true
 	}
 	return false
+}
+
+// copyListSelectionURLCmd copies the highlighted PR's URL to the clipboard
+// (Phase 5 item 9). No-op when nothing is highlighted or the PR has no URL.
+func (m *Model) copyListSelectionURLCmd() tea.Cmd {
+	it, ok := m.list.SelectedItem().(prItem)
+	if !ok {
+		return nil
+	}
+	if u := strings.TrimSpace(it.pr.URL); u != "" {
+		return util.CopyPlainTextCmd(u)
+	}
+	return nil
 }
 
 // refreshPRListCmd flips the list back into its loading state and returns the

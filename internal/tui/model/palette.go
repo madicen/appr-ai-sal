@@ -127,6 +127,11 @@ func (m *Model) buildCommandRegistry() *commands.Registry {
 			return data.LoadPRDetailCmd(ref, m.opts.Demo)
 		},
 	})
+	r.Register(commands.Command{
+		ID: "list.queue-all", Title: "Queue review on all listed PRs", Category: "Review queue",
+		Binding: km.ListQueue, Enabled: inList,
+		Run: func() tea.Cmd { return m.startQueueCmd() },
+	})
 
 	// Detail.
 	r.Register(commands.Command{
@@ -233,6 +238,19 @@ func (m *Model) buildCommandRegistry() *commands.Registry {
 				}
 			}
 			return nil
+		},
+	})
+	r.Register(commands.Command{
+		ID: "copy.pr-url", Title: "Copy PR URL", Category: "Navigation",
+		Binding: km.CopyURL,
+		Enabled: func(c commands.Context) bool {
+			return (c.Mode == "detail" && c.HasPR) || (c.Mode == "list" && c.HasSelection)
+		},
+		Run: func() tea.Cmd {
+			if m.mode == modeDetail {
+				return m.copyCurrentPRURLCmd()
+			}
+			return m.copyListSelectionURLCmd()
 		},
 	})
 

@@ -403,6 +403,13 @@ type approvalCard struct {
 	// cardSkipped) and the detail view badges it as withdrawn-via-challenge
 	// rather than a plain skip, so the reviewer can tell the difference.
 	withdrawnViaChallenge bool
+	// edited is set (Phase 5 item 2) when the reviewer edited this finding's
+	// comment body before posting — inline (bubbles textarea) or via $EDITOR.
+	// The edited text lives directly on finding.Finding.Comment so the post
+	// payload (ReviewCommentBody / InlineReviewComment / file-level / dry-run)
+	// uses it automatically; this flag drives the "edited" badge and folds the
+	// text into CardDecision.EditedBody so a U2 resume restores the edit.
+	edited bool
 }
 
 // Model is the persistent overlay that hosts the entire review flow:
@@ -559,6 +566,24 @@ type Model struct {
 	challengeTranscript []review.ChallengeTurn
 	challengeInFlight   bool
 	challengeErr        error
+
+	// Phase 5 item 2 "edit finding before posting" sub-state. When editActive
+	// is true the approve phase renders the inline comment editor for the card
+	// at editCardIdx instead of the normal card detail: a bubbles textarea
+	// pre-filled with the finding's current comment body. ctrl+s saves (the
+	// text replaces finding.Finding.Comment and the card is flagged edited),
+	// esc cancels (reverts — the original comment is untouched), ctrl+e hands
+	// the current buffer off to $EDITOR. editErr surfaces an $EDITOR round-trip
+	// failure. See edit.go.
+	editActive  bool
+	editCardIdx int
+	editInput   textarea.Model
+	editErr     error
+
+	// copyStatus is a brief, transient footer note after a clipboard copy
+	// (Phase 5 item 9): "copied finding", "copy failed: …", etc. Set when a
+	// util.ClipboardCopiedMsg arrives and cleared on the next navigation.
+	copyStatus string
 }
 
 func zoneOverlayAgent(i int) string {
@@ -1108,6 +1133,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case ChallengeDoneMsg:
 		return m, m.onChallengeDone(msg)
 
+	case EditorFinishedMsg:
+		return m, m.onEditorFinished(msg)
+
+	case util.ClipboardCopiedMsg:
+		m.onClipboardCopied(msg)
+		return m, nil
+
 	case VibeCoachDoneMsg:
 		m.coachInFlight = false
 		// If the user changed skips again between issue and completion,
@@ -1177,6 +1209,13 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Phase 5 item 2: while the inline comment editor is open it owns all
+	// keyboard input (the textarea must receive every rune, including tab), so
+	// route to the edit handler before tab-navigation / digit shortcuts can
+	// steal a keystroke. ctrl+s save / esc cancel are handled inside it.
+	if m.editActive {
+		return m.handleEditKey(msg)
+	}
 	// B4: while a challenge exchange is open it owns all keyboard input — the
 	// textarea must receive every rune (including tab), so route to the
 	// challenge handler before the tab-navigation / digit shortcuts below can
@@ -1245,6 +1284,19 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// B4: open a scoped challenge exchange for the focused finding.
 			// A no-op when there's no challengeable card focused.
 			return m.actOpenChallenge()
+		case "e":
+			// Phase 5 item 2: edit this finding's comment inline before posting.
+			return m.actOpenEdit()
+		case "E":
+			// Phase 5 item 2: edit this finding's comment via $EDITOR (falls
+			// back to the inline textarea when $EDITOR is unset).
+			return m.actOpenEditor()
+		case "ctrl+y":
+			// Phase 5 item 9: copy the focused finding (location + comment).
+			return m.actCopyFinding()
+		case "ctrl+o":
+			// Phase 5 item 9: copy the focused finding's diff hunk.
+			return m.actCopyHunk()
 		case "right", "l":
 			return m.actNext()
 		case "left", "h":

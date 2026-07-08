@@ -234,6 +234,8 @@ the search / URL fields while you're typing into them):
 | `f`       | Cycle the review-queue filter                           |
 | `tab` / `shift+tab` | Cycle focus between the list and the search / URL fields |
 | `R`       | Refresh the PR list                                     |
+| `A`       | **Queue a review over every listed PR** — runs the pipeline on each one sequentially (respecting the inference concurrency cap); progress shows in the list title, press `A` again to cancel |
+| `y`       | Copy the highlighted PR's URL to the clipboard          |
 | `O`       | Open the highlighted PR in the browser                  |
 | `q`       | Quit                                                    |
 
@@ -251,8 +253,34 @@ the search / URL fields while you're typing into them):
 | `d`       | Toggle full-width diff                                  |
 | `P`       | Bulk-post the draft (with a confirm step)               |
 | `ctrl+d` / `ctrl+u` | Half-page down / up in the diff               |
+| `y`       | Copy the PR's URL to the clipboard                      |
 | `O`       | Open the PR in the browser                              |
 | `esc` / `q` | Back to the list                                      |
+
+**Review overlay (approval flow):**
+
+While walking a finding's approval card you can edit its comment before it's
+posted, and copy the finding or its hunk out to your clipboard:
+
+| Key       | Action                                                  |
+|-----------|---------------------------------------------------------|
+| `e`       | **Edit the comment inline** — opens a textarea pre-filled with the finding's body; `ctrl+s` saves (the posted comment uses your edited text), `esc` cancels, `ctrl+e` hands the buffer to `$EDITOR` |
+| `E`       | **Edit the comment in `$EDITOR`** — opens `$VISUAL`/`$EDITOR` on a temp file and reads it back on exit; falls back to the inline editor when neither is set |
+| `ctrl+y`  | Copy the current finding (location + comment) to the clipboard |
+| `ctrl+o`  | Copy the current finding's diff hunk to the clipboard   |
+
+Edited comments are persisted with the [draft session](#draft-persistence--resume-pick-up-a-mid-approval-review),
+so a resumed review keeps your wording. Clipboard copies use the native system
+clipboard (pbcopy / xclip / wl-copy) and automatically fall back to an **OSC 52**
+terminal escape when no native clipboard is reachable — so copies work over SSH
+too. A copy that fails every path just flashes a brief status; it never
+interrupts the flow.
+
+When a review run (or a queued batch) finishes, appr-ai-sal rings the terminal
+bell and emits an **OSC 9** desktop-notification escape naming the PR, so you get
+pinged if you backgrounded the terminal during a long run. Closing the review
+overlay cancels the in-flight run so nothing keeps churning behind a dismissed
+overlay.
 
 **Shared navigation (queue + detail):**
 
