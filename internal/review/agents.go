@@ -198,6 +198,10 @@ func RunVibeCoachForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, n
 	if notify == nil {
 		notify = func(int, error) {}
 	}
+	// Q7: route the vibe-coach to its configured model (stage_models
+	// ["vibe-coach"] / "default"); a no-op clone when unrouted. Applied here so
+	// both the streaming pipeline and the TUI's lazy re-run pick up routing.
+	cfg = cfg.ForStage(StageVibeCoach)
 	vibeInput := SpecialistsForVibeCoach(d, d.Specialists)
 	var res *VibeCoachResult
 	_ = stageWithRetry(ctx, cfg, "vibe-coach", notify, func(sctx context.Context) error {

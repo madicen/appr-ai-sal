@@ -519,6 +519,10 @@ func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, 
 // technology experts section, and optional convention witnesses produced
 // between the specialists and this pass.
 func RunRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) *RepoArbiterResult {
+	// Q7: route the arbiter to its configured model (stage_models["arbiter"] /
+	// "default"); a no-op clone when unrouted. Applied here so every caller
+	// (runner, evals) picks up arbiter routing uniformly.
+	cfg = cfg.ForStage(StageArbiter)
 	specDigest := buildSpecialistDigestForRepoExperts(specialists)
 	return runRepoArbiter(ctx, cfg, worktree, pr, specDigest, perAgent, techSection, witnesses)
 }

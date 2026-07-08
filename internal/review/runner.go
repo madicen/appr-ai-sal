@@ -540,7 +540,6 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 		notify := func(attempt int, err error) {
 			out <- Progress{Stage: "specialist", Detail: fmt.Sprintf("%s:retry %d (%s)", name, attempt, retryReason(err))}
 		}
-		var r SpecialistResult
 		repoCtx := ""
 		if perAgent != nil {
 			repoCtx = perAgent[name]
@@ -549,15 +548,33 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 		if specWantsEvidence(name) {
 			ev = prEvidence
 		}
-		_ = stageWithRetry(ctx, runCfg, "specialist "+name, notify, func(sctx context.Context) error {
-			stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "specialist "+name), perStageBudget(runCfg))
-			defer cancel()
-			r = runReviewSpecialist(stCtx, runCfg, name, worktree, pr, diff, repoCtx, ev, staticSection, staticCleanFiles, langSection, techSection)
-			if r.Err != nil {
-				return r.Err
-			}
-			return nil
-		})
+		// One member run against the given (possibly stage-routed / ensemble)
+		// config, with the stage's retry + per-stage timeout budget. Budget is
+		// read from the stage cfg, which is a clone of runCfg differing only in
+		// Model, so retry/timeout knobs are identical to runCfg.
+		runWith := func(stageCfg *aiconfig.Config) SpecialistResult {
+			var r SpecialistResult
+			_ = stageWithRetry(ctx, stageCfg, "specialist "+name, notify, func(sctx context.Context) error {
+				stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "specialist "+name), perStageBudget(stageCfg))
+				defer cancel()
+				r = runReviewSpecialist(stCtx, stageCfg, name, worktree, pr, diff, repoCtx, ev, staticSection, staticCleanFiles, langSection, techSection)
+				if r.Err != nil {
+					return r.Err
+				}
+				return nil
+			})
+			return r
+		}
+		// Q7: an ensemble stage runs once per configured model and unions the
+		// findings; otherwise the stage runs once on its per-stage-routed model
+		// (ForStage returns runCfg unchanged when no routing applies, so the
+		// common path is byte-for-byte as before).
+		var r SpecialistResult
+		if models := runCfg.EnsembleModels(name); len(models) >= 2 {
+			r = runEnsemble(name, models, runCfg, runWith)
+		} else {
+			r = runWith(runCfg.ForStage(name))
+		}
 		if r.RepairFired > 0 {
 			out <- Progress{Stage: "specialist", Detail: fmt.Sprintf("%s:repair fired=%d succeeded=%d", name, r.RepairFired, r.RepairSucceeded)}
 		}
@@ -641,16 +658,27 @@ func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconf
 		notify := func(attempt int, err error) {
 			out <- Progress{Stage: "pr-agent", Detail: fmt.Sprintf("%s:retry %d (%s)", name, attempt, retryReason(err))}
 		}
+		runWith := func(stageCfg *aiconfig.Config) SpecialistResult {
+			var r SpecialistResult
+			_ = stageWithRetry(ctx, stageCfg, "pr-agent "+name, notify, func(sctx context.Context) error {
+				stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "pr-agent "+name), perStageBudget(stageCfg))
+				defer cancel()
+				r = runPRAgent(stCtx, stageCfg, name, worktree, pr, diff, in)
+				if r.Err != nil {
+					return r.Err
+				}
+				return nil
+			})
+			return r
+		}
+		// Q7: PR agents honour the same per-stage routing / ensemble mode as
+		// the code specialists (see runSpecialistsPhase).
 		var r SpecialistResult
-		_ = stageWithRetry(ctx, runCfg, "pr-agent "+name, notify, func(sctx context.Context) error {
-			stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "pr-agent "+name), perStageBudget(runCfg))
-			defer cancel()
-			r = runPRAgent(stCtx, runCfg, name, worktree, pr, diff, in)
-			if r.Err != nil {
-				return r.Err
-			}
-			return nil
-		})
+		if models := runCfg.EnsembleModels(name); len(models) >= 2 {
+			r = runEnsemble(name, models, runCfg, runWith)
+		} else {
+			r = runWith(runCfg.ForStage(name))
+		}
 		if r.RepairFired > 0 {
 			out <- Progress{Stage: "pr-agent", Detail: fmt.Sprintf("%s:repair fired=%d succeeded=%d", name, r.RepairFired, r.RepairSucceeded)}
 		}

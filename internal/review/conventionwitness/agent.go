@@ -28,6 +28,11 @@ import (
 //go:embed prompts
 var promptFS embed.FS
 
+// witnessStageKey is the stage_models / ensemble key for the convention
+// witness (Q7). Kept local because this package cannot import internal/review
+// (which imports it); it must equal review.StageWitness.
+const witnessStageKey = "witness"
+
 // Verdict is the witness's classification of one finding.
 type Verdict string
 
@@ -104,6 +109,12 @@ func Run(ctx context.Context, cfg *aiconfig.Config, complete ai.CompleteFunc, wo
 	if complete == nil {
 		return Result{Err: fmt.Errorf("conventionwitness.Run: nil complete func")}
 	}
+	// Q7: route the witness to its own model when configured
+	// (stage_models["witness"] / "default"); a no-op clone when unrouted.
+	// Running the witness on a different model family than the specialist it
+	// audits decorrelates their hallucinations. Applied here so every caller
+	// (runner, evals) picks up witness routing uniformly.
+	cfg = cfg.ForStage(witnessStageKey)
 	system, err := loadPrompt()
 	if err != nil {
 		return Result{Err: err}

@@ -76,10 +76,38 @@ type Profile struct {
 	// per-Complete retry loop so the two tiers can't multiply. 0 uses the
 	// default (5).
 	RetryStageAttemptBudget int `json:"retry_stage_attempt_budget,omitempty"`
+
+	// StageModels routes individual review stages to different models (Q7).
+	// A key is a stage name and the value is the model id to run that stage
+	// with; the special key "default" applies to any stage lacking an explicit
+	// entry. Precedence (highest first): explicit stage entry → "default" →
+	// the profile's Model. A stage model overrides ONLY the model id — the
+	// profile's provider, base URL, and key are reused — so every stage model
+	// must be servable by this profile's provider. Recognized stage names are
+	// the specialists (formatting, design, testing, docs, security, tech), the
+	// PR agents (description, checks, discussion, scope), and the synthesis
+	// stages (arbiter, witness, vibe-coach); any user-defined specialist name
+	// works too. Empty/absent leaves every stage on the profile Model, which
+	// is byte-for-byte identical to the pre-Q7 single-model behavior.
+	StageModels map[string]string `json:"stage_models,omitempty"`
+	// Ensemble opts specific stages into multi-model mode (Q7): a stage listed
+	// here runs once per model in the slice and its findings are unioned with
+	// the cross-specialist dedupe, so two models' findings merge cleanly (e.g.
+	// run security on two models for decorrelated coverage). Each list needs at
+	// least two distinct, non-empty model ids and, like StageModels, every
+	// model reuses this profile's provider. A stage in Ensemble ignores its
+	// StageModels entry (the ensemble list wins). Empty/absent means no stage
+	// runs an ensemble — the default single-model behavior.
+	Ensemble map[string][]string `json:"ensemble,omitempty"`
 }
 
-// Clone returns a deep copy.
-func (p Profile) Clone() Profile { return p }
+// Clone returns a deep copy. The stage-routing maps (Q7) are copied so a
+// mutation of the clone can never write through to the original's maps.
+func (p Profile) Clone() Profile {
+	p.StageModels = cloneStringMap(p.StageModels)
+	p.Ensemble = cloneStringSliceMap(p.Ensemble)
+	return p
+}
 
 // Summary returns a short "provider · model" label for UI rows.
 func (p Profile) Summary() string {
@@ -124,6 +152,14 @@ type Config struct {
 	// not RetryMaxAttempts × stage-retry-attempts (~25 before). 0 uses the
 	// default (5); values are floored at 1 and capped at 30.
 	RetryStageAttemptBudget int `json:"retry_stage_attempt_budget,omitempty"`
+
+	// StageModels / Ensemble mirror the active profile's per-stage model
+	// routing (Q7) onto the flat config so the review runner — which reads the
+	// flat config — can resolve a stage's model without re-reading the profile.
+	// See Profile.StageModels / Profile.Ensemble and Config.ForStage /
+	// Config.EnsembleModels.
+	StageModels map[string]string   `json:"stage_models,omitempty"`
+	Ensemble    map[string][]string `json:"ensemble,omitempty"`
 
 	// Profiles is the on-disk list of named (provider, model, ...) presets.
 	// The active profile's fields are mirrored onto the top-level fields.
@@ -206,8 +242,12 @@ func (c *Config) Clone() *Config {
 	cp := *c
 	if c.Profiles != nil {
 		cp.Profiles = make([]Profile, len(c.Profiles))
-		copy(cp.Profiles, c.Profiles)
+		for i, p := range c.Profiles {
+			cp.Profiles[i] = p.Clone()
+		}
 	}
+	cp.StageModels = cloneStringMap(c.StageModels)
+	cp.Ensemble = cloneStringSliceMap(c.Ensemble)
 	if c.oneShot != nil {
 		cp.oneShot = make(map[overrideField]bool, len(c.oneShot))
 		for k, v := range c.oneShot {
@@ -258,6 +298,37 @@ func (c *Config) Merge(o *Config) {
 	if o.RetryStageAttemptBudget != 0 {
 		c.RetryStageAttemptBudget = o.RetryStageAttemptBudget
 	}
+	if len(o.StageModels) > 0 {
+		c.StageModels = cloneStringMap(o.StageModels)
+	}
+	if len(o.Ensemble) > 0 {
+		c.Ensemble = cloneStringSliceMap(o.Ensemble)
+	}
+}
+
+// cloneStringMap returns a shallow copy of m (nil-safe).
+func cloneStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
+// cloneStringSliceMap returns a deep copy of m, copying each value slice
+// (nil-safe).
+func cloneStringSliceMap(m map[string][]string) map[string][]string {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string][]string, len(m))
+	for k, v := range m {
+		cp[k] = append([]string(nil), v...)
+	}
+	return cp
 }
 
 // ParseProvider normalizes a user string to a Provider.
@@ -483,6 +554,8 @@ func (c *Config) snapshotProfile(name string) Profile {
 		RetryBaseMS:             c.RetryBaseMS,
 		RetryMaxMS:              c.RetryMaxMS,
 		RetryStageAttemptBudget: c.RetryStageAttemptBudget,
+		StageModels:             cloneStringMap(c.StageModels),
+		Ensemble:                cloneStringSliceMap(c.Ensemble),
 	}
 }
 
@@ -525,6 +598,8 @@ func (c *Config) applyActiveProfile() {
 	c.RetryBaseMS = p.RetryBaseMS
 	c.RetryMaxMS = p.RetryMaxMS
 	c.RetryStageAttemptBudget = p.RetryStageAttemptBudget
+	c.StageModels = cloneStringMap(p.StageModels)
+	c.Ensemble = cloneStringSliceMap(p.Ensemble)
 }
 
 // syncActiveProfileFromFlat copies the top-level fields back into the
@@ -837,6 +912,125 @@ func (c *Config) AIModelOrDefault() string {
 	return ""
 }
 
+// normalizeStageKey canonicalizes a stage name for case-insensitive,
+// whitespace-insensitive stage_models / ensemble lookups.
+func normalizeStageKey(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// lookupStageModel does a case-insensitive lookup of key in m, returning the
+// trimmed model id and true only when the entry exists and is non-empty.
+func lookupStageModel(m map[string]string, key string) (string, bool) {
+	for k, v := range m {
+		if normalizeStageKey(k) == key {
+			v = strings.TrimSpace(v)
+			return v, v != ""
+		}
+	}
+	return "", false
+}
+
+// stageModelOverride returns the routed model id for a stage per the Q7
+// precedence — explicit stage_models[stage] → stage_models["default"] — or ""
+// when no override applies (the caller then keeps the profile Model). It never
+// consults the profile Model itself; that fall-through is ForStage's job.
+func (c *Config) stageModelOverride(stage string) string {
+	if c == nil || len(c.StageModels) == 0 {
+		return ""
+	}
+	if m, ok := lookupStageModel(c.StageModels, normalizeStageKey(stage)); ok {
+		return m
+	}
+	if m, ok := lookupStageModel(c.StageModels, "default"); ok {
+		return m
+	}
+	return ""
+}
+
+// StageModel resolves the model id a stage should run with, applying the full
+// Q7 precedence: explicit stage_models[stage] → stage_models["default"] → the
+// profile Model. Returns "" only when no stage routing applies and the profile
+// itself has no explicit Model (the provider default then takes over, exactly
+// as before Q7).
+func (c *Config) StageModel(stage string) string {
+	if c == nil {
+		return ""
+	}
+	if m := c.stageModelOverride(stage); m != "" {
+		return m
+	}
+	return strings.TrimSpace(c.Model)
+}
+
+// ForStage returns the config a review stage should run with. When per-stage
+// routing selects a different model, it returns a clone with Model overridden;
+// when the stage keeps the profile Model (the common case, and ALWAYS the case
+// for a profile with no stage_models), it returns the receiver unchanged so
+// behavior is byte-for-byte identical to the pre-Q7 single-model path. The
+// provider, base URL, and key are never changed — a stage model is served by
+// the profile's own provider.
+func (c *Config) ForStage(stage string) *Config {
+	if c == nil {
+		return nil
+	}
+	m := c.stageModelOverride(stage)
+	if m == "" || m == strings.TrimSpace(c.Model) {
+		return c
+	}
+	cp := c.Clone()
+	cp.Model = m
+	return cp
+}
+
+// WithModel returns a clone of c whose Model is set to model, used to fan a
+// single stage out across an ensemble of models (Q7) without mutating the
+// shared run config. Returns the receiver unchanged when model is blank or
+// already the current Model (no allocation on the no-op path).
+func (c *Config) WithModel(model string) *Config {
+	if c == nil {
+		return nil
+	}
+	model = strings.TrimSpace(model)
+	if model == "" || model == strings.TrimSpace(c.Model) {
+		return c
+	}
+	cp := c.Clone()
+	cp.Model = model
+	return cp
+}
+
+// EnsembleModels returns the ordered, de-duplicated model ids the given stage
+// should run as an ensemble (Q7), or nil when the stage is not configured for
+// ensemble mode. Blank entries are dropped; a list that collapses to fewer
+// than two distinct models returns nil, because a single-model "ensemble" is
+// just the normal path.
+func (c *Config) EnsembleModels(stage string) []string {
+	if c == nil || len(c.Ensemble) == 0 {
+		return nil
+	}
+	key := normalizeStageKey(stage)
+	for k, v := range c.Ensemble {
+		if normalizeStageKey(k) != key {
+			continue
+		}
+		seen := make(map[string]bool, len(v))
+		out := make([]string, 0, len(v))
+		for _, m := range v {
+			m = strings.TrimSpace(m)
+			if m == "" || seen[m] {
+				continue
+			}
+			seen[m] = true
+			out = append(out, m)
+		}
+		if len(out) < 2 {
+			return nil
+		}
+		return out
+	}
+	return nil
+}
+
 // EffectiveAPIKey returns the API key to use for HTTP providers, resolving
 // secret indirection. It may be empty (typical for Ollama).
 //
@@ -950,6 +1144,9 @@ func (p Profile) ValidateForProvider() error {
 	if label == "" {
 		label = "(unnamed)"
 	}
+	if err := p.validateStageRouting(label); err != nil {
+		return err
+	}
 	prov := p.Provider
 	if strings.TrimSpace(string(prov)) == "" {
 		prov = ProviderClaude
@@ -989,6 +1186,43 @@ func (p Profile) ValidateForProvider() error {
 	return nil
 }
 
+// validateStageRouting checks the Q7 per-stage routing maps (stage_models /
+// ensemble) are structurally well-formed, returning an actionable error for a
+// malformed entry (R8 style). It does not verify that a stage name is a real
+// review stage — user-defined specialists add new stage names — only that keys
+// and model ids are non-empty and that each ensemble names at least two
+// distinct models.
+func (p Profile) validateStageRouting(label string) error {
+	for k, v := range p.StageModels {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("profile %q: stage_models has an entry with an empty stage name", label)
+		}
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("profile %q: stage_models[%q] has an empty model id", label, k)
+		}
+	}
+	for k, models := range p.Ensemble {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("profile %q: ensemble has an entry with an empty stage name", label)
+		}
+		seen := make(map[string]bool, len(models))
+		for _, m := range models {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				return fmt.Errorf("profile %q: ensemble[%q] has an empty model id", label, k)
+			}
+			if seen[m] {
+				return fmt.Errorf("profile %q: ensemble[%q] lists model %q more than once", label, k, m)
+			}
+			seen[m] = true
+		}
+		if len(seen) < 2 {
+			return fmt.Errorf("profile %q: ensemble[%q] needs at least two distinct models (got %d)", label, k, len(seen))
+		}
+	}
+	return nil
+}
+
 // ValidateForProvider validates the effective (active) settings a review will
 // actually use — the flat fields, which include any one-shot env/flag
 // overrides and the resolved key indirection. Call it at startup and before a
@@ -999,14 +1233,16 @@ func (c *Config) ValidateForProvider() error {
 		return nil
 	}
 	eff := Profile{
-		Name:       c.ActiveProfile,
-		Provider:   c.Provider,
-		BaseURL:    c.BaseURL,
-		Model:      c.Model,
-		APIKey:     c.APIKey,
-		APIKeyEnv:  c.APIKeyEnv,
-		APIKeyCmd:  c.APIKeyCmd,
-		TimeoutSec: c.TimeoutSec,
+		Name:        c.ActiveProfile,
+		Provider:    c.Provider,
+		BaseURL:     c.BaseURL,
+		Model:       c.Model,
+		APIKey:      c.APIKey,
+		APIKeyEnv:   c.APIKeyEnv,
+		APIKeyCmd:   c.APIKeyCmd,
+		TimeoutSec:  c.TimeoutSec,
+		StageModels: c.StageModels,
+		Ensemble:    c.Ensemble,
 	}
 	if strings.TrimSpace(eff.Name) == "" {
 		eff.Name = DefaultProfileName

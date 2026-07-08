@@ -539,6 +539,73 @@ Whenever the config is stringified for logs or debugging it goes through a
 redacting marshaller that masks key material (`****`); only the real `Save`
 path writes the actual key to disk (`0600`).
 
+### Per-stage model routing & ensembles
+
+A profile can run different review stages on different models — e.g. a cheap
+haiku-class model for `formatting`/`docs`/`witness` and an opus-class model for
+`security`/`design`/`arbiter` — so cost drops on the lanes that don't need the
+big model with no quality loss on the ones that do. Two optional profile fields
+drive it:
+
+| Profile field (`ai.json`) | Meaning |
+|---------------------------|---------|
+| `stage_models` | Map of *stage name* → *model id*. The special key `default` applies to any stage without its own entry. |
+| `ensemble` | Map of *stage name* → *list of model ids*. A listed stage runs once per model and the findings are unioned (with dedupe). |
+
+**Precedence for a stage's model (highest wins):**
+`stage_models["<stage>"]` › `stage_models["default"]` › the profile's `model`.
+A profile with **no** `stage_models` behaves exactly as before — every stage
+runs on the single profile `model`.
+
+A stage model overrides **only the model id**: the profile's provider, base URL,
+and key are reused, so every stage/ensemble model must be servable by this
+profile's provider. Recognized stage names are the code specialists
+(`formatting`, `design`, `testing`, `docs`, `security`, `tech`), the PR agents
+(`description`, `checks`, `discussion`, `scope`), and the synthesis stages
+(`arbiter`, `witness`, `vibe-coach`); a user-defined specialist's name works
+too.
+
+**Ensemble mode** (opt-in, off by default) runs a stage on two or more models
+and unions their findings through the same cross-specialist dedupe the pipeline
+already applies, so a finding both models report collapses to one while
+model-unique findings all survive — decorrelated coverage on a high-value lane
+like `security`. Each `ensemble` list needs at least two distinct model ids; a
+stage listed in `ensemble` ignores its `stage_models` entry (the ensemble list
+wins).
+
+**Witness decorrelation.** Setting `stage_models["witness"]` to a different
+model family than the specialists it audits decorrelates their hallucinations
+(the witness is less likely to rubber-stamp a mistake made by the same model).
+
+Example profile:
+
+```json
+{
+  "active_profile": "claude",
+  "profiles": [
+    {
+      "name": "claude",
+      "provider": "claude",
+      "model": "sonnet",
+      "stage_models": {
+        "default": "haiku",
+        "security": "opus",
+        "design": "opus",
+        "arbiter": "opus",
+        "witness": "haiku"
+      },
+      "ensemble": {
+        "security": ["opus", "sonnet"]
+      }
+    }
+  ]
+}
+```
+
+Malformed routing is rejected at startup / save with a clear message (empty
+stage name or model id, an `ensemble` list with fewer than two distinct models,
+or a duplicate model in an `ensemble`).
+
 ### CLI flags
 
 ```text
