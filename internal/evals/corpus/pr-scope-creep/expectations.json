@@ -1,0 +1,14 @@
+{
+  "must_appear": [
+    {
+      "specialist": "scope",
+      "path": "",
+      "pattern": "(?i)unrelated|split|scope|focused",
+      "note": "PR-wide scope-creep judgment"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": {
+    "scope": true
+  }
+}

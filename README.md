@@ -670,6 +670,38 @@ make lint        # golangci-lint run ./...
 `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` or
 `brew install golangci-lint`. The enabled linters live in `.golangci.yml`.
 
+### Evals (prompt-quality regression harness)
+
+`internal/evals` is the "quality flywheel": a fixture corpus of small PRs with
+golden expectations, run through the **real** review pipeline so prompt or gate
+changes can't regress behaviour unnoticed. It scores, per specialist,
+**precision / recall**, **suggestion-survival rate** (how many model
+suggestions clear the deterministic gates), **anchor-hit rate**,
+**JSON-parse-first-try rate**, and **token cost**, then writes a markdown
+report.
+
+```bash
+make evals PROVIDER=ollama                       # score against a live backend
+make evals PROVIDER=ollama OUT=report.md         # write the report to a file
+make evals EVAL_FLAGS=--replay                   # offline, deterministic (no model)
+```
+
+- **Provider selection** goes through the same `aiconfig` path as a normal run:
+  `PROVIDER=` sets `APPR_AI_SAL_AI_PROVIDER`, and `EVAL_FLAGS` passes
+  `--model` / `--base-url` / `--strictness` through verbatim. With no provider
+  configured the command **skips with exit 0** — it never depends on a live
+  model, so the nightly CI job (`.github/workflows/evals.yml`) is safe.
+- **`--replay`** runs entirely offline against each case's canned model output,
+  which is what the test suite and nightly CI use to exercise the gates +
+  scorer + report without a network.
+- **A/B two prompt sets** via the prompt-override mechanism:
+  `make evals PROVIDER=ollama EVAL_FLAGS="--prompts-a . --prompts-b ./experiments/v2"`
+  runs the corpus once under each config dir's `prompts/` overrides and prints
+  a per-metric delta report.
+
+The corpus format and how to add a case are documented in
+[`docs/EVALS.md`](docs/EVALS.md).
+
 ## Status
 
 Early MVP. Built for one user (the author) to validate the loop, then

@@ -1,0 +1,12 @@
+{
+  "summary": "A required CI check is failing on the new code.",
+  "findings": [
+    {
+      "path": "build/run.go",
+      "line": 3,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "The CI lint check is failing on this file; resolve the reported lint error before merge."
+    }
+  ]
+}

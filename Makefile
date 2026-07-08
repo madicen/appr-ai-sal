@@ -17,7 +17,7 @@ GIF_TARGETS := $(patsubst vhs/%.tape,gif-%,$(TAPES))
 # produce a file matching the target name — vhs writes to whatever
 # Output the tape names, not to a "gif-foo" file.
 .PHONY: build install run tidy fmt vet test test-race cover lint clean demo \
-        vhs-fixtures screenshots clean-screenshots
+        vhs-fixtures screenshots clean-screenshots evals
 
 build:
 	go build -o $(BINARY) $(PKG)
@@ -47,6 +47,23 @@ test-race:
 # cover — run the suite with coverage reporting (mirrors CI).
 cover:
 	go test -cover ./...
+
+# evals — Q4 prompt-quality regression harness. Runs the embedded corpus
+# through the REAL review pipeline against a pluggable provider and writes a
+# scored markdown report.
+#
+#   make evals PROVIDER=ollama                 # select a backend (via env)
+#   make evals PROVIDER=ollama OUT=report.md   # write the report to a file
+#   make evals PROVIDER=ollama EVAL_FLAGS="--model llama3.1 --strictness strict"
+#   make evals PROVIDER=ollama EVAL_FLAGS="--prompts-a . --prompts-b ./experiments/v2"
+#
+# With no PROVIDER configured the harness SKIPS with exit 0 (it never depends
+# on a live model), so the same target is safe to wire into CI. PROVIDER is
+# exported to the subprocess so aiconfig picks it up on its normal path;
+# EVAL_FLAGS are passed through verbatim.
+EVAL_FLAGS ?=
+evals:
+	PROVIDER=$(PROVIDER) go run $(PKG) evals $(if $(OUT),--out $(OUT),) $(EVAL_FLAGS)
 
 # lint — run golangci-lint over the module. Install it with:
 #   go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest

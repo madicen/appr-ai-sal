@@ -1,0 +1,14 @@
+{
+  "summary": "The bucket policy is missing standard tags.",
+  "findings": [
+    {
+      "path": "infra/main.tf",
+      "line": 4,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "This aws_s3_bucket_policy is missing tags; add tags = var.common_tags for cost allocation.",
+      "suggestion": "  bucket = aws_s3_bucket.b.id\n  tags   = var.common_tags",
+      "anchor_excerpt": "  bucket = aws_s3_bucket.b.id"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+diff --git a/blob/checksum.go b/blob/checksum.go
+new file mode 100644
+--- /dev/null
++++ b/blob/checksum.go
+@@ -0,0 +1,12 @@
++package blob
++
++import (
++	"crypto/md5"
++	"fmt"
++)
++
++func Checksum(data []byte) string {
++	h := md5.New()
++	h.Write(data)
++	return fmt.Sprintf("%x", h.Sum(nil))
++}

@@ -1,0 +1,15 @@
+{
+  "id": "pr-checks-failing",
+  "title": "Add build runner",
+  "target": "checks",
+  "repo": "acme/app",
+  "number": 110,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/build-run",
+  "body": "Adds Run for the build pipeline.",
+  "strictness": "balanced",
+  "additions": 5,
+  "changed_files": 1,
+  "run_pr_agents": true
+}

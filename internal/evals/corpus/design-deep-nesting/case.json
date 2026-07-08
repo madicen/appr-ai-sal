@@ -1,0 +1,14 @@
+{
+  "id": "design-deep-nesting",
+  "title": "Add Process aggregator",
+  "target": "design",
+  "repo": "acme/pipeline",
+  "number": 104,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/process",
+  "body": "Adds Process to sum a filtered subset.",
+  "strictness": "balanced",
+  "additions": 15,
+  "changed_files": 1
+}

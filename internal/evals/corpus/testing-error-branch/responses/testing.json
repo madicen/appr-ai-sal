@@ -1,0 +1,18 @@
+{
+  "summary": "The new error branch is untested.",
+  "findings": [
+    {
+      "path": "",
+      "line": 0,
+      "severity": "warning",
+      "comment": "Add a unit test for Divide covering the b == 0 branch, asserting it returns errBadInput and a zero quotient."
+    },
+    {
+      "path": "svc/divide.go",
+      "line": 5,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "The error branch here is missing tests."
+    }
+  ]
+}

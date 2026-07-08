@@ -1,0 +1,14 @@
+{
+  "must_appear": [],
+  "must_not_appear": [
+    {
+      "specialist": "tech",
+      "path": "infra/main.tf",
+      "pattern": "(?i)tags",
+      "note": "scar tissue: tags on aws_s3_bucket_policy — IaC schema gate must strip the suggestion and demote below the balanced floor"
+    }
+  ],
+  "expect_json_first_try": {
+    "tech": true
+  }
+}

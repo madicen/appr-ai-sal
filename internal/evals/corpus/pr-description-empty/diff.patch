@@ -1,0 +1,8 @@
+diff --git a/feature/new.go b/feature/new.go
+new file mode 100644
+--- /dev/null
++++ b/feature/new.go
+@@ -0,0 +1,3 @@
++package feature
++
++func New() {}

@@ -204,6 +204,14 @@ type SpecialistResult struct {
 	// observable. Never posted to GitHub.
 	RepairFired     int `json:"-"`
 	RepairSucceeded int `json:"-"`
+	// RawSuggestionAttempts is the number of inline findings the model
+	// emitted with a non-empty suggestion BEFORE the deterministic gates ran
+	// (validation/anchor/naming/IaC strip). It is captured only so the evals
+	// harness (internal/evals) can compute a suggestion-survival rate — how
+	// many of the model's proposed one-click fixes survived the gates — and
+	// an anchor-hit rate. Zero for the normal review path where it is unread.
+	// Never posted to GitHub.
+	RawSuggestionAttempts int `json:"-"`
 }
 
 // EffectiveOutcome resolves the stage's outcome robustly: an explicit Outcome

@@ -91,6 +91,7 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 	if parsed.Findings != nil {
 		floor := MinSeverityForStrictness(cfg.ReviewStrictness)
 		res.Findings = FilterFindingsBySeverity(parsed.Findings, floor)
+		res.RawSuggestionAttempts = countInlineSuggestionAttempts(res.Findings)
 		// Keep each PR agent in its lane before any anchor/suggestion work:
 		// description/scope are whole-PR judgments (force PR-wide) and the
 		// discussion agent may only anchor to an actual review thread. This

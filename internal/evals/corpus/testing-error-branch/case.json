@@ -1,0 +1,14 @@
+{
+  "id": "testing-error-branch",
+  "title": "Add Divide with error branch",
+  "target": "testing",
+  "repo": "acme/svc",
+  "number": 105,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/divide",
+  "body": "Adds Divide with a zero-divisor guard.",
+  "strictness": "balanced",
+  "additions": 8,
+  "changed_files": 1
+}

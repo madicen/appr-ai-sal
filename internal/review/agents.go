@@ -100,6 +100,10 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// hard.
 		floor := MinSeverityForStrictness(cfg.ReviewStrictness)
 		res.Findings = FilterFindingsBySeverity(parsed.Findings, floor)
+		// Capture the model's raw inline-suggestion count before any gate
+		// runs so the evals harness can measure suggestion survival. No-op
+		// for the normal path (the field is unread there).
+		res.RawSuggestionAttempts = countInlineSuggestionAttempts(res.Findings)
 		// Parse the diff once and share the result across every gate
 		// below — diffs can be megabytes for large PRs and re-parsing
 		// per validator adds up.

@@ -1,0 +1,15 @@
+{
+  "id": "pr-discussion-unresolved",
+  "title": "Add rate limiter",
+  "target": "discussion",
+  "repo": "acme/app",
+  "number": 111,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/ratelimit",
+  "body": "Adds a token-bucket rate limiter.",
+  "strictness": "balanced",
+  "additions": 3,
+  "changed_files": 1,
+  "run_pr_agents": true
+}

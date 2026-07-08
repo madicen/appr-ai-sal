@@ -1,0 +1,17 @@
+{
+  "expected_verdict": "request_changes",
+  "must_appear": [
+    {
+      "specialist": "security",
+      "path": "db/user.go",
+      "line": 9,
+      "line_tolerance": 1,
+      "pattern": "(?i)sql injection|parameteriz",
+      "note": "seeded SQL injection"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": {
+    "security": true
+  }
+}

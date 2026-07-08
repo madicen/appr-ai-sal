@@ -1,0 +1,12 @@
+{
+  "summary": "The aggregation is hard to read due to deep nesting.",
+  "findings": [
+    {
+      "path": "pipeline/process.go",
+      "line": 6,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "This introduces three levels of nested conditionals; the logic would be clearer with guard clauses that continue early to flatten the nesting."
+    }
+  ]
+}

@@ -21,6 +21,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/applog"
+	"github.com/madicen/appr-ai-sal/internal/evals"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
 	"github.com/madicen/appr-ai-sal/internal/theme"
@@ -41,6 +42,16 @@ func main() {
 	if len(os.Args) >= 2 && os.Args[1] == "repo-context" {
 		ctx := context.Background()
 		if err := review.RunRepoContextCLI(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+	// `evals` runs the prompt-quality regression harness (Q4). It is a
+	// developer/CI subcommand, not part of the interactive TUI flow.
+	if len(os.Args) >= 2 && os.Args[1] == "evals" {
+		ctx := context.Background()
+		if err := evals.RunCLI(ctx, os.Args[2:]); err != nil {
 			fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
 			os.Exit(1)
 		}

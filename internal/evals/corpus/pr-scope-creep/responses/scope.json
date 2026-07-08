@@ -1,0 +1,11 @@
+{
+  "summary": "The PR bundles two unrelated changes.",
+  "findings": [
+    {
+      "path": "",
+      "line": 0,
+      "severity": "warning",
+      "comment": "This PR mixes an unrelated redis dependency bump with the new cache feature; split the dependency upgrade into its own PR to keep the change focused and reviewable."
+    }
+  ]
+}

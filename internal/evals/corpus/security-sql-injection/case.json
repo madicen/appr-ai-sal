@@ -1,0 +1,15 @@
+{
+  "id": "security-sql-injection",
+  "title": "Add user lookup by name",
+  "target": "security",
+  "repo": "acme/api",
+  "number": 102,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/user-lookup",
+  "body": "Adds LookupUser for the admin panel.",
+  "strictness": "balanced",
+  "additions": 11,
+  "changed_files": 1,
+  "run_vibe_coach": true
+}

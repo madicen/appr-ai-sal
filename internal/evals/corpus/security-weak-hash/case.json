@@ -1,0 +1,14 @@
+{
+  "id": "security-weak-hash",
+  "title": "Add content checksum helper",
+  "target": "security",
+  "repo": "acme/uploader",
+  "number": 101,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/checksum",
+  "body": "Adds a Checksum helper for uploaded blobs.",
+  "strictness": "balanced",
+  "additions": 12,
+  "changed_files": 1
+}

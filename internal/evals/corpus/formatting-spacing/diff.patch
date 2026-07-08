@@ -1,0 +1,14 @@
+diff --git a/calc/compute.go b/calc/compute.go
+new file mode 100644
+--- /dev/null
++++ b/calc/compute.go
+@@ -0,0 +1,9 @@
++package calc
++
++func Compute(items []int) int {
++	total:=0
++	for _, v := range items {
++		total += v
++	}
++	return total
++}

@@ -1,0 +1,14 @@
+{
+  "id": "formatting-spacing",
+  "title": "Add Compute helper",
+  "target": "formatting",
+  "repo": "acme/calc",
+  "number": 103,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/compute",
+  "body": "Adds a small sum helper.",
+  "strictness": "balanced",
+  "additions": 9,
+  "changed_files": 1
+}

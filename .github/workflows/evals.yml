@@ -1,0 +1,79 @@
+name: Evals
+
+# Q4 prompt-quality regression harness (the "quality flywheel"). This runs the
+# embedded corpus through the REAL review pipeline and scores prompt behaviour
+# so prompt changes (Q3) don't land blind.
+#
+# It is intentionally SEPARATE from ci.yml and NEVER gates main: main CI must
+# not depend on a live model.
+#
+# The nightly run uses --replay: the deterministic offline provider that drives
+# the pipeline from the corpus's canned outputs, so it always produces a real
+# report artifact (catching corpus / gate / scorer regressions) WITHOUT a model
+# or network. `make evals` (no --replay) skips with exit 0 when no provider is
+# configured, so it is equally safe to run.
+#
+# To actually score against a live model, trigger it manually
+# (workflow_dispatch) and pass a provider — supply any API key via the
+# APPR_AI_SAL_AI_API_KEY repository secret. The report is uploaded as an
+# artifact either way.
+
+on:
+  schedule:
+    # Nightly at 07:00 UTC. Offline (--replay) so it never depends on a model.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "AI provider (claude|gemini|ollama|openai_compatible). Empty = skip."
+        required: false
+        default: ""
+      model:
+        description: "Model id for the selected provider."
+        required: false
+        default: ""
+      base_url:
+        description: "HTTP base URL for gemini/ollama/openai_compatible."
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  evals:
+    name: run evals
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Manual dispatch with a provider scores against a live model; the
+      # scheduled (or provider-less) run falls back to the offline --replay
+      # provider so it always produces a report without a model.
+      - name: Run evals
+        env:
+          # Provider selection flows through aiconfig's normal env path.
+          PROVIDER: ${{ github.event.inputs.provider }}
+          APPR_AI_SAL_AI_MODEL: ${{ github.event.inputs.model }}
+          APPR_AI_SAL_AI_BASE_URL: ${{ github.event.inputs.base_url }}
+          APPR_AI_SAL_AI_API_KEY: ${{ secrets.APPR_AI_SAL_AI_API_KEY }}
+        run: |
+          if [ -n "${{ github.event.inputs.provider }}" ]; then
+            make evals OUT=eval-report.md
+          else
+            make evals OUT=eval-report.md EVAL_FLAGS=--replay
+          fi
+
+      - name: Upload report
+        if: always() && hashFiles('eval-report.md') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report
+          path: eval-report.md
