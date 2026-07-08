@@ -21,6 +21,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/applog"
+	"github.com/madicen/appr-ai-sal/internal/cli"
 	"github.com/madicen/appr-ai-sal/internal/evals"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
@@ -34,43 +35,63 @@ import (
 var version = "dev"
 
 func main() {
-	// Bare `version` subcommand (mirrors the repo-context subcommand sniff).
-	if len(os.Args) >= 2 && os.Args[1] == "version" {
-		fmt.Println(version)
-		return
-	}
-	if len(os.Args) >= 2 && os.Args[1] == "repo-context" {
-		ctx := context.Background()
-		if err := review.RunRepoContextCLI(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
-			os.Exit(1)
+	os.Exit(dispatch(os.Args[1:]))
+}
+
+// dispatch routes the first CLI argument to a subcommand, defaulting to the
+// interactive TUI when no (recognized) subcommand is given. It unifies what
+// used to be a stack of ad-hoc `os.Args[1] == "…"` sniffs into one table so
+// the entry points are enumerable in one place, and it is the single seam
+// where the headless `review` command (U1) hangs off. It returns the process
+// exit code.
+//
+// Backward compatibility: `appr-ai-sal` with no arguments — and any invocation
+// whose first argument is a flag (e.g. `-version`, `--demo`) rather than a
+// subcommand word — still launches the TUI exactly as before.
+func dispatch(args []string) int {
+	if len(args) >= 1 {
+		switch args[0] {
+		case "version":
+			// Bare `version` word (the -version flag is handled in run()).
+			fmt.Println(version)
+			return 0
+		case "review":
+			// Headless, CI-ready review (U1). Lives in internal/cli, which
+			// imports no bubbletea, and owns its own exit-code scheme.
+			return cli.RunReview(context.Background(), args[1:], os.Stdout, os.Stderr)
+		case "repo-context":
+			return runErrSubcommand(func(ctx context.Context) error {
+				return review.RunRepoContextCLI(ctx, args[1:])
+			})
+		case "memory":
+			// B1: inspect / clear the per-repo reviewer-memory store.
+			return runErrSubcommand(func(ctx context.Context) error {
+				return review.RunMemoryCLI(ctx, args[1:])
+			})
+		case "evals":
+			// Q4: prompt-quality regression harness (developer/CI subcommand).
+			return runErrSubcommand(func(ctx context.Context) error {
+				return evals.RunCLI(ctx, args[1:])
+			})
 		}
-		return
 	}
-	// `memory` inspects / clears the per-repo reviewer-memory store (B1). It
-	// is a maintenance subcommand, not part of the interactive TUI flow.
-	if len(os.Args) >= 2 && os.Args[1] == "memory" {
-		ctx := context.Background()
-		if err := review.RunMemoryCLI(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-	// `evals` runs the prompt-quality regression harness (Q4). It is a
-	// developer/CI subcommand, not part of the interactive TUI flow.
-	if len(os.Args) >= 2 && os.Args[1] == "evals" {
-		ctx := context.Background()
-		if err := evals.RunCLI(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
+	// Default: launch the interactive TUI (the historical no-subcommand path).
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+// runErrSubcommand adapts the error-returning maintenance subcommands
+// (repo-context, memory, evals) to dispatch's exit-code contract: print the
+// error to stderr and exit 1 on failure, 0 on success.
+func runErrSubcommand(fn func(context.Context) error) int {
+	if err := fn(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func run() error {

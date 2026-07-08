@@ -613,6 +613,127 @@ The reply itself uses the GraphQL `addPullRequestReviewThreadReply` mutation in
 the gh layer (`gh.ReplyToReviewThread`), reusing the thread node id already
 fetched with the review threads (no extra round-trip).
 
+## Headless mode (CI)
+
+Running `appr-ai-sal` with no subcommand launches the interactive TUI. For CI
+and scripting there is a non-interactive `review` subcommand that runs the same
+review pipeline and streams machine-readable output — it imports **no** TUI/
+bubbletea code, so it works in a headless container.
+
+```bash
+appr-ai-sal review owner/repo#123 --json [--post] [--dry-run] [--fail-on request_changes]
+```
+
+**Output contract** (so it pipes cleanly into `jq`):
+
+- **stderr** gets the run **progress as NDJSON** — one JSON object per line, one
+  per pipeline event (`{"stage":"specialist","specialist":"security"}`,
+  `{"stage":"usage","usage":{…}}`, `{"stage":"done"}`, …). Fatal stage errors
+  also appear here (`{"stage":"fetch-pr","error":"…"}`).
+- **stdout** gets **only the final result**: a single JSON object with `--json`,
+  or a short human summary without it. Nothing else is written to stdout, so
+  `appr-ai-sal review … --json | jq .verdict` works.
+
+The stdout JSON shape:
+
+```jsonc
+{
+  "ref": "owner/repo#123",
+  "verdict": "request_changes",          // reconciled verdict (what gets posted)
+  "effective_verdict": "request_changes", // raw effective verdict before reconciliation
+  "post_event": "REQUEST_CHANGES",        // APPROVE | COMMENT | REQUEST_CHANGES
+  "summary": "…vibe-coach summary…",
+  "body": "…full rendered review markdown…",
+  "findings": [
+    {"specialist":"security","path":"a.go","line":10,"severity":"error","comment":"…","inline":true}
+  ],
+  "degraded": ["testing"],                // stages that failed/were skipped (omitted when none)
+  "usage": {"calls":14,"input_tokens":182000,"output_tokens":21000,"cost_usd":0.43,"cost_known":true,"wall_clock_ms":372000},
+  "post": {"dry_run":false,"event":"REQUEST_CHANGES","posted_comments":2,"posted_replies":1,"posted_body":true,"failed":0}
+}
+```
+
+**Flags**
+
+| Flag | Meaning |
+|------|---------|
+| `--json` | Emit the final result as JSON on stdout (else a short summary). NDJSON progress always goes to stderr. |
+| `--post` | Post the review to GitHub. Thread-aware: a finding on an existing unresolved thread's anchor replies in-thread (B3) instead of duplicating a comment; everything else posts top-level, then a body-only review carries the verdict. Runs the same head-drift pre-flight and self-author verdict downgrade as the TUI. |
+| `--dry-run` | Print the payloads that **would** be posted (as previews in the `post.previews` array / summary) without posting. Mutually exclusive with `--post`. |
+| `--fail-on <verdict>` | Exit non-zero when the review's verdict is **at or over** this threshold: `approve` < `comment` < `request_changes`. For CI gating. |
+| `--profile <name>` | AI config profile to use (also `APPR_AI_SAL_PROFILE`). |
+| `--ai-provider` / `--ai-base-url` / `--ai-model` / `--ai-api-key` / `--review-strictness` / `--ai-timeout-sec` | Same one-shot config overrides as the TUI (see [AI configuration](#ai-configuration)). |
+
+**Exit codes** (CI can tell a gated review apart from a broken tool):
+
+| Code | Meaning |
+|------|---------|
+| `0` | Review ran; verdict under `--fail-on` (or no threshold). Also success for `--post` / `--dry-run`. |
+| `1` | Review ran cleanly but its verdict is **at/over** `--fail-on` — the gate should fail the PR. |
+| `2` | Usage error (bad flags/arguments). |
+| `3` | Config validation error (the active AI profile isn't validly configured). |
+| `4` | Operational error (gh auth, review run, head drift, or a post failure). |
+
+The AI profile is validated up front (`ValidateForProvider`): unlike the TUI,
+which just warns, a misconfigured profile is a hard `exit 3` since a headless
+run can't open the settings tab.
+
+### GitHub Actions recipe
+
+Gate PRs on the review's verdict. This uses a self-hosted-friendly setup with an
+OpenAI-compatible / Gemini backend (no `claude` CLI needed); swap the provider
+env for your backend.
+
+```yaml
+# .github/workflows/ai-review.yml
+name: AI review
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write   # needed only when using --post
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install gh
+        run: |
+          type gh >/dev/null 2>&1 || (sudo apt-get update && sudo apt-get install -y gh)
+
+      - name: Install appr-ai-sal
+        run: go install github.com/madicen/appr-ai-sal/cmd/appr-ai-sal@latest
+
+      - name: Run headless review
+        env:
+          GH_TOKEN: ${{ github.token }}                 # gh auth
+          APPR_AI_SAL_AI_PROVIDER: openai_compatible
+          APPR_AI_SAL_AI_BASE_URL: https://api.openai.com/v1
+          APPR_AI_SAL_AI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          APPR_AI_SAL_AI_MODEL: gpt-4o
+        run: |
+          REF="${{ github.repository }}#${{ github.event.pull_request.number }}"
+          appr-ai-sal review "$REF" --json --post --fail-on request_changes \
+            > review.json 2> progress.ndjson
+          # exit 1 here fails the job when the verdict is request_changes.
+
+      - name: Summarize
+        if: always()
+        run: |
+          jq -r '"Verdict: \(.verdict)  ·  findings: \(.findings | length)"' review.json || true
+```
+
+Notes:
+
+- Drop `--post` (and the `pull-requests: write` permission) for a **report-only**
+  gate that never comments — the job still fails on `--fail-on`.
+- Use `--dry-run` to preview payloads in logs without posting.
+- `progress.ndjson` is a clean per-line event log you can upload as an artifact.
+
 ## AI configuration
 
 Resolution order: **CLI flags** (`-ai-*`) **>** environment variables **>**
