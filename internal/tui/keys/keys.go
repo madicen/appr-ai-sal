@@ -67,6 +67,12 @@ type Map struct {
 	DetailTech           key.Binding // ctrl+t — tech experts for this PR
 	DetailHalfDown       key.Binding // ctrl+d — half page down (diff)
 	DetailHalfUp         key.Binding // ctrl+u — half page up (diff)
+	DetailDiffNext       key.Binding // n — jump to next finding tag / search match (item 4)
+	DetailDiffPrev       key.Binding // p — jump to prev finding tag / search match (item 4)
+	DetailDiffFind       key.Binding // / — search the diff text (item 4)
+	DetailThreads        key.Binding // t — toggle existing review threads in the diff (item 8)
+	DetailReviewHistory  key.Binding // H — open the review-history pane (item 8)
+	DetailThreadReply    key.Binding // r — reply to the selected thread (history pane, item 8)
 
 	// Shared navigation-to-tab bindings (identical keys in list + detail;
 	// the handlers pick behaviour appropriate to the screen).
@@ -94,6 +100,9 @@ type Map struct {
 	ReviewEditor    key.Binding // E — edit the finding comment in $EDITOR (item 2)
 	ReviewCopyFind  key.Binding // ctrl+y — copy the finding (item 9)
 	ReviewCopyHunk  key.Binding // ctrl+o — copy the finding's hunk (item 9)
+	ReviewSort      key.Binding // S — cycle the card sort mode (item 5)
+	ReviewFilter    key.Binding // f — cycle the severity floor filter (item 5)
+	ReviewJumpDiff  key.Binding // J — jump the diff pane to this finding (item 4)
 	ReviewTabs      key.Binding // tab/[ ] — switch overlay tabs
 	ReviewClose     key.Binding // esc/q — close the overlay
 }
@@ -149,6 +158,12 @@ func Default() Map {
 		DetailTech:           b("ctrl+t", "tech experts", "ctrl+t"),
 		DetailHalfDown:       b("ctrl+d", "half page down", "ctrl+d"),
 		DetailHalfUp:         b("ctrl+u", "half page up", "ctrl+u"),
+		DetailDiffNext:       b("n", "next finding/match", "n"),
+		DetailDiffPrev:       b("p", "prev finding/match", "p"),
+		DetailDiffFind:       b("/", "search diff", "/"),
+		DetailThreads:        b("t", "toggle threads", "t"),
+		DetailReviewHistory:  b("H", "review history", "H"),
+		DetailThreadReply:    b("r", "reply to thread", "r"),
 
 		// Shared navigation.
 		SettingsAI:     b("o/,", "settings", "o"),
@@ -173,6 +188,9 @@ func Default() Map {
 		ReviewEditor:    b("E", "edit in $EDITOR", "E"),
 		ReviewCopyFind:  b("ctrl+y", "copy finding", "ctrl+y"),
 		ReviewCopyHunk:  b("ctrl+o", "copy hunk", "ctrl+o"),
+		ReviewSort:      b("S", "sort findings", "S"),
+		ReviewFilter:    b("f", "filter severity", "f"),
+		ReviewJumpDiff:  b("J", "jump to diff", "J"),
 		ReviewTabs:      b("tab/[ ]", "switch tabs", "tab", "[", "]"),
 		ReviewClose:     b("esc", "close", "esc", "q"),
 	}
@@ -214,12 +232,14 @@ func (m Map) Sections() []Section {
 			m.DetailNav, m.DetailCyclePane, m.DetailFold, m.DetailReview,
 			m.DetailToggleControls, m.DetailReopenApproval, m.DetailDescription,
 			m.DetailDiffOnly, m.DetailBulk, m.DetailHalfDown, m.DetailHalfUp,
-			m.CopyURL, m.Browser, m.SettingsAI, m.RepoCtx, m.RepoAgents,
-			m.LangAgents, m.DetailTech, m.BuildAgents, m.DetailBack,
+			m.DetailDiffNext, m.DetailDiffPrev, m.DetailDiffFind, m.DetailThreads,
+			m.DetailReviewHistory, m.DetailThreadReply, m.CopyURL, m.Browser, m.SettingsAI, m.RepoCtx,
+			m.RepoAgents, m.LangAgents, m.DetailTech, m.BuildAgents, m.DetailBack,
 		}},
 		{Title: "Review overlay", Bindings: []key.Binding{
 			m.ReviewPost, m.ReviewSkip, m.ReviewResurface, m.ReviewChallenge,
 			m.ReviewEdit, m.ReviewEditor, m.ReviewCopyFind, m.ReviewCopyHunk,
+			m.ReviewSort, m.ReviewFilter, m.ReviewJumpDiff,
 			m.ReviewNext, m.ReviewPrev, m.ReviewRefresh, m.ReviewFileLevel,
 			m.ReviewTabs, m.ReviewClose,
 		}},

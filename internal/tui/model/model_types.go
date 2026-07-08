@@ -15,6 +15,7 @@ import (
 	langagentsstore "github.com/madicen/appr-ai-sal/internal/review/langagents"
 	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/commands"
+	"github.com/madicen/appr-ai-sal/internal/tui/diffview"
 	"github.com/madicen/appr-ai-sal/internal/tui/keys"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
 	reviewtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/review"
@@ -230,6 +231,20 @@ type Model struct {
 	diffView     viewport.Model
 	controlsView viewport.Model
 
+	// Phase 5 item 4 (diff upgrades). hl syntax-highlights the diff pane
+	// (chroma, lazily built, NO_COLOR-aware). diffAnchors indexes the rendered
+	// rows carrying an inline finding tag for n/p jumping; diffSearch indexes
+	// rows matching the active in-diff search; diffSearchQuery / diffSearchInput
+	// / diffSearching drive the `/` search prompt. All are recomputed whenever
+	// the diff content is rebuilt (refreshDetailViews).
+	hl               *diffview.Highlighter
+	diffAnchors      diffview.AnchorIndex
+	diffSearch       diffview.SearchIndex
+	diffSearchQuery  string
+	diffSearching    bool
+	diffSearchInput  textinput.Model
+	diffContentLines []string // full wrapped diff-pane rows (for nav/search/jump)
+
 	// treePaneWidth / controlsPaneWidth are the user-adjustable inner
 	// widths for the left and right panes of the PR detail body. Seeded
 	// from defaultTreePaneWidth / defaultControlsPaneWidth in New() and
@@ -283,6 +298,23 @@ type Model struct {
 	discussionErr     error
 
 	urlInput textinput.Model
+
+	// Phase 5 item 8 (thread browsing). prComments / prThreads are the PR's
+	// existing inline review comments + threads (fetched once, lazily, on the
+	// first `t`/`H` press). showThreads toggles rendering them inline in the
+	// diff; threadsLoaded / threadsLoading gate the fetch. historyCursor is the
+	// selected thread in the review-history pane; replyInput / replyingTo drive
+	// the in-pane reply prompt (item 8.3, replies via data.ReplyToThreadCmd →
+	// Backend.ReplyToThread / gh.ReplyToReviewThread).
+	prComments     []gh.PullReviewComment
+	prThreads      []gh.ReviewThread
+	showThreads    bool
+	threadsLoaded  bool
+	threadsLoading bool
+	historyCursor  int
+	replyInput     textinput.Model
+	replyingTo     string // thread ID currently being replied to; "" when idle
+	replyStatus    string // transient status after a reply attempt
 
 	spinner    spinner.Model
 	progressCh <-chan review.Progress

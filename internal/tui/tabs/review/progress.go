@@ -15,6 +15,15 @@ import (
 // the user is done (or chose to abort). Root then pops the stack.
 type CloseMsg struct{}
 
+// JumpToDiffMsg asks the root model to scroll the PR-detail diff pane to a
+// finding's anchor (Phase 5 item 4 "jump from an approval card to its diff
+// position"). The root minimizes the review overlay so the diff is visible and
+// calls JumpToFinding(Path, Line).
+type JumpToDiffMsg struct {
+	Path string
+	Line int
+}
+
 // ChromeTitleFallback is the static tab title the bubble-overlay stack
 // renders when our OverlayTitle() method returns "" (which it never does
 // in practice — it always reports a phase-specific label). Lives on the

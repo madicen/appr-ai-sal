@@ -331,6 +331,26 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reviewOverlayMinimizeRequestMsg:
 		return m, m.minimizeReviewOverlay()
 
+	case reviewtab.JumpToDiffMsg:
+		// Phase 5 item 4: a review card asked to jump the detail diff pane to
+		// its finding. Minimize the overlay so the diff is visible, then scroll.
+		cmd := m.minimizeReviewOverlay()
+		if m.mode == modeDetail {
+			m.JumpToFinding(msg.Path, msg.Line)
+		}
+		return m, cmd
+
+	case data.ThreadsLoadedMsg:
+		// Phase 5 item 8: existing inline comments + threads for the detail
+		// thread-browsing UI arrived.
+		m.applyThreadsLoaded(msg)
+		return m, nil
+
+	case data.ThreadReplyPostedMsg:
+		// Phase 5 item 8.3: a review-history thread reply completed.
+		m.applyThreadReply(msg)
+		return m, nil
+
 	case state.NavigateMsg:
 		return m.handleNavigate(msg.Target)
 

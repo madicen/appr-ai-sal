@@ -18,6 +18,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review"
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
+	"github.com/madicen/appr-ai-sal/internal/tui/diffview"
 	"github.com/madicen/appr-ai-sal/internal/tui/overlays"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	reviewtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/review"
@@ -391,11 +392,46 @@ func (m *Model) copyCurrentPRURLCmd() tea.Cmd {
 }
 
 func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Phase 5 item 8: while the review-history reply prompt is open it owns
+	// every keystroke (the reply field must receive them all).
+	if m.replyingTo != "" {
+		return m.handleReplyKey(msg)
+	}
+	// Phase 5 item 4: while the in-diff search prompt is open it owns every
+	// keystroke (the query field must receive them all) — route before any of
+	// the normal detail bindings can steal a key.
+	if m.diffSearching {
+		return m.handleDiffSearchKey(msg)
+	}
+	// Phase 5 item 8: the review-history pane owns j/k/r/esc while it's shown.
+	if m.centerView == centerHistory && m.focusedPane == paneDiff {
+		if cmd, handled := m.handleHistoryKey(msg); handled {
+			return m, cmd
+		}
+	}
 	// Match against the central keymap (m.keys). Space / enter deliberately
 	// do NOT return in every branch: when the focused pane isn't the tree
 	// they fall out of the switch to the viewport page-scroll below, exactly
 	// as the pre-migration raw-string switch did.
 	km := m.keys
+	// Phase 5 item 4/8 diff-pane bindings. Only active when the diff pane is
+	// focused and showing the diff so n/p/`/`/t don't shadow other panes.
+	if m.focusedPane == paneDiff && (m.diffOnly || m.centerView == centerDiff) {
+		switch {
+		case key.Matches(msg, km.DetailDiffFind):
+			return m, m.beginDiffSearch()
+		case key.Matches(msg, km.DetailDiffNext):
+			m.jumpDiffForward()
+			return m, nil
+		case key.Matches(msg, km.DetailDiffPrev):
+			m.jumpDiffBackward()
+			return m, nil
+		case key.Matches(msg, km.DetailThreads):
+			return m, m.toggleThreads()
+		case key.Matches(msg, km.DetailReviewHistory):
+			return m, m.openReviewHistory()
+		}
+	}
 	switch {
 	case key.Matches(msg, km.DetailBack):
 		m.detailBackToList()
@@ -1014,14 +1050,37 @@ func (m *Model) refreshDetailViews() {
 		centerContent = renderChecksPane(m.checks, m.checksLoading, m.checksErr, m.diffView.Width)
 	case centerDiscussion:
 		centerContent = renderDiscussionPane(m.discussion, m.discussionLoading, m.discussionErr, m.diffView.Width)
+	case centerHistory:
+		centerContent = m.renderHistoryPane(m.diffView.Width)
 	default:
 		var selFile *review.FileDiff
 		if m.selectedFilePath != "" {
 			selFile = review.FindFile(m.parsedDiff, m.selectedFilePath)
 		}
-		centerContent = renderDiffPane(selFile, m.draft, m.focusedPane == paneDiff, m.diffView.Width)
+		var comments []gh.PullReviewComment
+		if m.showThreads {
+			comments = m.prComments
+		}
+		centerContent = renderDiffPaneHL(selFile, m.draft, m.focusedPane == paneDiff, m.diffView.Width, m.highlighter(), comments)
 	}
-	m.diffView.SetContent(util.WrapForViewport(centerContent, m.diffView.Width))
+	wrapped := util.WrapForViewport(centerContent, m.diffView.Width)
+	m.diffView.SetContent(wrapped)
+	// Phase 5 item 4: rebuild the diff navigation indexes from the finished,
+	// wrapped content so n/p (finding tags) and `/` (search) target the right
+	// rows regardless of how lines wrapped. Only meaningful on the diff view.
+	if view == centerDiff {
+		m.diffContentLines = strings.Split(wrapped, "\n")
+		m.diffAnchors = diffview.BuildAnchorIndex(diffAnchorRows(m.diffContentLines))
+		if m.diffSearchQuery != "" {
+			m.diffSearch = diffview.BuildSearchIndex(m.diffContentLines, m.diffSearchQuery)
+		} else {
+			m.diffSearch = diffview.SearchIndex{}
+		}
+	} else {
+		m.diffContentLines = nil
+		m.diffAnchors = diffview.AnchorIndex{}
+		m.diffSearch = diffview.SearchIndex{}
+	}
 
 	// Tree pane: do not run util.WrapForViewport here — renderTreePane already fits
 	// each row to contentCols; wrapping would split bubblezone row markers across
@@ -1204,6 +1263,9 @@ func focusHint(p, focused pane) string {
 }
 
 func (m *Model) diffPaneTitle() string {
+	if m.centerView == centerHistory {
+		return "Review history · esc back"
+	}
 	if m.selectedFilePath == "" {
 		return "Diff"
 	}

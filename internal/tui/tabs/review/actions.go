@@ -175,16 +175,17 @@ func (m *Model) syncUserSkipsToDraft() {
 // running off the end of a flat finding list. Returns nil (no phase
 // transition).
 func (m *Model) advanceCard() tea.Cmd {
-	idxs := m.agentCardIndices(m.activeAgent())
-	// Next pending card after the current one.
-	for _, gi := range idxs {
-		if gi > m.idx && m.cards[gi].state == cardPending {
-			m.idx = gi
+	idxs := m.agentCardOrder(m.activeAgent())
+	cur := positionOf(idxs, m.idx)
+	// Next pending card after the current position (in the triaged order).
+	for p := cur + 1; p < len(idxs); p++ {
+		if m.cards[idxs[p]].state == cardPending {
+			m.idx = idxs[p]
 			m.vp.GotoTop()
 			return nil
 		}
 	}
-	// Wrap: first pending card anywhere in this agent.
+	// Wrap: first pending card anywhere in this agent's triaged order.
 	for _, gi := range idxs {
 		if m.cards[gi].state == cardPending {
 			m.idx = gi
@@ -453,7 +454,7 @@ func (m *Model) actSkipCurrent() (tea.Model, tea.Cmd) {
 
 // actNext / actPrev move the focused finding within the active agent tab.
 func (m *Model) actNext() (tea.Model, tea.Cmd) {
-	idxs := m.agentCardIndices(m.activeAgent())
+	idxs := m.agentCardOrder(m.activeAgent())
 	pos := positionOf(idxs, m.idx)
 	if pos >= 0 && pos < len(idxs)-1 {
 		m.idx = idxs[pos+1]
@@ -465,7 +466,7 @@ func (m *Model) actNext() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) actPrev() (tea.Model, tea.Cmd) {
-	idxs := m.agentCardIndices(m.activeAgent())
+	idxs := m.agentCardOrder(m.activeAgent())
 	pos := positionOf(idxs, m.idx)
 	if pos > 0 {
 		m.idx = idxs[pos-1]

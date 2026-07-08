@@ -9,7 +9,9 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
 
+	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/theme"
+	"github.com/madicen/appr-ai-sal/internal/tui/diffview"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 
@@ -40,6 +42,11 @@ const (
 	centerDescription
 	centerChecks
 	centerDiscussion
+	// centerHistory (Phase 5 item 8) shows the browsable review-history pane:
+	// the PR's existing inline review threads/comments, with a cursor and an
+	// in-pane reply prompt. It has no overview-selector row — it's reached via
+	// the `H` shortcut from the diff pane.
+	centerHistory
 )
 
 // overviewItemKind is the semantic tag for one row in the PR-overview
@@ -567,10 +574,24 @@ func renderTreeViewRow(vr treeViewRow, fileRows []treeRow, collapsed map[string]
 // Below the threshold the gutter is dropped so the diff stays readable
 // on narrow terminals.
 func renderDiffPane(file *review.FileDiff, draft *review.Draft, focused bool, contentCols int) string {
+	return renderDiffPaneHL(file, draft, focused, contentCols, nil, nil)
+}
+
+// renderDiffPaneHL is renderDiffPane with an optional chroma highlighter
+// (Phase 5 item 4) and optional existing-comment annotations (Phase 5 item 8).
+// When hl is active, each diff line's body is syntax-highlighted (or word-level
+// emphasised for in-place edits) and the row is drawn without the add/del
+// background tint (renderHunkLineHighlighted); a nil / inactive highlighter
+// reproduces the original tinted, plain-text render exactly. comments, when
+// non-nil, are rendered as inline "prior comment" annotations at their anchor
+// lines alongside the AI finding tags.
+func renderDiffPaneHL(file *review.FileDiff, draft *review.Draft, focused bool, contentCols int, hl *diffview.Highlighter, comments []gh.PullReviewComment) string {
 	contentCols = max(8, contentCols)
 	if file == nil {
 		return styles.DimStyle.Render("Select a file in the tree (j/k or click) to see its diff.")
 	}
+	highlight := hl.Active() && !file.IsBinary
+	commentsByLine := existingCommentsByLine(comments, file.Path)
 	var b strings.Builder
 	header := fmt.Sprintf("%s  %s/%s",
 		styles.BoldStyle.Render(file.Path),
@@ -619,12 +640,27 @@ func renderDiffPane(file *review.FileDiff, draft *review.Draft, focused bool, co
 			hunkPrefix = strings.Repeat(" ", diffGutterWidth)
 		}
 		b.WriteString(hunkPrefix + styles.DimStyle.Render(h.Header) + "\n")
-		for _, ln := range h.Lines {
-			lineStr := renderHunkLine(ln, contentCols, useGutter)
+		var wordSegs [][]diffview.Seg
+		if highlight {
+			wordSegs = wordDiffForHunk(h.Lines)
+		}
+		for li, ln := range h.Lines {
+			var lineStr string
+			if highlight {
+				body := diffBodyStyled(file.Path, ln, wordSegs[li], hl)
+				lineStr = renderHunkLineHighlighted(ln, body, contentCols, useGutter)
+			} else {
+				lineStr = renderHunkLine(ln, contentCols, useGutter)
+			}
 			b.WriteString(lineStr + "\n")
 			if tags, ok := findingsByLine[ln.NewNo]; ok && ln.Kind != review.DiffRemoved {
 				for _, t := range tags {
 					b.WriteString(renderInlineFindingTag(t, contentCols) + "\n")
+				}
+			}
+			if cmts, ok := commentsByLine[ln.NewNo]; ok && ln.Kind != review.DiffRemoved {
+				for _, c := range cmts {
+					b.WriteString(renderInlineCommentTag(c, contentCols) + "\n")
 				}
 			}
 		}
@@ -705,8 +741,15 @@ var (
 //	deletion (DiffRemoved): "%4d│     " — right blank
 //	no-newline / unknown:   10 spaces
 func formatGutter(ln review.DiffLine) string {
-	const blankNum = "    "
 	bg := rowBgStyle(ln.Kind)
+	return styles.DimStyle.Inherit(bg).Render(gutterText(ln))
+}
+
+// gutterText builds the plain (unstyled) 10-cell "old│new" gutter content for
+// one diff line. Callers wrap it in whatever style (with or without a row bg)
+// they need. Width sanity: left + "│" + right + " " = 4 + 1 + 4 + 1 = 10 cells.
+func gutterText(ln review.DiffLine) string {
+	const blankNum = "    "
 	left, right := blankNum, blankNum
 	switch ln.Kind {
 	case review.DiffContext:
@@ -726,10 +769,9 @@ func formatGutter(ln review.DiffLine) string {
 		}
 	default:
 		// DiffNoNewline (rare) and any future kinds: blank gutter.
-		return styles.DimStyle.Inherit(bg).Render(diffGutterBlank)
+		return diffGutterBlank
 	}
-	// Width sanity: left + "│" + right + " " = 4 + 1 + 4 + 1 = 10 cells.
-	return styles.DimStyle.Inherit(bg).Render(left + "\u2502" + right + " ")
+	return left + "\u2502" + right + " "
 }
 
 // pickGlyph returns the per-kind two-cell prefix that follows the gutter,
@@ -821,6 +863,54 @@ func renderHunkLine(ln review.DiffLine, contentCols int, useGutter bool) string 
 		}
 	}
 	return wrapDiffBody(ln.Text, frame, contentCols)
+}
+
+// pickGlyphPlain is pickGlyph without a row background pre-merged. Used by the
+// highlighter-active render path (renderHunkLineHighlighted), which drops the
+// add/del bg tint so a syntax-highlighted body's inner SGR resets can't clear
+// the tint mid-line — the coloured glyph + syntax colours carry the signal.
+func pickGlyphPlain(k review.DiffLineKind) string {
+	switch k {
+	case review.DiffAdded:
+		return styles.SevStyle(theme.KeySevWarning, false).Render("+ ")
+	case review.DiffRemoved:
+		return styles.SevStyle(theme.KeySevError, true).Render("- ")
+	case review.DiffNoNewline:
+		return styles.DimStyle.Render("  ")
+	default:
+		return styles.DimStyle.Render("· ")
+	}
+}
+
+// renderHunkLineHighlighted renders a diff line with a caller-supplied,
+// already-styled body and NO row background tint (Phase 5 item 4). It's used
+// when chroma syntax highlighting or word-level diff emphasis is active: the
+// styled body carries embedded SGR resets that would clear a row bg for the
+// rest of the line (see renderHunkLine's docstring), so we omit the tint and
+// let the coloured +/- glyph + the syntax/word colours convey the change.
+//
+// Layout matches renderHunkLine exactly (gutter + glyph + wrapped body) so the
+// two paths stay column-aligned within a single diff.
+func renderHunkLineHighlighted(ln review.DiffLine, styledBody string, contentCols int, useGutter bool) string {
+	contentCols = max(8, contentCols)
+	glyph := pickGlyphPlain(ln.Kind)
+	var frame rowFrame
+	if useGutter {
+		gutter := styles.DimStyle.Render(gutterText(ln))
+		contGutter := styles.DimStyle.Render(diffGutterBlank)
+		frame = rowFrame{
+			head:     gutter + glyph,
+			contHead: contGutter + "  ",
+			headW:    diffGutterWidth + 2,
+		}
+	} else {
+		frame = rowFrame{
+			head:     glyph,
+			contHead: "  ",
+			headW:    2,
+		}
+	}
+	return wrapDiffBody(styledBody, frame, contentCols)
 }
 
 // rowFrame describes the per-row prefix used by wrapDiffBody. The first

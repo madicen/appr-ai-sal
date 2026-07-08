@@ -253,9 +253,18 @@ the search / URL fields while you're typing into them):
 | `d`       | Toggle full-width diff                                  |
 | `P`       | Bulk-post the draft (with a confirm step)               |
 | `ctrl+d` / `ctrl+u` | Half-page down / up in the diff               |
+| `n` / `p` | With the diff focused: **jump to the next / previous inline finding tag** (or, while a diff search is active, the next / previous match) |
+| `/`       | **Search the diff** — type a query, `enter` jumps to the first match, then `n` / `p` step between hits; `esc` cancels |
+| `t`       | **Toggle existing PR review comments** inline in the diff (rendered at their anchor lines) |
+| `H`       | Open the **review-history pane** — browse the PR's inline review threads (`j`/`k` to move, `r` to reply, `esc` back) |
 | `y`       | Copy the PR's URL to the clipboard                      |
 | `O`       | Open the PR in the browser                              |
 | `esc` / `q` | Back to the list                                      |
+
+The diff pane is **syntax-highlighted** (via chroma, by file extension; it
+degrades to plain text on an unknown language or when `NO_COLOR` is set) and
+shows **word-level intra-line diffs** — when a line is edited in place, only the
+changed spans are emphasised rather than the whole line.
 
 **Review overlay (approval flow):**
 
@@ -268,6 +277,14 @@ posted, and copy the finding or its hunk out to your clipboard:
 | `E`       | **Edit the comment in `$EDITOR`** — opens `$VISUAL`/`$EDITOR` on a temp file and reads it back on exit; falls back to the inline editor when neither is set |
 | `ctrl+y`  | Copy the current finding (location + comment) to the clipboard |
 | `ctrl+o`  | Copy the current finding's diff hunk to the clipboard   |
+| `S`       | **Sort the finding cards** — cycle severity desc → confidence desc → specialist → file |
+| `f`       | **Filter by severity floor** — cycle none → warning+ → critical-only (findings below the floor are hidden, never dropped from the draft) |
+| `J`       | **Jump to the diff** — minimise the overlay and scroll the PR diff to the focused finding's hunk/line |
+
+Sort and filter are a **view over the card list** — the underlying draft is never
+mutated, and the focused card is kept visible when a filter would otherwise hide
+it. The review tab bar shows **per-severity counts** (e.g. `2 critical · 5
+warning`) so you can see the shape of a review at a glance.
 
 Edited comments are persisted with the [draft session](#draft-persistence--resume-pick-up-a-mid-approval-review),
 so a resumed review keeps your wording. Clipboard copies use the native system
@@ -799,6 +816,27 @@ duplicates:
 The reply itself uses the GraphQL `addPullRequestReviewThreadReply` mutation in
 the gh layer (`gh.ReplyToReviewThread`), reusing the thread node id already
 fetched with the review threads (no extra round-trip).
+
+### Browsing existing review threads
+
+Those same fetched threads are now **browsable in the PR detail view**, not just
+consulted for dedup at post time:
+
+- **Inline in the diff.** Press `t` to toggle the PR's existing inline review
+  comments on/off; when on, each comment renders at its anchor line in the diff
+  (author + a short excerpt), so prior human/tool feedback sits next to the code
+  it's about.
+- **Review-history pane.** Press `H` to open a browsable pane listing the PR's
+  review threads (state chip, author, file:line, body). `j`/`k` move between
+  threads, `esc` returns to the diff.
+- **Reply from the pane.** Press `r` on a selected thread to open an inline reply
+  prompt; sending routes through the same B3 `gh.ReplyToReviewThread` seam used by
+  auto-posting. Threads without a node id (demo / legacy payloads) show a note
+  instead of a broken prompt. Fetch and reply are both fail-open — an error shows
+  a status line and never crashes the view.
+
+Thread data is fetched lazily the first time you toggle threads or open the
+history pane, and works against the offline **demo** PR as well as live PRs.
 
 ## Headless mode (CI)
 

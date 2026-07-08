@@ -11,6 +11,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
+	"github.com/madicen/appr-ai-sal/internal/tui/diffview"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
@@ -296,7 +297,15 @@ func (m *Model) View() string {
 	title := styles.BoldStyle.Render(m.titleForPhase()) + "  " + m.spinnerForPhase()
 	tabBar := m.renderTabBar(max(8, m.outerW-reviewChromeFrameW-reviewBodyPadW))
 	help := styles.DimStyle.Render(m.helpForPhase())
-	body := lipgloss.JoinVertical(lipgloss.Left, title, tabBar, "", m.vp.View(), "", help)
+	// Phase 5 item 5: per-severity counts strip under the tab bar, shown once
+	// the review has produced findings. Kept out of the running phase (the mix
+	// is still churning) and rendered as its own row so it never crowds a tab.
+	rows := []string{title, tabBar}
+	if counts := formatSeverityCounts(severityTally(m.cards)); counts != "" && m.phase != phaseRunning {
+		rows = append(rows, styles.DimStyle.Render("findings: ")+counts)
+	}
+	rows = append(rows, "", m.vp.View(), "", help)
+	body := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	// Render at the chrome's expected content dims (outerW-2 × outerH-4 —
 	// box border + chrome rows). Setting an explicit Height pads the body
 	// to fill the area when the running phase has few rows so the modal's
@@ -449,14 +458,17 @@ func (m *Model) MarkPostError(err error) {
 }
 
 // renderHunkSnippet draws a small diff window around the target line. Width
-// is the viewport content width.
-func renderHunkSnippet(h *review.Hunk, target, window, width int) string {
+// is the viewport content width. path selects the chroma lexer (Phase 5 item
+// 4); hl applies syntax highlighting + word-level emphasis and may be nil, in
+// which case the snippet renders as plain text (the pre-item-4 behaviour).
+func renderHunkSnippet(h *review.Hunk, path string, target, window, width int, hl *diffview.Highlighter) string {
 	if h == nil {
 		return ""
 	}
 	lines := review.HunkSnippet(h, target, window)
+	wordSegs := wordDiffForSnippet(lines)
 	var b strings.Builder
-	for _, ln := range lines {
+	for i, ln := range lines {
 		// Build a 6-char gutter: "  NNN " or "+/- NNN" with the correct sign.
 		var gutter, body string
 		switch ln.Kind {
@@ -472,6 +484,9 @@ func renderHunkSnippet(h *review.Hunk, target, window, width int) string {
 		default:
 			gutter = styles.DimStyle.Render("· ")
 			body = ln.Text
+		}
+		if hl != nil {
+			body = snippetStyledBody(path, ln.Text, wordSegs[i], hl)
 		}
 		focus := ""
 		if ln.NewNo == target && ln.Kind != review.DiffRemoved {

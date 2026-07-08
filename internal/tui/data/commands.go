@@ -610,3 +610,54 @@ func refreshPRMsg(b Backend, ref gh.Ref) tea.Msg {
 	}
 	return PRRefreshedMsg{PR: pr, Diff: diff}
 }
+
+// ThreadsLoadedMsg delivers the PR's existing inline comments + review threads
+// for the PR-detail thread-browsing UI (Phase 5 item 8). It is deliberately a
+// distinct type from ExistingPRCommentsMsg (which implements ForwardToOverlay
+// and is routed to the review overlay for dedup) so the detail model receives
+// it directly in the root switch.
+type ThreadsLoadedMsg struct {
+	Comments []gh.PullReviewComment
+	Threads  []gh.ReviewThread
+	Err      error
+}
+
+// FetchThreadsCmd fetches the PR's existing inline comments + review threads for
+// the detail thread-browsing pane. Uses the same Backend.ExistingComments seam
+// the review pipeline uses (so demo mode returns the canned comments offline).
+func FetchThreadsCmd(ref gh.Ref, demoMode bool) tea.Cmd {
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return threadsLoadedMsg(b, ref) }
+}
+
+func threadsLoadedMsg(b Backend, ref gh.Ref) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ec := b.ExistingComments(ctx, ref)
+	return ThreadsLoadedMsg{Comments: ec.Comments, Threads: ec.Threads, Err: ec.ListErr}
+}
+
+// ThreadReplyPostedMsg reports the outcome of a review-history thread reply
+// (Phase 5 item 8.3). ThreadID identifies which thread was replied to so the
+// UI can refresh it; Err is set when the reply failed.
+type ThreadReplyPostedMsg struct {
+	ThreadID string
+	Err      error
+}
+
+// ReplyToThreadCmd posts an in-thread reply to an existing review thread,
+// reusing the same Backend.ReplyToThread seam B3 uses (→ gh.ReplyToReviewThread
+// live, no-op in demo). Fired from the review-history pane's reply prompt.
+func ReplyToThreadCmd(ref gh.Ref, threadID, body string, demoMode bool) tea.Cmd {
+	b := selectBackend(demoMode)
+	return func() tea.Msg { return replyToThreadMsg(b, ref, threadID, body) }
+}
+
+func replyToThreadMsg(b Backend, ref gh.Ref, threadID, body string) tea.Msg {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := b.ReplyToThread(ctx, ref, threadID, body); err != nil {
+		return ThreadReplyPostedMsg{ThreadID: threadID, Err: fmt.Errorf("reply to thread: %w", err)}
+	}
+	return ThreadReplyPostedMsg{ThreadID: threadID}
+}

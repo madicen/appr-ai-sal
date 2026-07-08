@@ -286,7 +286,8 @@ func (m *Model) renderAgentTab(name string) string {
 		return b.String()
 	}
 
-	idxs := m.agentCardIndices(name)
+	idxs := m.agentCardOrder(name)
+	rawIdxs := m.agentCardIndices(name)
 	inline, general := m.agentFindingBreakdown(name)
 	demotedPRWide := m.agentDemotedPRWideFindings(name)
 	switch {
@@ -299,8 +300,14 @@ func (m *Model) renderAgentTab(name string) string {
 			pos = 0
 		}
 		b.WriteString(styles.BoldStyle.Render(fmt.Sprintf("Finding %d of %d", pos+1, len(idxs))) +
-			styles.DimStyle.Render(fmt.Sprintf("  ·  %d already on PR  ·  %d posted  ·  %d skipped", onPR, posted, skipped)) + "\n\n")
+			styles.DimStyle.Render(fmt.Sprintf("  ·  %d already on PR  ·  %d posted  ·  %d skipped", onPR, posted, skipped)) + "\n")
+		b.WriteString(m.renderTriageLine(len(rawIdxs), len(idxs)) + "\n\n")
 		b.WriteString(m.renderCardDetail(rowW))
+	case len(rawIdxs) > 0:
+		// Every card for this agent was filtered out by the triage severity
+		// floor; tell the reviewer instead of claiming the agent is clean.
+		b.WriteString(m.renderTriageLine(len(rawIdxs), 0) + "\n\n")
+		b.WriteString(styles.DimStyle.Render(fmt.Sprintf("All %d finding(s) for this agent are hidden by the current severity filter (%s). Press f to widen it.", len(rawIdxs), triageMinSevLabel(m.triageMinSev))) + "\n")
 	case name == review.SpecVibeCoach:
 		// The vibe coach never files findings; its merge recommendation
 		// (shown above) and author prompts live on the Summary tab. It runs
@@ -1193,7 +1200,7 @@ func (m *Model) renderCardDetail(rowW int) string {
 	// Diff hunk preview
 	if cur.hunk != nil {
 		b.WriteString(styles.DimStyle.Render("Diff context") + "\n")
-		b.WriteString(renderHunkSnippet(cur.hunk, cur.finding.Finding.Line, 4, rowW))
+		b.WriteString(renderHunkSnippet(cur.hunk, cur.finding.Finding.Path, cur.finding.Finding.Line, 4, rowW, m.highlighter()))
 		b.WriteString("\n")
 	} else {
 		b.WriteString(styles.DimStyle.Render("(no diff hunk located for this line — F posts as a file-level comment, R refreshes the PR, s skips)") + "\n\n")

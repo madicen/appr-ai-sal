@@ -12,6 +12,7 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
+	"github.com/madicen/appr-ai-sal/internal/tui/diffview"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 
@@ -199,10 +200,24 @@ func (m *Model) agentCardIndices(name string) []int {
 	return out
 }
 
+// agentCardOrder returns the agent's card indices with the active triage
+// filter + sort (Phase 5 item 5) applied. This is the ordering the reviewer
+// actually walks and sees on the tab; the raw agentCardIndices is kept for
+// tallies (which must count every card regardless of the view filter). The
+// currently-focused card (m.idx) is always retained even if the severity floor
+// would hide it, so cycling the filter can't strand the cursor on a hidden
+// card.
+func (m *Model) agentCardOrder(name string) []int {
+	base := m.agentCardIndices(name)
+	return triageOrder(m.cards, base, m.triageSort, m.triageMinSev, m.idx)
+}
+
 // firstCardForAgent returns the global index of the agent's first pending
-// card, falling back to its first card; -1 when the agent has no cards.
+// card, falling back to its first card; -1 when the agent has no cards. It
+// respects the triage filter/sort so the initial focus lands on the first
+// card the reviewer will actually see.
 func (m *Model) firstCardForAgent(name string) int {
-	idxs := m.agentCardIndices(name)
+	idxs := m.agentCardOrder(name)
 	if len(idxs) == 0 {
 		return -1
 	}
@@ -584,6 +599,21 @@ type Model struct {
 	// (Phase 5 item 9): "copied finding", "copy failed: …", etc. Set when a
 	// util.ClipboardCopiedMsg arrives and cleared on the next navigation.
 	copyStatus string
+
+	// Phase 5 item 5 "finding triage": a view-only filter/sort over each
+	// agent tab's card list. triageSort selects the ordering (default / by
+	// severity / by confidence / by file); triageMinSev is the severity floor
+	// that hides lower-severity cards from the walk (empty = show all). Neither
+	// touches the Draft — see triage.go. The controls cycle with `S` (sort)
+	// and `f` (filter) on an agent tab and are surfaced in the card header.
+	triageSort   triageSortMode
+	triageMinSev review.Severity
+
+	// hl is the lazily-built chroma highlighter (Phase 5 item 4) used to
+	// syntax-colour the focused card's diff snippet. Lazily created via
+	// highlighter() so the existing constructors (New / NewResumed) don't all
+	// need touching, and so NO_COLOR is honoured at first use.
+	hl *diffview.Highlighter
 }
 
 func zoneOverlayAgent(i int) string {
@@ -1309,6 +1339,16 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// the current diff. The handler is a no-op when the card
 			// isn't in a state where this makes sense.
 			return m.actPostCurrentFileLevel()
+		case "S":
+			// Phase 5 item 5: cycle the card sort mode (view-only).
+			return m.actCycleTriageSort()
+		case "f":
+			// Phase 5 item 5: cycle the severity floor filter (view-only).
+			return m.actCycleTriageFilter()
+		case "J":
+			// Phase 5 item 4: jump the PR-detail diff pane to this finding's
+			// anchor (emits JumpToDiffMsg for the root to handle).
+			return m.actJumpToDiff()
 		case "q", "esc":
 			return m, m.closeCmd()
 		}

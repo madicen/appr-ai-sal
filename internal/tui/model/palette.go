@@ -173,6 +173,36 @@ func (m *Model) buildCommandRegistry() *commands.Registry {
 		Run: func() tea.Cmd { return m.openRepoAgentsForCurrentPR(false) },
 	})
 	r.Register(commands.Command{
+		ID: "detail.diff-search", Title: "Search the diff", Category: "PR detail",
+		Binding: km.DetailDiffFind,
+		Enabled: func(c commands.Context) bool { return c.Mode == "detail" && c.HasPR },
+		Run:     func() tea.Cmd { return m.beginDiffSearch() },
+	})
+	r.Register(commands.Command{
+		ID: "detail.next-finding", Title: "Jump to next finding / match", Category: "PR detail",
+		Binding: km.DetailDiffNext,
+		Enabled: func(c commands.Context) bool { return c.Mode == "detail" && c.HasPR },
+		Run:     act(m.jumpDiffForward),
+	})
+	r.Register(commands.Command{
+		ID: "detail.prev-finding", Title: "Jump to previous finding / match", Category: "PR detail",
+		Binding: km.DetailDiffPrev,
+		Enabled: func(c commands.Context) bool { return c.Mode == "detail" && c.HasPR },
+		Run:     act(m.jumpDiffBackward),
+	})
+	r.Register(commands.Command{
+		ID: "detail.toggle-threads", Title: "Toggle existing review comments in diff", Category: "PR detail",
+		Binding: km.DetailThreads,
+		Enabled: func(c commands.Context) bool { return c.Mode == "detail" && c.HasPR },
+		Run:     func() tea.Cmd { return m.toggleThreads() },
+	})
+	r.Register(commands.Command{
+		ID: "detail.review-history", Title: "Open review-history pane", Category: "PR detail",
+		Binding: km.DetailReviewHistory,
+		Enabled: func(c commands.Context) bool { return c.Mode == "detail" && c.HasPR },
+		Run:     func() tea.Cmd { return m.openReviewHistory() },
+	})
+	r.Register(commands.Command{
 		ID: "detail.back", Title: "Back to PR list", Category: "PR detail",
 		Binding: km.DetailBack, Enabled: inDetail,
 		Run: act(m.detailBackToList),

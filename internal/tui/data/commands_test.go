@@ -110,6 +110,50 @@ var _ Backend = (*fakeBackend)(nil)
 
 func ref() gh.Ref { return gh.Ref{Owner: "o", Repo: "r", Number: 7} }
 
+func TestReplyToThreadMsgCallsBackend(t *testing.T) {
+	b := &fakeBackend{}
+	msg := replyToThreadMsg(b, ref(), "THREAD_1", "thanks, fixed")
+	got, ok := msg.(ThreadReplyPostedMsg)
+	if !ok {
+		t.Fatalf("got %T want ThreadReplyPostedMsg", msg)
+	}
+	if got.Err != nil {
+		t.Fatalf("unexpected err: %v", got.Err)
+	}
+	if got.ThreadID != "THREAD_1" {
+		t.Errorf("thread id = %q, want THREAD_1", got.ThreadID)
+	}
+	if len(b.replies) != 1 || b.replies[0].threadID != "THREAD_1" || b.replies[0].body != "thanks, fixed" {
+		t.Errorf("backend reply not recorded correctly: %+v", b.replies)
+	}
+}
+
+func TestReplyToThreadMsgSurfacesError(t *testing.T) {
+	b := &fakeBackend{replyErr: errors.New("boom")}
+	msg := replyToThreadMsg(b, ref(), "T", "x")
+	got, ok := msg.(ThreadReplyPostedMsg)
+	if !ok {
+		t.Fatalf("got %T want ThreadReplyPostedMsg", msg)
+	}
+	if got.Err == nil {
+		t.Fatal("expected an error to be surfaced")
+	}
+}
+
+func TestFetchThreadsMsgReturnsCommentsAndThreads(t *testing.T) {
+	b := &fakeBackend{existing: ExistingComments{
+		Comments: []gh.PullReviewComment{{Path: "a.go", Line: 3, Body: "hi"}},
+		Threads:  []gh.ReviewThread{{ID: "T1", Comments: []gh.ReviewThreadComment{{Body: "hi"}}}},
+	}}
+	got, ok := threadsLoadedMsg(b, ref()).(ThreadsLoadedMsg)
+	if !ok {
+		t.Fatalf("want ThreadsLoadedMsg")
+	}
+	if len(got.Comments) != 1 || len(got.Threads) != 1 {
+		t.Fatalf("expected 1 comment + 1 thread, got %d/%d", len(got.Comments), len(got.Threads))
+	}
+}
+
 func TestLoadPRsMsg(t *testing.T) {
 	b := &fakeBackend{prs: []gh.PR{{Number: 1}, {Number: 2}}}
 	msg := loadPRsMsg(b, gh.ListModeAuthored)
