@@ -212,14 +212,16 @@ func (m *Model) actPostCurrent() (tea.Model, tea.Cmd) {
 	// parsed diff, GitHub's reviews/comments endpoints will reject it with
 	// "pull_request_review_thread.line could not be resolved". Catch it here
 	// so the user gets an actionable, local explanation instead of a 422.
-	if !m.dryRun && cur.hunk == nil {
+	// B3 in-thread replies are exempt: they attach to an existing thread by
+	// node id, not to a diff line, so a moved/removed hunk doesn't block them.
+	if !m.dryRun && cur.hunk == nil && cur.threadReplyID == "" {
 		cur.state = cardError
 		cur.err = fmt.Errorf("can't post inline: %s:%d isn't on a hunk in the current PR diff (line may have moved or been removed). Press F to post as a file-level comment, R to refresh the PR, or s to skip this finding.",
 			cur.finding.Finding.Path, cur.finding.Finding.Line)
 		m.rebuildBody()
 		return m, nil
 	}
-	cmd := data.PostSingleFindingCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun, m.demoMode)
+	cmd := data.PostSingleFindingCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, cur.threadReplyID, m.dryRun, m.demoMode)
 	return m, cmd
 }
 

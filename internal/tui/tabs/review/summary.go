@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
+	"github.com/madicen/appr-ai-sal/internal/tui/data"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
@@ -389,6 +391,40 @@ func (m *Model) MarkSummaryPosted() {
 	m.activeTab = m.summaryTabIndex()
 	m.phase = phasePosted
 	m.rebuildBody()
+}
+
+// StatusRepliesCmd returns the command that posts B3's re-run status replies
+// on the tool's own prior review threads ("resolved" / "still present"), or nil
+// when they don't apply. It is gated to a REAL re-review post: not dry-run, not
+// demo, and only when the draft carries a prior cached review (a first review
+// has none, so nothing is posted). Root fires it right after MarkSummaryPosted.
+func (m *Model) StatusRepliesCmd() tea.Cmd {
+	if m.dryRun || m.demoMode || m.draft == nil || m.draft.PriorReview == nil {
+		return nil
+	}
+	return data.PostStatusRepliesCmd(m.draft.Ref, m.draft, m.existingThreads, m.viewer, m.demoMode)
+}
+
+// NoteStatusReplies records the outcome of the B3 re-run status replies in the
+// overlay log so the reviewer sees they were posted.
+func (m *Model) NoteStatusReplies(posted, failed int) {
+	if posted == 0 && failed == 0 {
+		return
+	}
+	msg := fmt.Sprintf("posted %d status repl%s to prior thread(s)", posted, plural(posted, "y", "ies"))
+	if failed > 0 {
+		msg += fmt.Sprintf(" (%d failed)", failed)
+	}
+	m.log = append(m.log, msg)
+	m.rebuildBody()
+}
+
+// plural picks the singular or plural suffix form for n.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // MarkPostError records an error (for inline post, summary post, or approve confirmation).

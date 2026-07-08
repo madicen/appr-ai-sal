@@ -15,7 +15,8 @@ type ReviewThreadComment struct {
 	Author string
 	Body   string
 	Path   string
-	Line   int // post-image line; falls back to the original line when the thread is outdated
+	Line   int    // post-image line; falls back to the original line when the thread is outdated
+	Side   string // diff side the comment anchors to (LEFT/RIGHT); "" when unknown
 }
 
 // ReviewThread is a single inline review-comment thread on a PR. GitHub tracks
@@ -23,7 +24,15 @@ type ReviewThreadComment struct {
 // anchored code has since changed out from under it (IsOutdated). The
 // Discussion agent uses unresolved threads as the list of suggestions that may
 // still need to be addressed in code.
+//
+// ID is the thread's GraphQL node id (PullRequestReviewThread.id). B3's
+// thread-aware posting reuses it directly as the pullRequestReviewThreadId
+// argument to the addPullRequestReviewThreadReply mutation (see
+// ReplyToReviewThread), so an in-thread reply never needs to re-fetch the
+// thread. It is empty only for threads parsed from a payload that predates the
+// id being requested.
 type ReviewThread struct {
+	ID         string
 	IsResolved bool
 	IsOutdated bool
 	Comments   []ReviewThreadComment
@@ -46,8 +55,9 @@ type reviewThreadConnection struct {
 }
 
 type reviewThreadNode struct {
-	IsResolved bool `json:"isResolved"`
-	IsOutdated bool `json:"isOutdated"`
+	ID         string `json:"id"`
+	IsResolved bool   `json:"isResolved"`
+	IsOutdated bool   `json:"isOutdated"`
 	Comments   struct {
 		PageInfo   pageInfo `json:"pageInfo"`
 		TotalCount int      `json:"totalCount"`
@@ -56,6 +66,7 @@ type reviewThreadNode struct {
 			Path         string `json:"path"`
 			Line         *int   `json:"line"`
 			OriginalLine *int   `json:"originalLine"`
+			DiffSide     string `json:"diffSide"`
 			Author       struct {
 				Login string `json:"login"`
 			} `json:"author"`
@@ -110,7 +121,7 @@ func threadsFromNodes(ref Ref, nodes []reviewThreadNode) []ReviewThread {
 			applog.Warn("review thread comments truncated",
 				"ref", ref.String(), "fetched", len(t.Comments.Nodes), "total", t.Comments.TotalCount)
 		}
-		thread := ReviewThread{IsResolved: t.IsResolved, IsOutdated: t.IsOutdated}
+		thread := ReviewThread{ID: t.ID, IsResolved: t.IsResolved, IsOutdated: t.IsOutdated}
 		for _, c := range t.Comments.Nodes {
 			line := 0
 			if c.Line != nil {
@@ -123,6 +134,7 @@ func threadsFromNodes(ref Ref, nodes []reviewThreadNode) []ReviewThread {
 				Body:   strings.TrimSpace(c.Body),
 				Path:   c.Path,
 				Line:   line,
+				Side:   c.DiffSide,
 			})
 		}
 		threads = append(threads, thread)
@@ -146,6 +158,7 @@ const graphqlReviewThreadsQuery = `query($owner: String!, $name: String!, $numbe
       reviewThreads(first: 100, after: $cursor) {
         pageInfo { hasNextPage endCursor }
         nodes {
+          id
           isResolved
           isOutdated
           comments(first: 50) {
@@ -156,6 +169,7 @@ const graphqlReviewThreadsQuery = `query($owner: String!, $name: String!, $numbe
               path
               line
               originalLine
+              diffSide
               author { login }
             }
           }

@@ -574,6 +574,45 @@ cache, so the pipeline runs a full review that is byte-identical to before this
 feature. Whole-PR agents (description/checks/discussion/scope) always re-run.
 Any cache problem degrades gracefully to a full review.
 
+### Thread-aware posting & replies
+
+When you post findings, appr-ai-sal is aware of the PR's existing **inline
+review threads** and replies in-thread instead of cluttering the diff with
+duplicates:
+
+- **Reply instead of duplicate.** Before you post a finding, the tool fetches
+  the PR's unresolved review threads (with their GraphQL node IDs). If a
+  finding's anchor (path + line, and side when known) clearly matches an
+  **open** thread, the finding is routed to an **in-thread reply** on that
+  thread rather than a new top-level comment. The approval card shows a
+  `↳ Posts as a reply to the existing review thread on this line` hint, and the
+  reply attaches by thread id, so it posts even when the exact line has drifted
+  off a hunk. Findings that match no open thread post top-level exactly as
+  before. Exact duplicates of the tool's **own** prior comment are still marked
+  *already on PR* and skipped (that check wins over reply routing).
+- **Status replies on re-runs.** On a **re-review** (a prior draft is cached,
+  see above), after you post the review the tool leaves a short status reply on
+  each of **its own** prior unresolved threads: **resolved** when the code that
+  thread flagged is no longer present in the current diff (checked against the
+  finding's verbatim anchor excerpt), or **still present** when it survives. It
+  only ever replies to threads it opened (matched by the disclosure marker +
+  your gh login), never a human reviewer's thread, and skips threads it can't
+  judge confidently.
+- **Dry-run preview.** In dry-run the preview reflects the routing: a
+  reply-bound finding renders `↳ reply to existing review thread <id>` with the
+  `addPullRequestReviewThreadReply` payload instead of a `POST …/comments`
+  body, so you see reply-vs-new before anything is sent.
+- **Fail-open.** A failed reply is reported exactly like a failed top-level post
+  (the reviewer sees the error and can retry / skip); it never crashes the run.
+  Status replies are gated to **real re-review posts** (not dry-run, not demo)
+  and are individually fail-open — a failed one is counted, not fatal. A first
+  review with no existing threads behaves exactly as before: everything posts
+  top-level.
+
+The reply itself uses the GraphQL `addPullRequestReviewThreadReply` mutation in
+the gh layer (`gh.ReplyToReviewThread`), reusing the thread node id already
+fetched with the review threads (no extra round-trip).
+
 ## AI configuration
 
 Resolution order: **CLI flags** (`-ai-*`) **>** environment variables **>**

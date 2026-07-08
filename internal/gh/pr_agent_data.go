@@ -92,6 +92,7 @@ const graphqlPRAgentDataQuery = `query($owner: String!, $name: String!, $number:
       reviewThreads(first: 100) {
         pageInfo { hasNextPage endCursor }
         nodes {
+          id
           isResolved
           isOutdated
           comments(first: 50) {
@@ -102,6 +103,7 @@ const graphqlPRAgentDataQuery = `query($owner: String!, $name: String!, $number:
               path
               line
               originalLine
+              diffSide
               author { login }
             }
           }

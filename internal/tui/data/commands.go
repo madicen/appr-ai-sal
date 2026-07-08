@@ -171,7 +171,10 @@ type ReviewClosedMsg struct{}
 // duplicate detection) along with a summary of any prior appr-ai-sal
 // activity on this PR (for the "tool has reviewed this before" banner).
 type ExistingPRCommentsMsg struct {
-	Comments  []gh.PullReviewComment
+	Comments []gh.PullReviewComment
+	// Threads are the PR's inline review threads (with node IDs) for B3 reply
+	// routing. Empty on fetch failure / demo mode → all posts top-level.
+	Threads   []gh.ReviewThread
 	Viewer    string
 	Prior     gh.PriorAprrAISalActivity
 	ListErr   error
@@ -195,6 +198,7 @@ func existingCommentsMsg(b Backend, ref gh.Ref) tea.Msg {
 	ec := b.ExistingComments(ctx, ref)
 	return ExistingPRCommentsMsg{
 		Comments:  ec.Comments,
+		Threads:   ec.Threads,
 		Viewer:    ec.Viewer,
 		Prior:     ec.Prior,
 		ListErr:   ec.ListErr,
@@ -234,15 +238,32 @@ func postReviewMsg(b Backend, ref gh.Ref, draft *review.Draft, dryRun bool) tea.
 	return PostDoneMsg{}
 }
 
-// PostSingleFindingCmd posts one inline comment or dry-run preview.
-func PostSingleFindingCmd(ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, dryRun, demoMode bool) tea.Cmd {
+// PostSingleFindingCmd posts one inline comment or dry-run preview. When
+// threadID is non-empty the finding matched an existing unresolved review
+// thread (B3), so it is posted as an in-thread reply instead of a duplicate
+// top-level comment; an empty threadID keeps the historical top-level post.
+func PostSingleFindingCmd(ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, threadID string, dryRun, demoMode bool) tea.Cmd {
 	b := selectBackend(demoMode)
-	return func() tea.Msg { return postSingleFindingMsg(b, ref, pr, specialist, f, dryRun) }
+	return func() tea.Msg { return postSingleFindingMsg(b, ref, pr, specialist, f, threadID, dryRun) }
 }
 
-func postSingleFindingMsg(b Backend, ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, dryRun bool) tea.Msg {
+func postSingleFindingMsg(b Backend, ref gh.Ref, pr *gh.PR, specialist string, f review.Finding, threadID string, dryRun bool) tea.Msg {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// B3: reply in-thread when the finding matched an open thread's anchor.
+	if strings.TrimSpace(threadID) != "" {
+		if dryRun {
+			p := review.DryRunThreadReply(ref, threadID, specialist, f)
+			return DryRunPayloadMsg{Title: p.Title, Payload: p.Payload}
+		}
+		body := review.ReviewCommentBody(specialist, f)
+		// A failed reply is reported exactly like a failed top-level post
+		// (fail-open): the reviewer sees the error and can retry / skip.
+		if err := b.ReplyToThread(ctx, ref, threadID, body); err != nil {
+			return ErrMsg{err}
+		}
+		return StagedFindingPostedMsg{}
+	}
 	if dryRun {
 		p := review.DryRunSingleFinding(ref, pr, specialist, f)
 		return DryRunPayloadMsg{Title: p.Title, Payload: p.Payload}
@@ -380,6 +401,47 @@ func postApproveBareMsg(b Backend, ref gh.Ref, draft *review.Draft, dryRun bool)
 		return ErrMsg{err}
 	}
 	return PostDoneMsg{}
+}
+
+// StatusRepliesPostedMsg reports the outcome of the B3 re-run status replies:
+// how many of the tool's own prior review threads got a "resolved" /
+// "still present" status update and how many failed. Fail-open — a failed
+// reply is counted, never fatal.
+type StatusRepliesPostedMsg struct {
+	Posted int
+	Failed int
+}
+
+// PostStatusRepliesCmd posts the re-run status replies (B3.2) on the tool's own
+// prior review threads. It is a no-op (empty StatusRepliesPostedMsg) unless the
+// draft carries a prior cached review (i.e. this is a re-review) — so on a
+// first review nothing is posted. Callers gate this behind a REAL post
+// (not dry-run / not demo); the demo backend's ReplyToThread is a no-op anyway.
+func PostStatusRepliesCmd(ref gh.Ref, draft *review.Draft, threads []gh.ReviewThread, viewer string, demoMode bool) tea.Cmd {
+	b := selectBackend(demoMode)
+	snap := append([]gh.ReviewThread(nil), threads...)
+	return func() tea.Msg { return postStatusRepliesMsg(b, ref, draft, snap, viewer) }
+}
+
+func postStatusRepliesMsg(b Backend, ref gh.Ref, draft *review.Draft, threads []gh.ReviewThread, viewer string) tea.Msg {
+	if draft == nil || draft.PriorReview == nil || draft.PR == nil {
+		return StatusRepliesPostedMsg{}
+	}
+	replies := review.BuildStatusReplies(draft.PriorReview, draft.Diff, threads, viewer, draft.PR.HeadSHA)
+	if len(replies) == 0 {
+		return StatusRepliesPostedMsg{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var posted, failed int
+	for _, r := range replies {
+		if err := b.ReplyToThread(ctx, ref, r.ThreadID, r.Body); err != nil {
+			failed++
+			continue
+		}
+		posted++
+	}
+	return StatusRepliesPostedMsg{Posted: posted, Failed: failed}
 }
 
 // DryRunPayloadMsg is emitted by every Post*Cmd path when dry-run is enabled,

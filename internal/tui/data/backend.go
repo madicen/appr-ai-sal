@@ -44,13 +44,22 @@ type Backend interface {
 	PostInlineComment(ctx context.Context, ref gh.Ref, commitID string, c gh.ReviewComment) error
 	// PostFileLevelComment posts one file-level (subject_type=file) comment.
 	PostFileLevelComment(ctx context.Context, ref gh.Ref, commitID, path, body string) error
+	// ReplyToThread posts an in-thread reply to an existing review thread
+	// (B3: reply instead of duplicating an open thread on the same anchor,
+	// plus the re-run status replies on the tool's own threads).
+	ReplyToThread(ctx context.Context, ref gh.Ref, threadID, body string) error
 }
 
 // ExistingComments bundles the inline comments already on a PR with the viewer
 // login and prior-appr-ai-sal-activity summary. Errors are carried inline
 // (ListErr / ViewerErr) rather than returned so a partial fetch still renders.
 type ExistingComments struct {
-	Comments  []gh.PullReviewComment
+	Comments []gh.PullReviewComment
+	// Threads are the PR's inline review threads (with node IDs) used by B3 to
+	// route a matching finding to an in-thread reply instead of a duplicate
+	// top-level comment. Empty when the fetch failed or in demo mode — the
+	// posting path then falls back to top-level everywhere (pre-B3 behaviour).
+	Threads   []gh.ReviewThread
 	Viewer    string
 	Prior     gh.PriorAprrAISalActivity
 	ListErr   error
@@ -96,8 +105,12 @@ func (ghBackend) ExistingComments(ctx context.Context, ref gh.Ref) ExistingComme
 	// review-body count, not a blocking error.
 	reviews, _ := gh.ListPullReviews(ctx, ref.Owner, ref.Repo, ref.Number, 30)
 	prior := gh.DetectPriorAprrAISalActivityFrom(comments, reviews, viewer)
+	// Review threads (with node IDs) power B3's reply routing. Best-effort:
+	// a failure here just means every finding posts top-level as before.
+	threads, _ := gh.GetReviewThreads(ctx, ref)
 	return ExistingComments{
 		Comments:  comments,
+		Threads:   threads,
 		Viewer:    viewer,
 		Prior:     prior,
 		ListErr:   cerr,
@@ -132,6 +145,10 @@ func (ghBackend) PostInlineComment(ctx context.Context, ref gh.Ref, commitID str
 
 func (ghBackend) PostFileLevelComment(ctx context.Context, ref gh.Ref, commitID, path, body string) error {
 	return gh.CreatePullReviewFileLevelComment(ctx, ref, commitID, path, body)
+}
+
+func (ghBackend) ReplyToThread(ctx context.Context, ref gh.Ref, threadID, body string) error {
+	return gh.ReplyToReviewThread(ctx, ref, threadID, body)
 }
 
 // demoBackend wraps the internal/demo fixtures. It passes through the same
@@ -196,6 +213,10 @@ func (demoBackend) PostInlineComment(ctx context.Context, ref gh.Ref, commitID s
 }
 
 func (demoBackend) PostFileLevelComment(ctx context.Context, ref gh.Ref, commitID, path, body string) error {
+	return nil
+}
+
+func (demoBackend) ReplyToThread(ctx context.Context, ref gh.Ref, threadID, body string) error {
 	return nil
 }
 

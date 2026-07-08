@@ -446,6 +446,13 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			PRIntent:                   prIntent,
 			MemorySuppressed:           memSuppressed,
 		}
+		// B3: on a re-review, carry the prior cached review onto the Draft so
+		// the posting path can leave status replies on the tool's own prior
+		// review threads (resolved / still present). Nil on a first review, so
+		// the posting path is byte-identical to pre-B3.
+		if plan != nil {
+			final.PriorReview = plan.prior
+		}
 		// Carry the diff-budget report so the rendered body can disclose that
 		// the review ran on a truncated diff (R3). Only set when shaping
 		// actually happened; nil means the full diff was reviewed.

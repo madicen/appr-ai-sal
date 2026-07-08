@@ -391,6 +391,12 @@ type approvalCard struct {
 	memorySuppressed    bool
 	memorySuppIdx       int
 	memorySuppSkipCount int
+	// threadReplyID is set (B3) when this finding's anchor matched an existing
+	// unresolved review thread: instead of a duplicate top-level inline
+	// comment, posting it routes an in-thread reply to this thread's node id.
+	// Empty means the historical top-level post. Populated by routeCardsToThreads
+	// once the PR's review threads are fetched.
+	threadReplyID string
 }
 
 // Model is the persistent overlay that hosts the entire review flow:
@@ -480,6 +486,21 @@ type Model struct {
 	// acknowledgement banner so the human knows this is a refresh, not a
 	// first pass.
 	priorActivity gh.PriorAprrAISalActivity
+
+	// threadRefs holds the PR's unresolved review threads (with node IDs),
+	// fetched alongside the existing comments. B3 routes a card whose anchor
+	// matches one of these to an in-thread reply instead of a duplicate
+	// top-level comment (see routeCardsToThreads). Empty on a first review /
+	// when the fetch failed → every card posts top-level as before.
+	threadRefs []review.ThreadRef
+	// existingThreads is the raw review-thread set behind threadRefs, retained
+	// so the summary post can compute the B3 re-run status replies (which need
+	// the tool's own thread bodies to identify its prior threads).
+	existingThreads []gh.ReviewThread
+	// viewer is the resolved gh login (best effort; "" when unknown). Retained
+	// for the B3 re-run status replies so they only target the tool's own
+	// prior threads.
+	viewer string
 
 	// refreshing is true while a data.RefreshPRCmd is in flight. It disables the
 	// refresh button and shows an inline "refreshing PR…" status near the
@@ -954,6 +975,29 @@ func (m *Model) markCardsAlreadyOnGitHub(viewer string, existing []gh.PullReview
 	return nil
 }
 
+// routeCardsToThreads tags each postable card whose anchor matches an
+// unresolved review thread with that thread's node id (B3). At post time such
+// a card posts an in-thread reply instead of a duplicate top-level comment.
+// Demoted / memory-suppressed cards are left alone: they are opt-in and their
+// finding never went top-level, so a reply would be surprising. Cards already
+// marked cardAlreadyOnPR by the dedupe pass keep that state (it wins), because
+// routing runs first and the dedupe pass runs after.
+func (m *Model) routeCardsToThreads() {
+	if len(m.threadRefs) == 0 {
+		return
+	}
+	for i := range m.cards {
+		c := &m.cards[i]
+		if c.demoted || c.memorySuppressed {
+			continue
+		}
+		route := review.RouteFinding(c.finding.Finding, m.threadRefs)
+		if route.Kind == review.RouteReply {
+			c.threadReplyID = route.ThreadID
+		}
+	}
+}
+
 func (m *Model) firstPendingCardIndex() int {
 	for i := range m.cards {
 		if m.cards[i].state == cardPending {
@@ -981,6 +1025,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case data.ExistingPRCommentsMsg:
 		m.existingCommentsLoading = false
 		m.priorActivity = msg.Prior
+		m.viewer = msg.Viewer
+		// B3: build the unresolved-thread refs and route matching cards to
+		// in-thread replies. Done before the dedupe step so it runs even when
+		// the viewer login couldn't be resolved (anchor matching needs no
+		// viewer); the exact-duplicate dedupe below takes precedence on any
+		// card it marks cardAlreadyOnPR.
+		m.existingThreads = msg.Threads
+		m.threadRefs = review.UnresolvedThreadRefs(msg.Threads, msg.Viewer)
+		m.routeCardsToThreads()
 		if msg.Prior.Found() {
 			m.log = append(m.log, formatPriorActivityLog(msg.Prior))
 		}

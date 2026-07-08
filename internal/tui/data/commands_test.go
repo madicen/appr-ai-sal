@@ -42,6 +42,13 @@ type fakeBackend struct {
 	postInlineErr error
 	postedFile    *fileLevelPost
 	postFileErr   error
+	replies       []threadReply
+	replyErr      error
+}
+
+type threadReply struct {
+	threadID string
+	body     string
 }
 
 type fileLevelPost struct {
@@ -88,6 +95,13 @@ func (f *fakeBackend) PostInlineComment(_ context.Context, _ gh.Ref, commitID st
 func (f *fakeBackend) PostFileLevelComment(_ context.Context, _ gh.Ref, commitID, path, body string) error {
 	f.postedFile = &fileLevelPost{commitID: commitID, path: path, body: body}
 	return f.postFileErr
+}
+func (f *fakeBackend) ReplyToThread(_ context.Context, _ gh.Ref, threadID, body string) error {
+	if f.replyErr != nil {
+		return f.replyErr
+	}
+	f.replies = append(f.replies, threadReply{threadID: threadID, body: body})
+	return nil
 }
 
 var _ Backend = (*fakeBackend)(nil)
@@ -260,16 +274,120 @@ func TestPostReviewMsgHeadSHALookupFailureStillPosts(t *testing.T) {
 func TestPostSingleFindingMsg(t *testing.T) {
 	b := &fakeBackend{headSHA: "headsha"}
 	f := review.Finding{Path: "a.go", Line: 3, Comment: "c"}
-	if _, ok := postSingleFindingMsg(b, ref(), draftForPost().PR, review.SpecDocs, f, false).(StagedFindingPostedMsg); !ok {
+	if _, ok := postSingleFindingMsg(b, ref(), draftForPost().PR, review.SpecDocs, f, "", false).(StagedFindingPostedMsg); !ok {
 		t.Fatalf("real inline post should return StagedFindingPostedMsg")
 	}
 	if b.postedInline == nil || b.postedInline.Side != "RIGHT" || b.postedInline.Path != "a.go" {
 		t.Fatalf("inline comment not posted as expected: %#v", b.postedInline)
 	}
+	if len(b.replies) != 0 {
+		t.Fatalf("no-thread finding must not reply, got %#v", b.replies)
+	}
 
-	dry := postSingleFindingMsg(&fakeBackend{}, ref(), draftForPost().PR, review.SpecDocs, f, true)
+	dry := postSingleFindingMsg(&fakeBackend{}, ref(), draftForPost().PR, review.SpecDocs, f, "", true)
 	if _, ok := dry.(DryRunPayloadMsg); !ok {
 		t.Fatalf("dry-run inline should return DryRunPayloadMsg, got %T", dry)
+	}
+}
+
+// TestPostSingleFindingMsgRoutesToReply confirms a non-empty threadID routes
+// the finding to an in-thread reply instead of a top-level inline comment.
+func TestPostSingleFindingMsgRoutesToReply(t *testing.T) {
+	b := &fakeBackend{headSHA: "headsha"}
+	f := review.Finding{Path: "a.go", Line: 3, Comment: "still broken"}
+	if _, ok := postSingleFindingMsg(b, ref(), draftForPost().PR, review.SpecDocs, f, "PRRT_1", false).(StagedFindingPostedMsg); !ok {
+		t.Fatalf("reply post should return StagedFindingPostedMsg")
+	}
+	if b.postedInline != nil {
+		t.Fatalf("reply must not post a top-level inline comment: %#v", b.postedInline)
+	}
+	if len(b.replies) != 1 || b.replies[0].threadID != "PRRT_1" {
+		t.Fatalf("expected one reply to PRRT_1, got %#v", b.replies)
+	}
+	if !strings.Contains(b.replies[0].body, "still broken") {
+		t.Fatalf("reply body should carry the finding comment: %q", b.replies[0].body)
+	}
+}
+
+// TestPostSingleFindingMsgReplyDryRun confirms the dry-run preview discloses
+// the reply routing rather than a fresh top-level comment.
+func TestPostSingleFindingMsgReplyDryRun(t *testing.T) {
+	f := review.Finding{Path: "a.go", Line: 3, Comment: "c"}
+	msg := postSingleFindingMsg(&fakeBackend{}, ref(), draftForPost().PR, review.SpecDocs, f, "PRRT_1", true)
+	dr, ok := msg.(DryRunPayloadMsg)
+	if !ok {
+		t.Fatalf("dry-run reply should return DryRunPayloadMsg, got %T", msg)
+	}
+	if !strings.Contains(dr.Title, "reply to existing thread") {
+		t.Fatalf("dry-run title should disclose reply routing: %q", dr.Title)
+	}
+}
+
+// TestPostSingleFindingMsgReplyFailOpen confirms a failed reply surfaces as an
+// ErrMsg (reported like a normal post failure), never a crash.
+func TestPostSingleFindingMsgReplyFailOpen(t *testing.T) {
+	b := &fakeBackend{replyErr: errors.New("thread resolved")}
+	f := review.Finding{Path: "a.go", Line: 3, Comment: "c"}
+	if _, ok := postSingleFindingMsg(b, ref(), draftForPost().PR, review.SpecDocs, f, "PRRT_1", false).(ErrMsg); !ok {
+		t.Fatalf("failed reply should surface ErrMsg")
+	}
+}
+
+// TestPostStatusRepliesMsg confirms the re-run status replies post to the
+// tool's own prior threads (resolved / still present) via ReplyToThread.
+func TestPostStatusRepliesMsg(t *testing.T) {
+	priorDiff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,3 @@\n package a\n+var leak = openResourceWithoutClosing() // status-marker-unique-line\n func x() {}\n"
+	newDiff := "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1,2 +1,2 @@\n package a\n func x() {}\n"
+	draft := &review.Draft{
+		PR:   &gh.PR{Owner: "o", Repo: "r", Number: 7, HeadSHA: "newsha1234"},
+		Diff: newDiff,
+		PriorReview: &review.CachedDraft{
+			Diff: priorDiff,
+			Specialists: []review.SpecialistResult{{
+				Specialist: review.SpecSecurity,
+				Findings: []review.Finding{{
+					Path: "a.go", Line: 2, Side: "RIGHT", Severity: review.SeverityError,
+					Comment: "resource leak", AnchorExcerpt: "var leak = openResourceWithoutClosing() // status-marker-unique-line",
+				}},
+			}},
+		},
+	}
+	own := gh.ReviewThread{
+		ID: "PRRT_own",
+		Comments: []gh.ReviewThreadComment{{
+			Author: "octocat",
+			Body:   "**AI-generated review comment** — tool: **appr-ai-sal**, agent: **security**\n\nresource leak",
+			Path:   "a.go", Line: 2, Side: "RIGHT",
+		}},
+	}
+	b := &fakeBackend{}
+	msg := postStatusRepliesMsg(b, ref(), draft, []gh.ReviewThread{own}, "octocat")
+	got, ok := msg.(StatusRepliesPostedMsg)
+	if !ok {
+		t.Fatalf("expected StatusRepliesPostedMsg, got %T", msg)
+	}
+	if got.Posted != 1 || got.Failed != 0 {
+		t.Fatalf("expected 1 posted status reply, got %+v", got)
+	}
+	if len(b.replies) != 1 || b.replies[0].threadID != "PRRT_own" {
+		t.Fatalf("status reply should target own thread, got %#v", b.replies)
+	}
+	if !strings.Contains(b.replies[0].body, "resolved") {
+		t.Fatalf("status reply should report resolved (code gone): %q", b.replies[0].body)
+	}
+}
+
+// TestPostStatusRepliesMsgFirstReviewNoop confirms a first review (no prior
+// cache) posts nothing.
+func TestPostStatusRepliesMsgFirstReviewNoop(t *testing.T) {
+	draft := &review.Draft{PR: &gh.PR{Owner: "o", Repo: "r", Number: 7, HeadSHA: "s"}}
+	b := &fakeBackend{}
+	msg := postStatusRepliesMsg(b, ref(), draft, nil, "octocat")
+	if got, ok := msg.(StatusRepliesPostedMsg); !ok || got.Posted != 0 {
+		t.Fatalf("first review should post no status replies, got %#v", msg)
+	}
+	if len(b.replies) != 0 {
+		t.Fatalf("first review must not reply, got %#v", b.replies)
 	}
 }
 

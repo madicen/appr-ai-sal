@@ -1152,6 +1152,12 @@ func (m *Model) renderCardDetail(rowW int) string {
 			b.WriteString(styles.DimStyle.Render("Press x to resurface it (then y to post).") + "\n")
 		}
 	}
+	// B3 in-thread reply routing: this finding's anchor matched an existing
+	// unresolved review thread, so posting it replies in that thread instead
+	// of filing a duplicate top-level comment.
+	if cur.threadReplyID != "" && cur.state != cardAlreadyOnPR {
+		b.WriteString(styles.DimStyle.Render("↳ Posts as a reply to the existing review thread on this line (not a new comment).") + "\n")
+	}
 	// Anchor auto-correction notes. Two independent code paths can move
 	// a finding off its model-reported line, and we surface each so the
 	// reviewer can sanity-check the new position before posting:

@@ -439,7 +439,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// posted successfully.
 		if ro := m.reviewOverlayOnTop(); ro != nil {
 			ro.MarkSummaryPosted()
-			return m, nil
+			// B3: on a re-review, leave status replies ("resolved" / "still
+			// present") on the tool's own prior threads now that the review
+			// has actually posted. Nil on a first review / dry-run / demo.
+			return m, ro.StatusRepliesCmd()
 		}
 		m.stagedReset()
 		m.mode = modeDetail
@@ -451,6 +454,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.overlayStack.Push(pm, cfg),
 			func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
 		)
+
+	case data.StatusRepliesPostedMsg:
+		// B3 re-run status replies finished — note the outcome in the review
+		// overlay log (fail-open: never fatal).
+		if ro := m.reviewOverlayOnTop(); ro != nil {
+			ro.NoteStatusReplies(msg.Posted, msg.Failed)
+		}
+		return m, nil
 
 	case util.BrowserOpenedMsg:
 		if msg.Err == nil {

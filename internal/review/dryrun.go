@@ -72,6 +72,47 @@ func DryRunSingleFinding(ref gh.Ref, pr *gh.PR, specialist string, f Finding) Dr
 	return DryRunPayload{Title: "Dry-run: single comment (not posted)", Payload: preview}
 }
 
+// DryRunThreadReply renders the preview for posting one finding as an
+// in-thread reply to an existing unresolved review thread (B3) instead of a
+// new top-level inline comment. The title and payload disclose the "↳ reply to
+// existing thread" routing so the dry-run reader sees the difference from a
+// fresh comment. The body is the same disclosed comment body a top-level post
+// would carry.
+func DryRunThreadReply(ref gh.Ref, threadID, specialist string, f Finding) DryRunPayload {
+	body := ReviewCommentBody(specialist, f)
+	loc := f.Path
+	if f.Line > 0 {
+		loc = fmt.Sprintf("%s:%d", f.Path, f.Line)
+	}
+	preview := fmt.Sprintf("↳ reply to existing review thread %s (anchor %s)\naddPullRequestReviewThreadReply on %s/%s#%d\n\n%s",
+		threadID, loc, ref.Owner, ref.Repo, ref.Number, prettyJSON(struct {
+			ThreadID string `json:"pullRequestReviewThreadId"`
+			Body     string `json:"body"`
+		}{ThreadID: threadID, Body: body}))
+	return DryRunPayload{Title: "Dry-run: ↳ reply to existing thread (not posted)", Payload: preview}
+}
+
+// DryRunStatusReply renders the preview for one re-run status reply (B3.2) —
+// the "resolved" / "still present" note the tool leaves on its own prior
+// thread. Used by the headless CLI / dry-run so the reviewer sees which
+// threads would get a status update.
+func DryRunStatusReply(ref gh.Ref, r StatusReply) DryRunPayload {
+	status := "still present"
+	if r.Status == StatusResolved {
+		status = "resolved"
+	}
+	loc := r.Path
+	if r.Line > 0 {
+		loc = fmt.Sprintf("%s:%d", r.Path, r.Line)
+	}
+	preview := fmt.Sprintf("↳ status reply (%s) to own thread %s (anchor %s)\naddPullRequestReviewThreadReply on %s/%s#%d\n\n%s",
+		status, r.ThreadID, loc, ref.Owner, ref.Repo, ref.Number, prettyJSON(struct {
+			ThreadID string `json:"pullRequestReviewThreadId"`
+			Body     string `json:"body"`
+		}{ThreadID: r.ThreadID, Body: r.Body}))
+	return DryRunPayload{Title: "Dry-run: ↳ status reply to prior thread (not posted)", Payload: preview}
+}
+
 // DryRunFileLevelFinding renders the preview for posting one finding as a
 // file-level (subject_type=file) review comment — the fallback the reviewer
 // reaches for when a finding's line isn't on a hunk in the current diff.

@@ -81,6 +81,14 @@ type Draft struct {
 	// the TUI's lazy vibe-coach re-run (RunVibeCoachForDraft) grounds itself in
 	// the same intent the pipeline used.
 	PRIntent *PRIntent `json:"-"`
+	// PriorReview is the B2 cached review of an EARLIER head SHA of this PR,
+	// present only on a re-review (nil on a first review). B3 uses it at post
+	// time to leave status replies ("resolved" / "still present") on the tool's
+	// own prior review threads (see BuildStatusReplies): the prior findings +
+	// their anchor excerpts are matched against the current diff to decide
+	// which earlier concerns the new commits addressed. Nil keeps the posting
+	// path byte-identical to a first review (no status replies).
+	PriorReview *CachedDraft `json:"-"`
 }
 
 // severityFloor returns the strictness floor recorded on the Draft, or
