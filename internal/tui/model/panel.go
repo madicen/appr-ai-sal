@@ -6,6 +6,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
 
+	"github.com/madicen/appr-ai-sal/internal/theme"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
@@ -50,25 +51,25 @@ var listPanelStyle = lipgloss.NewStyle().
 var (
 	activeChipStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("#FFFFFF")).
-			Background(lipgloss.Color("#5D2D91")).
+			Foreground(theme.Adaptive(theme.RoleOnAccent)).
+			Background(theme.Adaptive(theme.RoleAccent)).
 			Padding(0, 2)
 
 	inactiveChipStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#BBBBBB"}).
+				Foreground(theme.Adaptive(theme.RoleTitleFg)).
 				Padding(0, 2)
 
 	// refreshChipStyle gives the refresh affordance a matching chip
 	// shape so it visually balances the filter chip row on the right.
 	refreshChipStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.AdaptiveColor{Light: "#555555", Dark: "#BBBBBB"}).
+				Foreground(theme.Adaptive(theme.RoleTitleFg)).
 				Padding(0, 2)
 
 	// sectionLabelStyle aligns the "filter" / "search" / "url" gutter
 	// labels into a fixed-width column so the chips and inputs line up
 	// vertically across rows.
 	sectionLabelStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.AdaptiveColor{Light: "#666666", Dark: "#9A9A9A"}).
+				Foreground(theme.Adaptive(theme.RoleBorder)).
 				Width(8)
 
 	// activeSectionLabelStyle is the focused variant — same alignment
@@ -76,7 +77,7 @@ var (
 	// glance which input row their keystrokes will land in.
 	activeSectionLabelStyle = lipgloss.NewStyle().
 				Bold(true).
-				Foreground(lipgloss.AdaptiveColor{Light: "#1F6FEB", Dark: "#58A6FF"}).
+				Foreground(theme.Adaptive(theme.RoleBorderAccent)).
 				Width(8)
 
 	// inputPromptStyle paints the "▎" gutter beside each text input
@@ -84,9 +85,9 @@ var (
 	// text. Focused fields get the accent colour, idle fields stay
 	// dim.
 	inputPromptStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.AdaptiveColor{Light: "#9A9A9A", Dark: "#6E6E6E"})
+				Foreground(theme.Adaptive(theme.RoleSubtle))
 	activeInputPromptStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.AdaptiveColor{Light: "#1F6FEB", Dark: "#58A6FF"})
+				Foreground(theme.Adaptive(theme.RoleBorderAccent))
 )
 
 // renderListPanel renders the combined filter + search + URL panel

@@ -315,6 +315,41 @@ Not sure what's available? Press `?` for the full list, or `ctrl+k` to
 fuzzy-search commands — the palette shows exactly the actions enabled on the
 current screen and runs each one via the same code path as its key.
 
+### Theming & appearance
+
+All chrome is driven by a single **semantic colour palette** in
+`internal/theme`: named roles (`bg`, `fg`, `surface`, `accent`, plus `muted`,
+`border`, `selection`, the `info`/`success`/`warning`/`error`/`critical` status
+colours, and the diff add/remove tints). Every style in the TUI resolves its
+colours from these roles, so there are no stray hardcoded hexes to drift.
+
+**Presets.** Two presets ship — `dark` (the default) and `light` — as pure data
+tables, so adding another appearance is a data change, not a code change. The
+per-row **tag** and **severity** colours remain individually customisable in the
+**Theme** settings subtab (persisted to `theme.json`).
+
+**Selecting an appearance.** Precedence, highest first:
+
+1. **`NO_COLOR`** (any value, see <https://no-color.org/>) → fully monochrome:
+   no ANSI colour for chrome **or** syntax highlighting.
+2. **`APPR_AI_SAL_THEME`** = `dark` | `light` | `auto` | `none`
+   (`auto` follows your terminal's background; `none` = monochrome).
+3. The persisted `"mode"` in `theme.json`.
+4. The built-in default: **dark** (so the app looks the same as it always has).
+
+```bash
+APPR_AI_SAL_THEME=light appr-ai-sal   # force the light preset
+APPR_AI_SAL_THEME=auto  appr-ai-sal   # adapt to the terminal background
+NO_COLOR=1              appr-ai-sal    # monochrome (pipes, screen readers, etc.)
+```
+
+`theme.json` (under `~/.config/appr-ai-sal/`, honouring `APPR_AI_SAL_CONFIG_DIR`
+/ `$XDG_CONFIG_HOME`) can pin the preset alongside any colour overrides:
+
+```json
+{ "mode": "light", "colors": { "tag_security": "#ff5f87" } }
+```
+
 ### Specialists
 
 Each comment in the draft is tagged with the specialist that produced it.

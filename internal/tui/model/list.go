@@ -9,10 +9,10 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	langagentsstore "github.com/madicen/appr-ai-sal/internal/review/langagents"
+	"github.com/madicen/appr-ai-sal/internal/theme"
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	"github.com/madicen/appr-ai-sal/internal/tui/tabs/settings"
@@ -160,7 +160,7 @@ func viewerActionBadge(rs gh.ReviewState) string {
 	case rs.ViewerHasReviewed:
 		return styles.DimStyle.Render("you reviewed")
 	case rs.NeedsViewerReview() && rs.ViewerStillRequested:
-		return styles.BoldStyle.Foreground(lipgloss.Color("#7AA2F7")).Render("needs you")
+		return styles.BoldStyle.Foreground(theme.Adaptive(theme.RoleInfo)).Render("needs you")
 	case rs.NeedsViewerReview():
 		return styles.DimStyle.Render("needs you (team)")
 	default:

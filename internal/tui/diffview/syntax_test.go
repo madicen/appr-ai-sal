@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/madicen/appr-ai-sal/internal/theme"
 )
 
 func TestDetectLanguage(t *testing.T) {
@@ -88,6 +90,32 @@ func TestHighlightDisabledUnderNoColor(t *testing.T) {
 	}
 	if h.SupportsFile("main.go") {
 		t.Error("SupportsFile should be false when highlighting is disabled")
+	}
+}
+
+// TestHighlightDisabledUnderMonochromeAppearance proves the chroma layer honours
+// the resolved theme appearance (e.g. APPR_AI_SAL_THEME=none) even when the
+// NO_COLOR env var is not set, so syntax colour vanishes in lockstep with the
+// (also-monochrome) chrome.
+func TestHighlightDisabledUnderMonochromeAppearance(t *testing.T) {
+	enableColor(t) // ensure NO_COLOR is not the reason it's disabled
+	prev := theme.ActiveAppearance()
+	t.Cleanup(func() { theme.ApplyAppearance(prev) })
+
+	theme.ApplyAppearance(theme.Appearance{Mode: theme.ModeDark, NoColor: true})
+	h := NewHighlighter()
+	code := "func main() {}"
+	if got := h.Line("main.go", code); got != code {
+		t.Errorf("monochrome appearance should disable highlighting: got %q want %q", got, code)
+	}
+	if h.Active() {
+		t.Error("Active() should be false under a monochrome appearance")
+	}
+
+	// Restoring a colour appearance re-enables it.
+	theme.ApplyAppearance(theme.Appearance{Mode: theme.ModeDark})
+	if !NewHighlighter().Active() {
+		t.Error("Active() should be true again once colour is restored")
 	}
 }
 

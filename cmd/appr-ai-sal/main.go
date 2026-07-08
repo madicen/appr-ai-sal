@@ -162,10 +162,15 @@ func run() error {
 	}
 
 	// Apply any user-saved theme overrides before the TUI renders its first
-	// frame so colour-keyed rows match the user's palette from the start.
+	// frame so colour-keyed rows match the user's palette from the start, and
+	// resolve the appearance (light/dark/NO_COLOR) so the whole chrome adapts.
+	savedMode := theme.ModeDark
 	if t, err := theme.Load(); err == nil && t != nil {
 		theme.Apply(t)
+		savedMode = t.AppearanceMode()
 	}
+	appearance := theme.SetupRendering(savedMode)
+	applog.Debug("theme appearance resolved", "mode", appearance.Mode.String(), "no_color", appearance.NoColor)
 
 	// Quick auth sanity check before launching the UI so failures surface
 	// with a readable message rather than an empty list. Skipped in demo

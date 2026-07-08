@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/madicen/appr-ai-sal/internal/theme"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 )
 
@@ -48,7 +49,7 @@ func dismiss(result any) tea.Cmd {
 // member.
 var ModalChrome = lipgloss.NewStyle().
 	Border(lipgloss.RoundedBorder()).
-	BorderForeground(lipgloss.Color("#5D2D91")).
+	BorderForeground(theme.Adaptive(theme.RoleAccent)).
 	Padding(1, 2)
 
 // ModalFrameSized returns a copy of ModalChrome sized to outerWidth (with

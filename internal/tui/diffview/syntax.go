@@ -21,6 +21,8 @@ import (
 	"github.com/alecthomas/chroma/v2/formatters"
 	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/alecthomas/chroma/v2/styles"
+
+	"github.com/madicen/appr-ai-sal/internal/theme"
 )
 
 // Highlighter applies chroma syntax highlighting to individual diff lines.
@@ -43,13 +45,15 @@ type Highlighter struct {
 }
 
 // NewHighlighter builds a Highlighter using a 256-colour terminal formatter
-// and a dark syntax theme. When NO_COLOR is set (or the environment otherwise
-// disables colour) highlighting is turned off entirely and Line is a no-op —
-// the diff renders as plain text, which is the correct behaviour for pipes and
-// colour-averse users.
+// and a dark syntax theme. When colour is disabled — either the NO_COLOR env
+// var is set (https://no-color.org/) or the resolved theme appearance is
+// monochrome (e.g. APPR_AI_SAL_THEME=none) — highlighting is turned off
+// entirely and Line is a no-op: the diff renders as plain text, keeping the
+// syntax layer in lockstep with the (also-monochrome) chrome so the two colour
+// sources never disagree.
 func NewHighlighter() *Highlighter {
 	h := &Highlighter{byPath: map[string]chroma.Lexer{}}
-	if _, noColor := os.LookupEnv("NO_COLOR"); noColor {
+	if _, noColor := os.LookupEnv("NO_COLOR"); noColor || theme.NoColor() {
 		h.disabled = true
 		return h
 	}

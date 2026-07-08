@@ -427,7 +427,7 @@ func renderOverviewRow(label, badge string, selected, focused bool, contentCols 
 	labelTrunc := truncWidth(label, labelW)
 	rendered := labelTrunc
 	if selected {
-		highlight := styles.DimStyle.Background(lipgloss.Color("#3d4f5f")).Foreground(lipgloss.Color("#ffffff"))
+		highlight := styles.DimStyle.Background(theme.Adaptive(theme.RoleSelectionBg)).Foreground(theme.Adaptive(theme.RoleSelectionFg))
 		if focused {
 			highlight = highlight.Bold(true)
 		}
@@ -497,7 +497,7 @@ func renderTreeViewRow(vr treeViewRow, fileRows []treeRow, collapsed map[string]
 		name := truncWidth(vr.name+"/", nameW)
 		nameStyled := styles.DimStyle.Render(name)
 		if selected {
-			selStyle := styles.DimStyle.Background(lipgloss.Color("#3d4f5f")).Foreground(lipgloss.Color("#ffffff"))
+			selStyle := styles.DimStyle.Background(theme.Adaptive(theme.RoleSelectionBg)).Foreground(theme.Adaptive(theme.RoleSelectionFg))
 			if focused {
 				selStyle = selStyle.Bold(true)
 			}
@@ -721,8 +721,8 @@ var diffGutterBlank = strings.Repeat(" ", diffGutterWidth)
 // foreground styles (SevWarning / SevError) on the +/- glyphs still
 // carry the primary signal.
 var (
-	diffAddBgStyle = lipgloss.NewStyle().Background(lipgloss.Color("#173027"))
-	diffDelBgStyle = lipgloss.NewStyle().Background(lipgloss.Color("#2C1A1F"))
+	diffAddBgStyle = lipgloss.NewStyle().Background(theme.Adaptive(theme.RoleDiffAddedBg))
+	diffDelBgStyle = lipgloss.NewStyle().Background(theme.Adaptive(theme.RoleDiffRemovedBg))
 )
 
 // formatGutter builds the 10-cell `old│new` gutter for one diff line and

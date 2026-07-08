@@ -46,7 +46,7 @@ func renderPostErrorBlock(err error, width int) string {
 }
 
 func renderVerdictBanner(canonical, shortLabel string, maxW int) string {
-	var border lipgloss.Color
+	var border lipgloss.TerminalColor
 	switch canonical {
 	case review.VibeVerdictApprove:
 		border = styles.OkColor

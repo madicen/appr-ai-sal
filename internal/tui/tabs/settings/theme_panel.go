@@ -10,6 +10,7 @@ import (
 	bubblepicker "github.com/madicen/bubble-color-picker"
 
 	"github.com/madicen/appr-ai-sal/internal/theme"
+	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 )
 
 // themePanel owns the state for the Theme settings subtab. Swatches mirror
@@ -25,13 +26,13 @@ type themePanel struct {
 // themeSwatch couples a SwatchPicker with the theme.Key it edits and the
 // row offset (within the rendered panel) used for overlay positioning.
 type themeSwatch struct {
-	key     theme.Key
-	label   string
-	hint    string
-	swatch  *bubblepicker.SwatchPicker
-	row     int
-	col     int
-	zoneID  string
+	key    theme.Key
+	label  string
+	hint   string
+	swatch *bubblepicker.SwatchPicker
+	row    int
+	col    int
+	zoneID string
 }
 
 // themeGroupHeader returns a printable group label for slot k. Three groups
@@ -154,7 +155,7 @@ func (p *themePanel) resetAll() {
 //
 // Layout per swatch row:
 //
-//	  formatting           ■▼  #7AA2F7   formatting (preview pill)
+//	formatting           ■▼  #7AA2F7   formatting (preview pill)
 //
 // labelW + 2 leading spaces fixes the swatch column so SetBounds matches
 // the actual terminal cell of the colour cell.
@@ -259,26 +260,19 @@ func previewForKey(k theme.Key, label string) string {
 	return label
 }
 
-// tagPreview reproduces internal/tui.tagStyle locally to avoid an import
-// cycle. Visual parity with the running view matters more than DRY here.
+// tagPreview renders the swatch exactly as the running view will (filled pill
+// with auto-contrast foreground) by delegating to styles.TagStyle, so the
+// preview and the real tag stay in lockstep and no hex lives here.
 func tagPreview(hex, text string) string {
-	return lipgloss.NewStyle().
-		Foreground(lipgloss.Color("#FFFFFF")).
-		Background(lipgloss.Color(hex)).
-		Padding(0, 1).
-		Bold(true).
-		Render(text)
+	return styles.TagStyle(hex).Render(text)
 }
 
-// sevPreview reproduces internal/tui.severityStyle for the same reason as
-// tagPreview. The active-theme colour is read at preview time, so updates
-// reflect immediately while the user is still picking.
+// sevPreview renders a severity label with the same style the running view
+// uses. The active-theme colour is read at preview time, so updates reflect
+// immediately while the user is still picking.
 func sevPreview(k theme.Key, text string) string {
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color(theme.Current().Color(k)))
-	if k == theme.KeySevError || k == theme.KeySevCritical {
-		style = style.Bold(true)
-	}
-	return style.Render(text)
+	bold := k == theme.KeySevError || k == theme.KeySevCritical
+	return styles.SevStyle(k, bold).Render(text)
 }
 
 func padOrTruncate(s string, w int) string {
