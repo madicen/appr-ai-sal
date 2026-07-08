@@ -351,6 +351,24 @@ happen in.
   paths). Currently injected only into the `testing` and `docs`
   specialists and reused by the convention witness below.
 
+- **Static-analysis pre-pass**. Before any LLM call, cheap
+  deterministic tools run over the changed files in the worktree:
+  `gofmt -l` and `go vet` (they ship with the Go toolchain),
+  plus `golangci-lint`, `ruff`, and `eslint` **when the repo
+  configures them** (detected from the worktree's lint configs), and
+  `terraform validate` for Terraform changes. Each runs behind its own
+  timeout and is **fully fail-open** — a missing binary, absent config,
+  slow tool, or broken invocation contributes nothing and never errors
+  or blocks the review. The results are injected three ways: (1) every
+  code specialist is told *"the linter already flags X — don't
+  re-report it; report what linters can't see"*; (2) the `checks` agent
+  receives the tool annotations alongside the CI rollup; (3) a file a
+  formatter passed **clean** becomes a false-positive signal that
+  downgrades hand-rolled whitespace/indentation findings there. The IaC
+  schema gate additionally consults live `terraform providers schema
+  -json` when terraform is present, falling back to a built-in table of
+  non-taggable AWS resources otherwise.
+
 - **Convention witness**. A per-finding sanity check that fires
   *between* the specialists and the arbiter for `testing` / `docs`
   findings. For each finding it answers a single question — "does the
@@ -394,6 +412,10 @@ happen in.
    and (for `testing` / `docs`) the per-PR evidence pack. Progress for
    each appears in the **Context injection** group at the top of the
    running overlay.
+   The **static-analysis pre-pass** also runs here (still no LLM
+   calls): `gofmt`/`go vet` and any configured linters run over the
+   changed files behind timeouts, fail-open, grounding the specialists
+   and the `checks` agent in real tool output.
 3. **Specialists** run with their injected briefs (parallel by
    default; set `parallel_specialists: false` to serialize). Concurrency
    across the whole run is capped by `max_concurrent_inference` (default

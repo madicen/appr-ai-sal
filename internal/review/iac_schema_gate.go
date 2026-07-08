@@ -6,11 +6,17 @@ import (
 	"strings"
 )
 
-// unsupportedHCLArguments maps a Terraform resource type to the set of
+// fallbackUnsupportedHCLArguments maps a Terraform resource type to the set of
 // arguments that resource does NOT accept, keyed lowercase. It is the
 // deterministic schema knowledge the schema gate uses to catch findings that
 // tell the author to add an argument the provider would reject at
 // `terraform validate` time.
+//
+// As of Q5 this table is the FALLBACK: when terraform is present in the
+// worktree the gate consults live `terraform providers schema -json` instead
+// (see iac_schema_live.go), which covers every provider/resource the repo
+// uses. This table is what the gate falls back to when terraform is absent,
+// uninitialised, or the schema call fails — so it must stay high-confidence.
 //
 // The seed set is the family of AWS resources that are commonly — but
 // wrongly — told to "add tags": policy attachments, ACL/ownership/versioning
@@ -21,12 +27,12 @@ import (
 // high-confidence — it is a backstop for the model, not a full schema, and
 // every entry should be one where adding the argument is unambiguously a
 // `terraform validate` error.
-var unsupportedHCLArguments = map[string]map[string]bool{
-	"aws_s3_bucket_policy":              tagsUnsupported(),
-	"aws_s3_bucket_acl":                 tagsUnsupported(),
-	"aws_s3_bucket_ownership_controls":  tagsUnsupported(),
-	"aws_s3_bucket_versioning":          tagsUnsupported(),
-	"aws_s3_bucket_public_access_block": tagsUnsupported(),
+var fallbackUnsupportedHCLArguments = map[string]map[string]bool{
+	"aws_s3_bucket_policy":                               tagsUnsupported(),
+	"aws_s3_bucket_acl":                                  tagsUnsupported(),
+	"aws_s3_bucket_ownership_controls":                   tagsUnsupported(),
+	"aws_s3_bucket_versioning":                           tagsUnsupported(),
+	"aws_s3_bucket_public_access_block":                  tagsUnsupported(),
 	"aws_s3_bucket_server_side_encryption_configuration": tagsUnsupported(),
 	"aws_s3_bucket_lifecycle_configuration":              tagsUnsupported(),
 	"aws_iam_role_policy":                                tagsUnsupported(),
@@ -67,8 +73,9 @@ var (
 //   - the finding anchors to an HCL file (`.tf` / `.hcl`),
 //   - the enclosing resource type can be resolved (from the worktree file,
 //     falling back to the diff's post-image), and
-//   - an argument the finding wants to add is listed as unsupported for that
-//     resource type in unsupportedHCLArguments.
+//   - an argument the finding wants to add is rejected for that resource type
+//     by live provider schema (terraform present) or, failing that, is listed
+//     as unsupported in fallbackUnsupportedHCLArguments.
 //
 // When it acts it: clears any Suggestion (recording SuggestionStrippedReason,
 // since a one-click apply would produce invalid Terraform), demotes severity
@@ -89,15 +96,16 @@ func validateTechResourceArguments(findings []Finding, files []FileDiff, worktre
 		if rtype == "" {
 			continue
 		}
-		unsupported, ok := unsupportedHCLArguments[rtype]
-		if !ok {
-			continue
-		}
-		bad := firstUnsupportedArg(*f, unsupported)
+		// Q5.c: consult live provider schema when terraform is present in the
+		// worktree; fall back to fallbackUnsupportedHCLArguments otherwise.
+		bad, live := firstSchemaRejectedArg(*f, rtype, worktree)
 		if bad == "" {
 			continue
 		}
 		note := "schema mismatch: the `" + rtype + "` resource does not accept a `" + bad + "` argument (would fail terraform validate)"
+		if live {
+			note = "schema mismatch: `terraform providers schema` reports the `" + rtype + "` resource does not accept a `" + bad + "` argument (would fail terraform validate)"
+		}
 		switch f.Severity {
 		case SeverityWarning, SeverityError, SeverityCritical:
 			f.Severity = SeverityInfo

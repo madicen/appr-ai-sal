@@ -63,7 +63,11 @@ func augmentPromptsForProvider(repoTools bool, systemPrompt, userPrompt string, 
 // techSection is the rendered technology-experts section (one labelled
 // block per configured tech for this repo); shared across every specialist
 // and computed once per review.
-func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, langSection string, techSection string) SpecialistResult {
+// staticSection is the pre-rendered static-analysis pre-pass block (Q5): what
+// the deterministic tools already flag, injected into EVERY code specialist so
+// they don't re-report tool findings. staticCleanFiles is the set of files a
+// formatter passed clean, driving the Q5.d "linter is silent" downgrade.
+func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string) SpecialistResult {
 	res := SpecialistResult{Specialist: name, Findings: []Finding{}}
 
 	systemPrompt, err := SpecialistPrompt(name)
@@ -72,7 +76,7 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		return res
 	}
 
-	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, langSection, techSection)
+	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, staticSection, langSection, techSection)
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, hasContext)
 
@@ -138,6 +142,12 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// (e.g. `tags = var.common_tags` on `aws_s3_bucket_policy`), which
 		// would fail terraform validate. See iac_schema_gate.go.
 		res.Findings = validateTechResourceArguments(res.Findings, parsedFiles, worktree)
+		// Q5.d: "linter is silent" false-positive filter. When the static
+		// pre-pass ran a formatter clean over a file, demote mechanical
+		// formatting findings there (formatting specialist only). Runs before
+		// synthesis/repair so we never build a one-click fix for a nit a
+		// formatter already deemed unnecessary. See static_silence.go.
+		res.Findings = downgradeFormatterSilencedFindings(name, res.Findings, staticCleanFiles)
 		// Last chance: synthesize a one-click suggestion from the comment
 		// for any inline finding the model left suggestion-less but whose
 		// comment unambiguously names the corrected token. Runs after the
@@ -239,7 +249,7 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	return res
 }
 
-func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, langSection string, techSection string) string {
+func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, staticSection string, langSection string, techSection string) string {
 	var b strings.Builder
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	if hasContext {
@@ -274,6 +284,13 @@ func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictn
 	}
 	b.WriteString(FormatRepoContextSection(repoContext))
 	b.WriteString(FormatPRReviewEvidenceSection(evidence))
+	// Static-analysis pre-pass (Q5): what the deterministic tools already
+	// flag, and which files a formatter passed clean. Pre-rendered (heading +
+	// body) by the runner via staticpass; empty when nothing ran.
+	if s := strings.TrimSpace(staticSection); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
 	b.WriteString("Unified diff (line numbers in `+` hunks are the lines you cite in findings, with side=\"RIGHT\"):\n\n")
 	b.WriteString("```diff\n")
 	b.WriteString(diff)

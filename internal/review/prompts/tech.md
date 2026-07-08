@@ -66,7 +66,11 @@ resource type that does not accept it — most often `tags` / `tags_all` on an
 AWS sub-resource. A deterministic schema gate runs after you and **strips the
 `suggestion` and demotes to `info`** any finding that proposes adding an
 argument the enclosing Terraform resource type rejects (it would fail
-`terraform validate`). Do not file these:
+`terraform validate`). When `terraform` is available in the worktree the gate
+consults the **live** provider schema (`terraform providers schema -json`), so
+it enforces the real argument set of **every** resource type the repo uses —
+not just the seed list below, which is only the fallback when terraform is
+absent. Do not file these:
 
 - `tags` / `tags_all` on `aws_s3_bucket_policy`, `aws_s3_bucket_acl`,
   `aws_s3_bucket_versioning`, `aws_s3_bucket_ownership_controls`,

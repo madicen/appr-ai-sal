@@ -146,6 +146,12 @@ type SpecialistSpec struct {
 	// ConventionEvidence marks a spec whose findings get sibling-file
 	// convention evidence harvested for the witness (the tech specialist).
 	ConventionEvidence bool
+	// FormatterSilenceAware marks a spec whose formatting-mechanics findings
+	// are downgraded when a formatter/linter ran CLEAN on the same file in the
+	// static-analysis pre-pass (Q5.d). Built-in: formatting. The signal is a
+	// false-positive filter — a whitespace/indentation/style finding on a
+	// gofmt-clean file is almost always noise.
+	FormatterSilenceAware bool
 
 	// userDefined is true for specs loaded from the user config dir.
 	userDefined bool
@@ -180,12 +186,13 @@ func (s SpecialistSpec) hasGate(g Gate) bool {
 var builtinSpecs = []SpecialistSpec{
 	// --- Code specialists (KindCode) ------------------------------------
 	{
-		Name:          SpecFormatting,
-		Kind:          KindCode,
-		PromptSource:  PromptRef{Name: SpecFormatting, Embedded: true},
-		Inputs:        InputSet{InputDiff},
-		LanePriority:  2,
-		ArbiterPolicy: ArbiterPolicy{Suppressible: true, Demotable: true},
+		Name:                  SpecFormatting,
+		Kind:                  KindCode,
+		PromptSource:          PromptRef{Name: SpecFormatting, Embedded: true},
+		Inputs:                InputSet{InputDiff},
+		LanePriority:          2,
+		ArbiterPolicy:         ArbiterPolicy{Suppressible: true, Demotable: true},
+		FormatterSilenceAware: true,
 	},
 	{
 		Name:          SpecDesign,
@@ -397,6 +404,14 @@ func specWantsEvidence(name string) bool {
 func specWantsConventionEvidence(name string) bool {
 	s, ok := lookupSpec(name)
 	return ok && s.ConventionEvidence
+}
+
+// specFormatterSilenceAware reports whether the named spec's formatting
+// findings are downgraded when a formatter ran clean on the same file in the
+// static-analysis pre-pass (built-in: formatting). See downgradeFormatterSilencedFindings.
+func specFormatterSilenceAware(name string) bool {
+	s, ok := lookupSpec(name)
+	return ok && s.FormatterSilenceAware
 }
 
 // specSuppressible reports whether the repo arbiter may suppress the named

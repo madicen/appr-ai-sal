@@ -155,7 +155,10 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 		if specWantsEvidence(name) {
 			ev = in.Evidence
 		}
-		r := runReviewSpecialist(sctx, cfg, name, in.Worktree, in.PR, in.Diff, brief, ev, in.LangSection, in.TechSection)
+		// The evals harness intentionally runs no static-analysis pre-pass:
+		// it must be deterministic and independent of which external tools are
+		// installed, so staticSection / staticCleanFiles are empty.
+		r := runReviewSpecialist(sctx, cfg, name, in.Worktree, in.PR, in.Diff, brief, ev, "", nil, in.LangSection, in.TechSection)
 		specResults = append(specResults, r)
 		obs.Agents = append(obs.Agents, agentObservation(name, KindCode, r))
 	}

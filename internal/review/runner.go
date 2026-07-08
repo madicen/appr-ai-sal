@@ -21,6 +21,8 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
 	"github.com/madicen/appr-ai-sal/internal/review/langagents"
 	"github.com/madicen/appr-ai-sal/internal/review/repoagents"
+	"github.com/madicen/appr-ai-sal/internal/review/repocontext"
+	"github.com/madicen/appr-ai-sal/internal/review/staticpass"
 	"github.com/madicen/appr-ai-sal/internal/review/techagents"
 )
 
@@ -248,6 +250,36 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			out <- Progress{Stage: "repo-evidence", Detail: fmt.Sprintf("%d bytes", len(prEvidence))}
 		}
 
+		// Q5: static-analysis pre-pass. Runs cheap deterministic tools (gofmt,
+		// go vet, plus any configured golangci-lint / ruff / eslint /
+		// terraform validate) over the changed files in the worktree BEFORE the
+		// specialists, each behind its own timeout and fully fail-open (a
+		// missing binary / config / slow tool contributes nothing and never
+		// errors a run). Its output is injected into every code specialist's
+		// prompt (staticSection: "the linter already flags X — don't re-report;
+		// report what linters can't see") and the checks agent (staticChecks),
+		// and its formatter-clean-file set (staticCleanFiles) drives the Q5.d
+		// "linter is silent" downgrade of hand-rolled formatting nits.
+		staticSection := ""
+		staticChecks := ""
+		var staticCleanFiles map[string]bool
+		{
+			changed := changedPathsFromDiff(diff)
+			var localRoot string
+			if rc != nil {
+				localRoot = rc.LocalRootFor(pr.Owner, pr.Repo)
+			}
+			sp := staticpass.Run(ctx, worktree, changed, staticpass.Options{
+				Lint: repocontext.DetectLintConfigs(worktree, localRoot),
+			})
+			staticSection = staticpass.WrapSpecialistSection(staticpass.FormatSpecialistSection(sp))
+			staticChecks = staticpass.FormatChecksAnnotations(sp)
+			staticCleanFiles = sp.FormatterCleanFiles()
+			if anns := sp.Annotations(); len(anns) > 0 || len(staticCleanFiles) > 0 {
+				out <- Progress{Stage: "static-analysis", Detail: fmt.Sprintf("%d annotation(s), %d clean file(s)", len(anns), len(staticCleanFiles))}
+			}
+		}
+
 		// Language briefs: pick the dominant language(s) the PR touches
 		// and inject the matching brief(s). Bundled briefs are
 		// guaranteed available for our top-5 languages; the runner
@@ -279,6 +311,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			go func() {
 				defer prWG.Done()
 				prData := <-prDataCh
+				prData.StaticAnnotations = staticChecks
 				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, breaker, out))
 			}()
 		}
@@ -287,12 +320,13 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// or parallel when configured / env override — see runSpecialistsPhase.
 		// They receive the shaped diff (R3) so no single call can overflow the
 		// provider context window.
-		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, perAgent, prEvidence, langSection, techSection, breaker, out)
+		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, perAgent, prEvidence, staticSection, staticCleanFiles, langSection, techSection, breaker, out)
 
 		if prParallel {
 			prWG.Wait()
 		} else if prAgentsEnabled {
 			prData := <-prDataCh
+			prData.StaticAnnotations = staticChecks
 			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, breaker, out))
 		}
 
@@ -500,7 +534,7 @@ func HasUsableTechExperts(pr *gh.PR, rc *repoconfig.Config) bool {
 //
 // techSection is the rendered technology-experts section (one labelled block
 // per configured tech for this repo); shared across every specialist.
-func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, langSection string, techSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
+func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "specialist", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
@@ -518,7 +552,7 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 		_ = stageWithRetry(ctx, runCfg, "specialist "+name, notify, func(sctx context.Context) error {
 			stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "specialist "+name), perStageBudget(runCfg))
 			defer cancel()
-			r = runReviewSpecialist(stCtx, runCfg, name, worktree, pr, diff, repoCtx, ev, langSection, techSection)
+			r = runReviewSpecialist(stCtx, runCfg, name, worktree, pr, diff, repoCtx, ev, staticSection, staticCleanFiles, langSection, techSection)
 			if r.Err != nil {
 				return r.Err
 			}

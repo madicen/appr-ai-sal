@@ -128,6 +128,23 @@ brief wins over the defaults above. When in doubt about the right casing for a
 language, flag the *inconsistency* in prose and leave the `suggestion` empty
 rather than prescribe a style you're unsure of.
 
+## Static-analysis pre-pass (already ran before you)
+
+Before this review, deterministic tools (`gofmt`, `go vet`, and — when the repo
+configures them — `golangci-lint`, `ruff`, `eslint`, `terraform validate`) ran
+over the changed files. When any ran, the user message carries a
+`## Static analysis pre-pass` section. Treat it as ground truth:
+
+- **Do not re-report anything a tool there already flags.** Those issues will
+  be fixed mechanically; duplicating them wastes a finding. Spend your findings
+  on what those tools cannot see (naming *inconsistency*, readability, wording).
+- **Where a formatter/linter ran clean on a file, its mechanical formatting is
+  already correct.** Do not hand-flag whitespace, indentation, alignment, or
+  gofmt/format-style issues on such a file — a deterministic gate demotes those
+  to `info` and strips their `suggestion`, because a formatting nit on a
+  linter-clean file is a false positive. File nothing there rather than have it
+  silently downgraded.
+
 ## Style of feedback (every finding MUST be actionable)
 
 Every finding's `comment` must be concrete: name the file/identifier, state

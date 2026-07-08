@@ -418,7 +418,7 @@ func TestRunSpecialistOnBudgetedDiffNoOversizePayload(t *testing.T) {
 	}
 
 	pr := &gh.PR{Repository: "o/r", Number: 1, Title: "big", Author: "a", BaseRef: "main", HeadRef: "feat"}
-	res := runReviewSpecialist(context.Background(), cfg, SpecSecurity, "", pr, shaped, "", "", "", "")
+	res := runReviewSpecialist(context.Background(), cfg, SpecSecurity, "", pr, shaped, "", "", "", nil, "", "")
 	if res.Err != nil {
 		t.Fatalf("specialist run errored on shaped diff: %v", res.Err)
 	}

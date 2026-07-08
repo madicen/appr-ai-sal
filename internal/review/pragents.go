@@ -50,6 +50,11 @@ type PRAgentInput struct {
 	Checks     *gh.ChecksReport
 	Threads    []gh.ReviewThread
 	Discussion []gh.DiscussionEvent
+	// StaticAnnotations is the pre-rendered static-analysis annotations block
+	// (Q5.b) — deterministic tool output run locally on the changed files. Only
+	// the checks agent consumes it (it is the agent that reasons over
+	// mechanical PR health); empty when the pre-pass produced no annotations.
+	StaticAnnotations string
 }
 
 // runPRAgent runs a single PR-level agent over the PR metadata and diff and
@@ -349,6 +354,12 @@ func buildPRAgentUserPrompt(name string, pr *gh.PR, diff string, in PRAgentInput
 	switch name {
 	case SpecChecks:
 		b.WriteString(formatChecksSection(in.Checks))
+		// Q5.b: feed the checks agent the static-analysis pre-pass annotations
+		// (local deterministic tool output) alongside the CI rollup.
+		if s := strings.TrimSpace(in.StaticAnnotations); s != "" {
+			b.WriteString(s)
+			b.WriteString("\n\n")
+		}
 	case SpecDiscussion:
 		b.WriteString(formatDiscussionSection(in.Threads, in.Discussion))
 	}

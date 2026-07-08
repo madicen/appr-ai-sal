@@ -20,6 +20,7 @@ func TestBuildReviewUserPromptOrdersLangThenTechThenRepo(t *testing.T) {
 	got := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced,
 		"REPO_BRIEF_BODY",
 		"",
+		"",
 		"## Language: Go\n\nLANG_BODY",
 		"## Technology context: Kestra\n\nTECH_BODY",
 	)
@@ -42,6 +43,7 @@ func TestBuildReviewUserPromptOrdersLangThenTechThenRepo(t *testing.T) {
 func TestBuildReviewUserPromptHasContextIntroOnTechAlone(t *testing.T) {
 	pr := &gh.PR{Number: 1, Title: "x", Repository: "acme/widget", BaseRef: "main", HeadRef: "feat"}
 	got := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced,
+		"",
 		"",
 		"",
 		"",

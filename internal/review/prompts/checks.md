@@ -16,6 +16,15 @@ failing check with its title, an excerpt of its output, any inline
 annotations (path:line), and a details URL. You also have the unified diff so
 you can tie an annotation to the changed code.
 
+You may also receive a `## Static analysis annotations (appr-ai-sal pre-pass)`
+section: annotations from deterministic tools (`gofmt`, `go vet`, and any
+configured linters) run **locally** on the changed files before this review.
+These are not GitHub check runs — treat them as an extra, authoritative signal
+of mechanical health. Fold them into your judgement (e.g. a `gofmt` annotation
+predicts a `lint` CI failure and gives you the exact file to fix) and propose
+concrete fixes, but do not duplicate a fix CI already reports for the same
+issue.
+
 ## What to report
 
 - For each failing / erroring check, one finding that:
