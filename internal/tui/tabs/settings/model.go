@@ -38,9 +38,11 @@ const (
 	fieldStrictness = iota
 	fieldProfilePicker
 	fieldProfileName
+	fieldPreset
 	fieldProvider
 	fieldBaseURL
 	fieldModel
+	fieldModelList
 	fieldAPIKey
 	fieldTimeout
 	fieldAICount
@@ -90,6 +92,17 @@ type Model struct {
 	strictnessDD *dropdown.Host
 	profileDD    *dropdown.Host
 	providerDD   *dropdown.Host
+	// presetDD fills provider + base URL from a built-in preset; modelDD is a
+	// picker built after a successful ListModels fetch (Phase 6 items 2 & 3).
+	presetDD *dropdown.Host
+	modelDD  *dropdown.Host
+
+	// modelOptions holds the model ids parallel to modelDD's labels so a
+	// selection can fill the model input. modelsLoading / modelsErr drive the
+	// fetch button's status line (fail-open to manual entry).
+	modelOptions  []string
+	modelsLoading bool
+	modelsErr     string
 
 	// Recorded content-line indices of each dropdown trigger, populated
 	// while buildForm assembles the body so SetBounds can be applied after
@@ -98,6 +111,8 @@ type Model struct {
 	ddStrictRow   int
 	ddProfileRow  int
 	ddProviderRow int
+	ddPresetRow   int
+	ddModelRow    int
 
 	// contentTop is the absolute terminal row where the settings body
 	// begins (the chrome header height). Mouse events are translated by
@@ -266,6 +281,9 @@ func (m *Model) loadEditorFromSelectedProfile() {
 	if m == nil || m.draft == nil {
 		return
 	}
+	// A fetched model list belongs to the previously edited profile's
+	// provider/base URL; drop it when the editor loads a different profile.
+	m.clearModelList()
 	if m.selectedProfileIdx < 0 || m.selectedProfileIdx >= len(m.draft.Profiles) {
 		m.selectedProfileIdx = 0
 	}
@@ -422,6 +440,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// and surface here on a later tick. They must be handled before normal
 	// key/mouse routing so the active swatch can close cleanly.
 	switch typed := msg.(type) {
+	case modelsListedMsg:
+		m.handleModelsListed(typed)
+		return m, nil
 	case bubblepicker.ColorChangedMsg:
 		if m.theme != nil {
 			m.theme.applyChosenColor(typed.Color)
@@ -560,6 +581,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "d":
 					return m, m.deleteSelectedProfile()
 				}
+			}
+			// The model-list field doubles as a fetch trigger until a list has
+			// been fetched: enter/space starts the async ListModels call.
+			if dk == ddModel && !m.modelDD.Built() {
+				switch msg.String() {
+				case "enter", " ":
+					return m, m.fetchModelsCmd()
+				}
+				return m, nil
 			}
 			return m, m.forwardToDropdown(dk, msg)
 		}
@@ -1029,6 +1059,12 @@ func (m *Model) buildForm() string {
 		b.WriteString(dimStyle.Render("changes apply to the selected profile; click 'Set active' to use it for reviews") + "\n\n")
 		b.WriteString(zone.Mark(ZoneAIFieldName, m.fieldLabel("name", fieldProfileName)+"\n"+m.profileName.View()) + "\n\n")
 
+		// Provider preset picker (fills provider + base URL from a known endpoint).
+		b.WriteString(m.fieldLabel("preset (fills provider + base URL)", fieldPreset) + "\n")
+		m.ddPresetRow = strings.Count(b.String(), "\n")
+		b.WriteString(zone.Mark(ZonePresetDD, m.presetDD.TriggerView()) + "\n")
+		b.WriteString(dimStyle.Render(m.presetHint()) + "\n\n")
+
 		// Provider dropdown.
 		b.WriteString(m.fieldLabel("provider", fieldProvider) + "\n")
 		m.ddProviderRow = strings.Count(b.String(), "\n")
@@ -1036,6 +1072,11 @@ func (m *Model) buildForm() string {
 
 		b.WriteString(zone.Mark(ZoneAIFieldBaseURL, m.fieldLabel("base URL", fieldBaseURL)+"\n"+m.baseURL.View()) + "\n\n")
 		b.WriteString(zone.Mark(ZoneAIFieldModel, m.fieldLabel("model", fieldModel)+"\n"+m.model.View()) + "\n\n")
+
+		// Model picker (Phase 6 item 3): before a fetch, a button; after a
+		// successful fetch, a dropdown whose selection fills the model field.
+		m.buildModelPicker(&b)
+
 		b.WriteString(zone.Mark(ZoneAIFieldAPIKey, m.fieldLabel("API key (masked)", fieldAPIKey)+"\n"+m.apiKey.View()) + "\n\n")
 		b.WriteString(zone.Mark(ZoneAIFieldTimeout, m.fieldLabel("timeout (sec)", fieldTimeout)+"\n"+m.timeout.View()) + "\n\n")
 		b.WriteString(dimStyle.Render("Config file: "+aiconfig.DefaultPath()) + "\n\n")
@@ -1049,6 +1090,42 @@ func (m *Model) buildForm() string {
 	return b.String()
 }
 
+// presetHint returns the one-line description of the currently selected preset
+// (blank for "(custom)"), shown under the preset trigger.
+func (m *Model) presetHint() string {
+	i := m.presetDD.SelectedIndex()
+	if i <= 0 {
+		return "keep the fields below as-is, or pick a known provider endpoint"
+	}
+	presets := aiconfig.ProviderPresets()
+	if i-1 < len(presets) {
+		return presets[i-1].Notes
+	}
+	return ""
+}
+
+// buildModelPicker writes the model-listing UI into b: a fetch button until a
+// list has been retrieved, then a picker dropdown. It records ddModelRow (the
+// trigger's content-line index in the whole form) so an open panel composites
+// at the right row.
+func (m *Model) buildModelPicker(b *strings.Builder) {
+	b.WriteString(m.fieldLabel("model list", fieldModelList) + "\n")
+	if m.modelDD.Built() {
+		m.ddModelRow = strings.Count(b.String(), "\n")
+		b.WriteString(zone.Mark(ZoneModelDD, m.modelDD.TriggerView()) + "\n")
+		b.WriteString(dimStyle.Render("pick to fill the model field above") + "\n\n")
+		return
+	}
+	status := "enter / click to fetch models for this provider"
+	if m.modelsLoading {
+		status = "fetching models…"
+	} else if m.modelsErr != "" {
+		status = "fetch failed: " + m.modelsErr + " — type the model above"
+	}
+	b.WriteString(zone.Mark(ZoneModelFetch, okStyle.Render(" ⟳ Fetch models ")) + "\n")
+	b.WriteString(dimStyle.Render(status) + "\n\n")
+}
+
 // composeDropdownOverlays composites any open dropdown panel onto body. Each
 // Host sizes/positions its own trigger bounds in settings-body-local
 // coordinates (the trigger's on-screen row = its recorded content line index
@@ -1058,6 +1135,8 @@ func (m *Model) composeDropdownOverlays(body string) string {
 	body = m.strictnessDD.Composite(body, m.ddStrictRow-off, 0, m.width, m.bodyH)
 	body = m.profileDD.Composite(body, m.ddProfileRow-off, 0, m.width, m.bodyH)
 	body = m.providerDD.Composite(body, m.ddProviderRow-off, 0, m.width, m.bodyH)
+	body = m.presetDD.Composite(body, m.ddPresetRow-off, 0, m.width, m.bodyH)
+	body = m.modelDD.Composite(body, m.ddModelRow-off, 0, m.width, m.bodyH)
 	return body
 }
 
@@ -1096,6 +1175,10 @@ func (m *Model) SetContentOrigin(top int) {
 	m.strictnessDD.ContentTop = top
 	m.profileDD.ContentTop = top
 	m.providerDD.ContentTop = top
+	m.presetDD.ContentTop = top
+	if m.modelDD != nil {
+		m.modelDD.ContentTop = top
+	}
 }
 
 // buildThemeView assembles the Theme tab body (header + tab strip + panel).

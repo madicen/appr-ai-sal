@@ -44,6 +44,17 @@ func (p *openAIProvider) Complete(ctx context.Context, req Request) (Result, err
 	}
 
 	endpoint := strings.TrimRight(base, "/") + "/chat/completions"
+	// OpenAI-compatible endpoints authenticate with a bearer token.
+	setAuth := func(h http.Header) { h.Set("Authorization", "Bearer "+cfg.BearerForHTTP()) }
+	return openAIChatComplete(ctx, cfg, endpoint, model, setAuth, req)
+}
+
+// openAIChatComplete performs one OpenAI-style /chat/completions call and
+// parses the response. It is shared by openAIProvider (Ollama +
+// openai_compatible, bearer auth) and azureProvider (Azure OpenAI, api-key
+// header + deployment URL), which differ only in the endpoint URL and the
+// auth header — the request body and response shape are identical.
+func openAIChatComplete(ctx context.Context, cfg *aiconfig.Config, endpoint, model string, setAuth func(http.Header), req Request) (Result, error) {
 	body := map[string]any{
 		"model": model,
 		"messages": []map[string]string{
@@ -69,7 +80,9 @@ func (p *openAIProvider) Complete(ctx context.Context, req Request) (Result, err
 		return Result{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+cfg.BearerForHTTP())
+	if setAuth != nil {
+		setAuth(httpReq.Header)
+	}
 
 	resp, err := httpClientFor(cfg).Do(httpReq)
 	if err != nil {

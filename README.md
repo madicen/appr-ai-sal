@@ -519,7 +519,7 @@ happen in.
 - **Context expansion for backends without repo tools** (`context-expand`).
   Only the `claude` subprocess provider gets live repo tools
   (`Read,Glob,Grep`, scoped to the PR worktree); every HTTP provider
-  (`ollama` / `openai_compatible`, `gemini`) reviews the **diff blind** —
+  (`anthropic`, `azure`, `ollama` / `openai_compatible`, `gemini`) reviews the **diff blind** —
   it sees only the changed hunks, not the enclosing function bodies, the
   types the changed code references, or who calls the changed functions.
   When the active provider's capabilities report `RepoTools == false`,
@@ -1010,19 +1010,53 @@ reflects what you set in the **Settings** tab or edited in the file directly.
 
 | Provider | Behavior |
 |----------|----------|
-| `claude` (default) | Subprocess `claude -p --output-format json` with repo tools (`Read,Glob,Grep`) scoped to the PR worktree. |
+| `claude` (default) | Subprocess `claude -p --output-format json` with repo tools (`Read,Glob,Grep`) scoped to the PR worktree. Requires the `claude` CLI on `PATH`. |
+| `anthropic` | **Direct Anthropic HTTP API** — `POST {base}/v1/messages` with `x-api-key` + `anthropic-version` headers (no CLI, works headless/CI). Default base `https://api.anthropic.com`. Requires an API key and a model id (e.g. `claude-sonnet-4-20250514`). Reviews the diff blind (no repo tools), so context expansion applies. |
 | `gemini` | `generateContent` on the Google Generative Language API. Requires `APPR_AI_SAL_AI_API_KEY` and a model id (e.g. `gemini-2.0-flash`). Optional `APPR_AI_SAL_AI_BASE_URL` overrides the API origin (default `https://generativelanguage.googleapis.com`). |
 | `ollama` | OpenAI-style `POST {base}/v1/chat/completions`. Default base `http://127.0.0.1:11434/v1` if `base_url` is empty. Bearer uses the string `ollama` when no API key is set (local servers). |
-| `openai_compatible` | Same chat schema as Ollama; you must set `APPR_AI_SAL_AI_BASE_URL` to your server’s OpenAI root (e.g. `https://api.example.com/v1`). |
+| `openai_compatible` | Same chat schema as Ollama; you must set `APPR_AI_SAL_AI_BASE_URL` to your server’s OpenAI root (e.g. `https://api.example.com/v1`). Works with the presets below. |
+| `azure` | **Azure OpenAI** — OpenAI-compatible body, but a real transport variant: authenticates with an `api-key` header (not `Authorization: Bearer`) and addresses `{endpoint}/openai/deployments/{deployment}/chat/completions?api-version=…`. Set `base_url` to your resource endpoint (`https://<resource>.openai.azure.com`), the `model` field to your **deployment name**, and optionally `azure_api_version` (defaults to a stable GA version). |
+
+**Anthropic tool-use JSON forcing.** On the pipeline's JSON stages the direct
+`anthropic` provider guarantees well-formed JSON by defining a single tool
+whose `input_schema` is the caller's schema (or a permissive object when none
+is supplied) and forcing it via `tool_choice`; the tool call's `input` object is
+returned as the result. The JSON-salvage ladder still runs as a fallback.
+
+**Provider presets.** The Settings → Review & AI tab offers a preset picker that
+fills the provider + base URL (and, for Azure, the api-version) for common
+endpoints, after which every field stays editable:
+
+| Preset | Provider used | Base URL |
+|--------|---------------|----------|
+| OpenRouter | `openai_compatible` | `https://openrouter.ai/api/v1` |
+| GitHub Models | `openai_compatible` | `https://models.github.ai/inference` |
+| Groq | `openai_compatible` | `https://api.groq.com/openai/v1` |
+| Together | `openai_compatible` | `https://api.together.xyz/v1` |
+| Azure OpenAI | `azure` | *(your `https://<resource>.openai.azure.com`)* |
+| Anthropic API | `anthropic` | `https://api.anthropic.com` |
+
+The four proxy presets reuse the OpenAI-compatible transport verbatim (just a
+base URL + bearer key); Azure is the transport variant described above.
+
+**Model listing / picker.** Model ids no longer have to be hand-typed: the
+Settings tab's **model list** control fetches the models the current
+provider/base-URL/key can serve and lets you pick one (it fills the model
+field). Endpoints: Ollama `GET {base}/api/tags`, OpenAI-compatible
+`GET {base}/models`, Gemini `GET {base}/v1beta/models`, Anthropic
+`GET {base}/v1/models`. It is **fail-open**: if listing fails (offline,
+unsupported provider such as the `claude` CLI, or auth required) it records a
+short message and manual entry keeps working.
 
 The HTTP providers request **native JSON mode** on the pipeline's JSON stages
 (specialists, PR agents, arbiter, witness, vibe-coach, and the suggestion-repair
-pass — not the markdown-brief calls): `ollama`/`openai_compatible` send
-`response_format: {"type":"json_object"}` and `gemini` sends
+pass — not the markdown-brief calls): `ollama`/`openai_compatible`/`azure` send
+`response_format: {"type":"json_object"}`, `gemini` sends
 `generationConfig.responseMimeType: "application/json"` (plus a `responseSchema`
-when one is supplied). This reduces parse-failure retries; the JSON-salvage
-ladder still runs on every response, so nothing breaks if a backend ignores the
-hint. Claude (CLI subprocess) is unchanged.
+when one is supplied), and `anthropic` uses tool-use forcing. This reduces
+parse-failure retries; the JSON-salvage ladder still runs on every response, so
+nothing breaks if a backend ignores the hint. Claude (CLI subprocess) is
+unchanged.
 
 Only the `claude` subprocess advertises repo tools (`Capabilities().RepoTools ==
 true`); the HTTP providers report `RepoTools == false` and would otherwise review
@@ -1035,7 +1069,7 @@ starved of context.
 
 | Variable | Meaning |
 |----------|---------|
-| `APPR_AI_SAL_AI_PROVIDER` | `claude` \| `gemini` \| `ollama` \| `openai_compatible` |
+| `APPR_AI_SAL_AI_PROVIDER` | `claude` \| `anthropic` \| `gemini` \| `ollama` \| `openai_compatible` \| `azure` |
 | `APPR_AI_SAL_AI_BASE_URL` | Optional HTTP base (see provider table). |
 | `APPR_AI_SAL_AI_MODEL` | Model id (`--model` for Claude; HTTP model field for others). |
 | `APPR_AI_SAL_MODEL` | Legacy alias for Claude only when `APPR_AI_SAL_AI_MODEL` is unset. |
@@ -1091,7 +1125,9 @@ call:
 | Provider | Requirement checked |
 |----------|---------------------|
 | `openai_compatible` | A well-formed `http(s)` base URL is required. |
+| `anthropic` | An API key source is required (`api_key`, a set `api_key_env`, `api_key_cmd`, or `APPR_AI_SAL_AI_API_KEY`); the base URL is only shape-checked when set. |
 | `gemini` | An API key source is required (`api_key`, a set `api_key_env`, `api_key_cmd`, or `APPR_AI_SAL_AI_API_KEY`). |
+| `azure` | A well-formed `http(s)` endpoint base URL, an API key source, and a deployment name (the `model` field) are all required. |
 | `claude` | The `claude` CLI must be on your `PATH`. |
 | `ollama` | No key required; the base URL defaults to `http://127.0.0.1:11434/v1` and is only shape-checked when set. |
 
@@ -1177,7 +1213,7 @@ or a duplicate model in an `ensemble`).
 ### CLI flags
 
 ```text
--ai-provider string       claude | gemini | ollama | openai_compatible
+-ai-provider string       claude | anthropic | gemini | ollama | openai_compatible | azure
 -ai-base-url string      HTTP base URL when applicable
 -ai-model string         model id for the active provider
 -ai-api-key string       one-shot key for this run (not persisted; prefer env or api_key_env/api_key_cmd)
@@ -1262,7 +1298,7 @@ rules as `ai.json` / `$APPR_AI_SAL_CONFIG_DIR`):
 | `parallel_pr_agents` | Run the PR-level agents (description / checks / discussion / scope) concurrently with, and among, themselves. **Default `true`** — set explicitly to `false` to serialize after the specialists. |
 | `max_concurrent_inference` | Client-side cap on how many inference calls run at once across the **whole run** (specialists, PR agents, the repair pass, arbiter/witness). Default 3; any value ≤ 0 resolves to 3 (never unlimited). This bound is what makes the parallel defaults above safe against provider rate limits. |
 | `diff_elision_globs` | Override the set of file globs the **diff budgeter** drops from the diff before it is inlined into review prompts (each dropped file becomes a one-line manifest entry the agents still see). When unset, sensible defaults apply: `*.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`, `Cargo.lock`, `composer.lock`, `Gemfile.lock`, `poetry.lock`, `vendor/`, `*_generated*`, `*.min.js`, `*.min.css` (plus any binary file). Matching is basename-based for slash-free patterns, prefix-based for patterns ending in `/`, and full-path otherwise. |
-| `diff_byte_cap` | Override the whole-diff byte budget the diff budgeter enforces before inlining the diff. `0` (unset) resolves to a conservative per-provider default (Gemini 768 KiB, Claude 512 KiB, Ollama / OpenAI-compatible 256 KiB) chosen so a large PR never overflows the provider context window / triggers a 400. When the cap is hit, trailing files/hunks are elided and disclosed. |
+| `diff_byte_cap` | Override the whole-diff byte budget the diff budgeter enforces before inlining the diff. `0` (unset) resolves to a conservative per-provider default (Gemini 768 KiB, Claude / Anthropic 512 KiB, Ollama / OpenAI-compatible / Azure 256 KiB) chosen so a large PR never overflows the provider context window / triggers a 400. When the cap is hit, trailing files/hunks are elided and disclosed. |
 | `diff_per_file_line_cap` | Override the per-file unified-diff line cap (default 1500). The **tail** of any single file over the cap is elided with a `…N lines omitted` marker; leading lines keep their real line numbers so inline findings still anchor correctly. `0` (unset) uses the default. |
 | `max_consecutive_stage_failures` | **Circuit breaker (R4):** after this many AI stages fail in a row, the run aborts the remaining stages instead of grinding through the whole panel. Default 4; `0` (unset) uses the default; a **negative** value disables this arm. |
 | `run_wall_clock_cap_seconds` | **Circuit breaker (R4):** whole-run wall-clock cap. Once elapsed, no further stage is *started* (in-flight stages finish); the remaining stages are marked skipped and disclosed. Default 1800 (30 min); `0` (unset) uses the default; a **negative** value disables the cap. It never interrupts a running stage mid-call. |

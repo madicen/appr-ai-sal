@@ -110,6 +110,10 @@ func baseProviderFor(cfg *aiconfig.Config) (Provider, error) {
 		return &openAIProvider{cfg: cfg}, nil
 	case aiconfig.ProviderGemini:
 		return &geminiProvider{cfg: cfg}, nil
+	case aiconfig.ProviderAnthropic:
+		return &anthropicProvider{cfg: cfg}, nil
+	case aiconfig.ProviderAzure:
+		return &azureProvider{cfg: cfg}, nil
 	default:
 		return nil, fmt.Errorf("unsupported AI provider %q", cfg.Provider)
 	}

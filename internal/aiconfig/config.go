@@ -31,7 +31,21 @@ const (
 	ProviderGemini           Provider = "gemini"
 	ProviderOllama           Provider = "ollama"
 	ProviderOpenAICompatible Provider = "openai_compatible"
+	// ProviderAnthropic is the direct Anthropic HTTP API (/v1/messages with
+	// x-api-key + anthropic-version), distinct from the ProviderClaude
+	// subprocess that shells out to the `claude` CLI. It needs no local CLI,
+	// so it works headless / in CI.
+	ProviderAnthropic Provider = "anthropic"
+	// ProviderAzure is Azure OpenAI. It is OpenAI-compatible in body shape but
+	// a real transport variant: it authenticates with an `api-key` header
+	// (not Authorization: Bearer) and addresses a deployment-scoped URL
+	// ({endpoint}/openai/deployments/{deployment}/chat/completions?api-version=…).
+	ProviderAzure Provider = "azure"
 )
+
+// DefaultAzureAPIVersion is used when an Azure profile does not set one. It is
+// a stable, widely-supported GA api-version; users can override it per profile.
+const DefaultAzureAPIVersion = "2024-10-21"
 
 // ReviewStrictness controls how hard specialists should look for issues.
 type ReviewStrictness string
@@ -65,8 +79,13 @@ type Profile struct {
 	// resolution time (secret indirection). APIKeyCmd is a command whose
 	// stdout is used as the API key. Precedence when more than one is set:
 	// explicit api_key > api_key_env > api_key_cmd. See EffectiveAPIKey.
-	APIKeyEnv        string `json:"api_key_env,omitempty"`
-	APIKeyCmd        string `json:"api_key_cmd,omitempty"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+	APIKeyCmd string `json:"api_key_cmd,omitempty"`
+	// AzureAPIVersion is the Azure OpenAI api-version query parameter (only
+	// used when Provider == azure). Empty falls back to DefaultAzureAPIVersion.
+	// For Azure, Model is the deployment name (Azure addresses deployments,
+	// not model ids, in the URL path).
+	AzureAPIVersion  string `json:"azure_api_version,omitempty"`
 	TimeoutSec       int    `json:"timeout_sec,omitempty"`
 	RetryMaxAttempts int    `json:"retry_max_attempts,omitempty"`
 	RetryBaseMS      int    `json:"retry_base_ms,omitempty"`
@@ -135,8 +154,11 @@ type Config struct {
 	// APIKeyEnv / APIKeyCmd mirror the active profile's secret-indirection
 	// fields onto the flat config so EffectiveAPIKey can resolve them. See
 	// Profile.APIKeyEnv / Profile.APIKeyCmd.
-	APIKeyEnv        string           `json:"api_key_env,omitempty"`
-	APIKeyCmd        string           `json:"api_key_cmd,omitempty"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+	APIKeyCmd string `json:"api_key_cmd,omitempty"`
+	// AzureAPIVersion mirrors the active profile's Azure OpenAI api-version
+	// onto the flat config (only meaningful when Provider == azure).
+	AzureAPIVersion  string           `json:"azure_api_version,omitempty"`
 	TimeoutSec       int              `json:"timeout_sec,omitempty"`
 	ReviewStrictness ReviewStrictness `json:"review_strictness,omitempty"`
 	// RetryMaxAttempts is total tries per inference call (including the first). 0 uses default (5); 1 disables retry.
@@ -280,6 +302,9 @@ func (c *Config) Merge(o *Config) {
 	if o.APIKeyCmd != "" {
 		c.APIKeyCmd = o.APIKeyCmd
 	}
+	if o.AzureAPIVersion != "" {
+		c.AzureAPIVersion = o.AzureAPIVersion
+	}
 	if o.TimeoutSec != 0 {
 		c.TimeoutSec = o.TimeoutSec
 	}
@@ -344,8 +369,12 @@ func ParseProvider(s string) (Provider, error) {
 		return ProviderOllama, nil
 	case "openai_compatible":
 		return ProviderOpenAICompatible, nil
+	case "anthropic", "anthropic_api":
+		return ProviderAnthropic, nil
+	case "azure", "azure_openai":
+		return ProviderAzure, nil
 	default:
-		return "", fmt.Errorf("unknown AI provider %q (want claude, gemini, ollama, openai_compatible)", s)
+		return "", fmt.Errorf("unknown AI provider %q (want claude, anthropic, gemini, ollama, openai_compatible, azure)", s)
 	}
 }
 
@@ -549,6 +578,7 @@ func (c *Config) snapshotProfile(name string) Profile {
 		APIKey:                  c.APIKey,
 		APIKeyEnv:               c.APIKeyEnv,
 		APIKeyCmd:               c.APIKeyCmd,
+		AzureAPIVersion:         c.AzureAPIVersion,
 		TimeoutSec:              c.TimeoutSec,
 		RetryMaxAttempts:        c.RetryMaxAttempts,
 		RetryBaseMS:             c.RetryBaseMS,
@@ -593,6 +623,7 @@ func (c *Config) applyActiveProfile() {
 	c.APIKey = p.APIKey
 	c.APIKeyEnv = p.APIKeyEnv
 	c.APIKeyCmd = p.APIKeyCmd
+	c.AzureAPIVersion = p.AzureAPIVersion
 	c.TimeoutSec = p.TimeoutSec
 	c.RetryMaxAttempts = p.RetryMaxAttempts
 	c.RetryBaseMS = p.RetryBaseMS
@@ -891,8 +922,24 @@ func (c *Config) AIBaseURLResolved() string {
 		if strings.TrimSpace(c.BaseURL) == "" {
 			return "https://generativelanguage.googleapis.com"
 		}
+	case ProviderAnthropic:
+		if strings.TrimSpace(c.BaseURL) == "" {
+			return "https://api.anthropic.com"
+		}
 	}
 	return strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+}
+
+// AzureAPIVersionOrDefault returns the Azure OpenAI api-version query value,
+// falling back to DefaultAzureAPIVersion when the profile leaves it empty.
+func (c *Config) AzureAPIVersionOrDefault() string {
+	if c == nil {
+		return DefaultAzureAPIVersion
+	}
+	if v := strings.TrimSpace(c.AzureAPIVersion); v != "" {
+		return v
+	}
+	return DefaultAzureAPIVersion
 }
 
 // AIModelOrDefault picks a model id, including Claude legacy env when applicable.
@@ -1172,6 +1219,28 @@ func (p Profile) ValidateForProvider() error {
 		if _, err := exec.LookPath("claude"); err != nil {
 			return fmt.Errorf("profile %q: the `claude` CLI is not on your PATH — install it (see https://docs.claude.com/claude-code) or pick a different provider", label)
 		}
+	case ProviderAnthropic:
+		if !p.hasAPIKeySource() {
+			return fmt.Errorf("profile %q: anthropic requires an API key — set it in the profile, reference one with api_key_env / api_key_cmd, or export APPR_AI_SAL_AI_API_KEY", label)
+		}
+		if strings.TrimSpace(p.BaseURL) != "" {
+			if err := validateBaseURL(p.BaseURL); err != nil {
+				return fmt.Errorf("profile %q: %w", label, err)
+			}
+		}
+	case ProviderAzure:
+		if strings.TrimSpace(p.BaseURL) == "" {
+			return fmt.Errorf("profile %q: azure requires the resource endpoint as the base URL (e.g. https://my-resource.openai.azure.com)", label)
+		}
+		if err := validateBaseURL(p.BaseURL); err != nil {
+			return fmt.Errorf("profile %q: %w", label, err)
+		}
+		if !p.hasAPIKeySource() {
+			return fmt.Errorf("profile %q: azure requires an API key — set it in the profile, reference one with api_key_env / api_key_cmd, or export APPR_AI_SAL_AI_API_KEY", label)
+		}
+		if strings.TrimSpace(p.Model) == "" {
+			return fmt.Errorf("profile %q: azure requires a deployment name (set the model field to your Azure deployment)", label)
+		}
 	case ProviderOllama:
 		// Base URL is optional (defaults to http://127.0.0.1:11434/v1) and no
 		// API key is required; only validate a base URL's shape when set. A
@@ -1233,16 +1302,17 @@ func (c *Config) ValidateForProvider() error {
 		return nil
 	}
 	eff := Profile{
-		Name:        c.ActiveProfile,
-		Provider:    c.Provider,
-		BaseURL:     c.BaseURL,
-		Model:       c.Model,
-		APIKey:      c.APIKey,
-		APIKeyEnv:   c.APIKeyEnv,
-		APIKeyCmd:   c.APIKeyCmd,
-		TimeoutSec:  c.TimeoutSec,
-		StageModels: c.StageModels,
-		Ensemble:    c.Ensemble,
+		Name:            c.ActiveProfile,
+		Provider:        c.Provider,
+		BaseURL:         c.BaseURL,
+		Model:           c.Model,
+		APIKey:          c.APIKey,
+		APIKeyEnv:       c.APIKeyEnv,
+		APIKeyCmd:       c.APIKeyCmd,
+		AzureAPIVersion: c.AzureAPIVersion,
+		TimeoutSec:      c.TimeoutSec,
+		StageModels:     c.StageModels,
+		Ensemble:        c.Ensemble,
 	}
 	if strings.TrimSpace(eff.Name) == "" {
 		eff.Name = DefaultProfileName

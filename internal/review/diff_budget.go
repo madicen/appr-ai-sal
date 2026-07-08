@@ -74,6 +74,10 @@ func providerDiffByteBudget(cfg *aiconfig.Config) int {
 		// Large window, and Claude reads files from the worktree directly, so
 		// the inlined diff is a supplement rather than the sole context.
 		return 524288 // 512 KiB
+	case aiconfig.ProviderAnthropic:
+		// Direct Anthropic API: large (200k-token) context window, but it
+		// reviews the diff blind (no repo tools), so keep a healthy cap.
+		return 524288 // 512 KiB
 	case aiconfig.ProviderOllama, aiconfig.ProviderOpenAICompatible:
 		// Local / unknown backends — stay conservative.
 		return defaultDiffByteCap

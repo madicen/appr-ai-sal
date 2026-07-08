@@ -33,9 +33,10 @@ func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
 
 // reviewPanelHandlers are the click targets on the Review & AI panel.
 func (m *Model) reviewPanelHandlers(msg tea.MouseMsg) []zones.ClickHandler {
-	return []zones.ClickHandler{
+	h := []zones.ClickHandler{
 		{Zone: ZoneStrictnessDD, Do: m.openDropdownCmd(ddStrictness, msg)},
 		{Zone: ZoneProfileDD, Do: m.openDropdownCmd(ddProfile, msg)},
+		{Zone: ZonePresetDD, Do: m.openDropdownCmd(ddPreset, msg)},
 		{Zone: ZoneProviderDD, Do: m.openDropdownCmd(ddProvider, msg)},
 		{Zone: ZoneProfileSetActive, Do: m.profileActionCmd(m.activateSelectedProfile)},
 		{Zone: ZoneProfileAdd, Do: m.addNewProfile},
@@ -43,9 +44,23 @@ func (m *Model) reviewPanelHandlers(msg tea.MouseMsg) []zones.ClickHandler {
 		{Zone: ZoneAIFieldName, Do: m.aiFieldCmd(fieldProfileName)},
 		{Zone: ZoneAIFieldBaseURL, Do: m.aiFieldCmd(fieldBaseURL)},
 		{Zone: ZoneAIFieldModel, Do: m.aiFieldCmd(fieldModel)},
+		{Zone: ZoneModelFetch, Do: m.modelFetchClickCmd},
 		{Zone: ZoneAIFieldAPIKey, Do: m.aiFieldCmd(fieldAPIKey)},
 		{Zone: ZoneAIFieldTimeout, Do: m.aiFieldCmd(fieldTimeout)},
 	}
+	// The model picker dropdown only exists after a successful fetch.
+	if m.modelDD.Built() {
+		h = append(h, zones.ClickHandler{Zone: ZoneModelDD, Do: m.openDropdownCmd(ddModel, msg)})
+	}
+	return h
+}
+
+// modelFetchClickCmd focuses the model-list field and starts an async fetch.
+func (m *Model) modelFetchClickCmd() tea.Cmd {
+	m.blurInputs()
+	m.focus = fieldModelList
+	m.syncDropdownFocus()
+	return m.fetchModelsCmd()
 }
 
 // repoPanelHandlers are the click targets on the Repo context panel.

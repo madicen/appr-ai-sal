@@ -15,6 +15,8 @@ const (
 	ddStrictness
 	ddProfile
 	ddProvider
+	ddPreset
+	ddModel
 )
 
 // providerDDValues maps the provider dropdown's option index to the
@@ -22,15 +24,31 @@ const (
 var (
 	providerDDValues = []aiconfig.Provider{
 		aiconfig.ProviderClaude,
+		aiconfig.ProviderAnthropic,
 		aiconfig.ProviderGemini,
 		aiconfig.ProviderOllama,
 		aiconfig.ProviderOpenAICompatible,
+		aiconfig.ProviderAzure,
 	}
-	providerDDLabels = []string{"claude", "gemini", "ollama", "openai_compatible"}
+	providerDDLabels = []string{"claude", "anthropic", "gemini", "ollama", "openai_compatible", "azure"}
 
 	// strictnessDDLabels index order matches strictnessAt / strictnessIndex.
 	strictnessDDLabels = []string{"critical-only", "lenient", "balanced", "strict"}
 )
+
+// presetDDLabels are the preset picker options: a leading "(custom)" no-op
+// entry followed by each built-in provider preset. Applying a non-custom entry
+// fills the provider + base URL (+ Azure api-version). presetDDIndexToPreset
+// converts the option index to a preset index into aiconfig.ProviderPresets.
+func presetDDLabels() []string {
+	presets := aiconfig.ProviderPresets()
+	labels := make([]string, 0, len(presets)+1)
+	labels = append(labels, "(custom)")
+	for _, p := range presets {
+		labels = append(labels, p.Name)
+	}
+	return labels
+}
 
 // providerDDIndex returns the dropdown index for a provider (0 when unknown).
 func providerDDIndex(p aiconfig.Provider) int {
@@ -80,6 +98,42 @@ func (m *Model) initDropdowns(selProv aiconfig.Provider) {
 		return nil
 	}
 	m.refreshProfileDropdown()
+
+	// Preset picker: applying a non-"(custom)" entry fills provider + base URL
+	// (+ Azure api-version) onto the edited profile. Manual entry still works.
+	m.presetDD = dropdown.New("preset")
+	m.presetDD.OnSelect = func(idx int) tea.Cmd {
+		m.applyPreset(idx)
+		return nil
+	}
+	m.presetDD.Rebuild(presetDDLabels(), 0)
+}
+
+// applyPreset copies preset option idx (0 = "(custom)", a no-op) onto the
+// selected profile and reloads the editor. It commits in-progress edits first
+// so nothing is lost.
+func (m *Model) applyPreset(idx int) {
+	if idx <= 0 { // 0 = "(custom)"
+		return
+	}
+	presets := aiconfig.ProviderPresets()
+	pi := idx - 1
+	if pi < 0 || pi >= len(presets) {
+		return
+	}
+	preset := presets[pi]
+	m.commitEditorToSelectedProfile()
+	if m.selectedProfileIdx < 0 || m.selectedProfileIdx >= len(m.draft.Profiles) {
+		return
+	}
+	prof := m.draft.Profiles[m.selectedProfileIdx]
+	prof.Provider = preset.Provider
+	prof.BaseURL = preset.BaseURL
+	if preset.Provider == aiconfig.ProviderAzure {
+		prof.AzureAPIVersion = preset.APIVersion
+	}
+	m.draft.Profiles[m.selectedProfileIdx] = prof
+	m.loadEditorFromSelectedProfile()
 }
 
 // profileDDLabels builds the profile dropdown options from the draft profile
@@ -124,6 +178,10 @@ func (m *Model) dropdownForKind(kind int) *dropdown.Host {
 		return m.profileDD
 	case ddProvider:
 		return m.providerDD
+	case ddPreset:
+		return m.presetDD
+	case ddModel:
+		return m.modelDD
 	}
 	return nil
 }
@@ -138,6 +196,10 @@ func (m *Model) openDropdownKind() int {
 		return ddProfile
 	case m.providerDD.Open():
 		return ddProvider
+	case m.presetDD.Open():
+		return ddPreset
+	case m.modelDD.Open():
+		return ddModel
 	}
 	return ddNone
 }
@@ -152,8 +214,12 @@ func (m *Model) focusedDropdownKind() int {
 		return ddStrictness
 	case fieldProfilePicker:
 		return ddProfile
+	case fieldPreset:
+		return ddPreset
 	case fieldProvider:
 		return ddProvider
+	case fieldModelList:
+		return ddModel
 	default:
 		return ddNone
 	}
@@ -166,8 +232,12 @@ func fieldForDropdown(kind int) int {
 		return fieldStrictness
 	case ddProfile:
 		return fieldProfilePicker
+	case ddPreset:
+		return fieldPreset
 	case ddProvider:
 		return fieldProvider
+	case ddModel:
+		return fieldModelList
 	default:
 		return fieldStrictness
 	}
@@ -183,6 +253,8 @@ func (m *Model) syncDropdownFocus() {
 	m.strictnessDD.SetFocused(fk == ddStrictness)
 	m.profileDD.SetFocused(fk == ddProfile)
 	m.providerDD.SetFocused(fk == ddProvider)
+	m.presetDD.SetFocused(fk == ddPreset)
+	m.modelDD.SetFocused(fk == ddModel)
 }
 
 // forwardToDropdown routes msg to the dropdown of kind. The Host translates
