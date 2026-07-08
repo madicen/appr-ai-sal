@@ -54,6 +54,13 @@ type EvalInput struct {
 	// technology-expert briefs; see ActiveSpecialists). Set true when the
 	// fixture supplies a TechSection.
 	TechConfigured bool
+	// Intent is the optional Q8 PR-author intent (description + linked-issue
+	// extraction) a fixture can supply to exercise the intent-aware stages
+	// (testing, scope, vibe-coach). The evals harness does NOT run a live
+	// intent pre-pass — it must be deterministic and gh/network-free — so this
+	// is injected directly. Nil (the default) renders no intent section, so an
+	// intent-free corpus behaves byte-identically to pre-Q8.
+	Intent *PRIntent
 	// RunPRAgents / RunWitness / RunArbiter / RunVibeCoach select which
 	// synthesis stages run. The specialists always run; the rest are opt-in so
 	// a scoring-only corpus need not supply arbiter/vibe canned responses.
@@ -143,6 +150,10 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 	acc := newUsageAccumulator()
 	ctx = ai.WithUsageObserver(ctx, acc.record)
 
+	// Q8: render the fixture-supplied intent once; injected only into
+	// intent-aware stages, empty (unchanged behaviour) when in.Intent is nil.
+	intentSection := FormatIntentSection(in.Intent)
+
 	// --- Code specialists ------------------------------------------------
 	specResults := make([]SpecialistResult, 0)
 	for _, name := range ActiveSpecialists(in.TechConfigured) {
@@ -155,10 +166,14 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 		if specWantsEvidence(name) {
 			ev = in.Evidence
 		}
+		intent := ""
+		if specWantsIntent(name) {
+			intent = intentSection
+		}
 		// The evals harness intentionally runs no static-analysis pre-pass:
 		// it must be deterministic and independent of which external tools are
 		// installed, so staticSection / staticCleanFiles are empty.
-		r := runReviewSpecialist(sctx, cfg, name, in.Worktree, in.PR, in.Diff, brief, ev, "", nil, in.LangSection, in.TechSection)
+		r := runReviewSpecialist(sctx, cfg, name, in.Worktree, in.PR, in.Diff, brief, ev, "", nil, in.LangSection, in.TechSection, intent)
 		specResults = append(specResults, r)
 		obs.Agents = append(obs.Agents, agentObservation(name, KindCode, r))
 	}
@@ -169,7 +184,11 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 		prIn := PRAgentInput{Checks: in.Checks, Threads: in.Threads, Discussion: in.Discussion}
 		for _, name := range AllPRAgents {
 			pctx := applog.WithStage(ctx, "pr-agent "+name)
-			r := runPRAgent(pctx, cfg, name, in.Worktree, in.PR, in.Diff, prIn)
+			intent := ""
+			if specWantsIntent(name) {
+				intent = intentSection
+			}
+			r := runPRAgent(pctx, cfg, name, in.Worktree, in.PR, in.Diff, prIn, intent)
 			prResults = append(prResults, r)
 			obs.Agents = append(obs.Agents, agentObservation(name, KindPRWide, r))
 		}
@@ -229,7 +248,7 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 
 	// --- Vibe-coach (optional) -------------------------------------------
 	if in.RunVibeCoach {
-		d := &Draft{PR: in.PR, Diff: in.Diff, Worktree: in.Worktree, Strictness: cfg.ReviewStrictness, Specialists: all}
+		d := &Draft{PR: in.PR, Diff: in.Diff, Worktree: in.Worktree, Strictness: cfg.ReviewStrictness, Specialists: all, PRIntent: in.Intent}
 		if obs.Arbiter != nil && obs.Arbiter.Err == nil {
 			d.RepoArbiter = obs.Arbiter
 			FinalizeRepoArbiter(obs.Arbiter, d)

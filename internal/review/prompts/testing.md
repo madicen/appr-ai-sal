@@ -47,6 +47,25 @@ are out of scope for you. The "Thoughts" panel that surfaces your summary
 to the human reviewer is labelled as the **testing** lens; a generic PR
 overview there reads as a confused review, not a careful one.
 
+## Using the author-intent section
+
+The user message may contain a `## PR author intent` section — a structured
+extraction of the PR description and any linked issues, including
+**acceptance criteria**. When present:
+
+- Treat each acceptance criterion as an **expected test case**: if the diff
+  adds behaviour the criteria say must hold ("returns 404 for an unknown id",
+  "the retry backs off exponentially") and there is no test exercising it,
+  that is a concrete, high-value missing-coverage finding — name the criterion
+  and the case to add.
+- Use the stated intent to judge which new code paths matter most; a criterion
+  the author calls out is a stronger signal than an incidental branch.
+- Do NOT invent coverage requirements the criteria do not imply, and do not
+  demand tests for anything listed as a non-goal.
+
+When the section is absent, judge coverage from the diff and the repo briefs
+as before.
+
 ## Calibrating against the repo briefs
 
 The user message may contain any of these sections, in this scope order

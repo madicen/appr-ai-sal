@@ -63,6 +63,13 @@ type Draft struct {
 	// review ran on a truncated diff so PR authors know it didn't see
 	// everything.
 	DiffBudget *BudgetReport `json:"-"`
+	// PRIntent is the Q8 author-intent extraction (description + linked issues)
+	// produced by the intent pre-pass. Nil when the pre-pass was skipped or
+	// failed (fail-open) — in which case the vibe-coach's lazy re-run injects
+	// no intent section, identical to pre-Q8 behaviour. Carried on the Draft so
+	// the TUI's lazy vibe-coach re-run (RunVibeCoachForDraft) grounds itself in
+	// the same intent the pipeline used.
+	PRIntent *PRIntent `json:"-"`
 }
 
 // severityFloor returns the strictness floor recorded on the Draft, or

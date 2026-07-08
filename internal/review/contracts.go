@@ -531,13 +531,32 @@ var arbiterSchema = sync.OnceValue(func() json.RawMessage {
 	}))
 })
 
+// intentSchema is the schema for the Q8 PR-author intent pre-pass output
+// (PRIntent). It is a plain metadata-extraction shape — no registry-sourced
+// enums — kept in the same OpenAPI subset as the other schemas so a
+// schema-capable provider (Gemini responseSchema) can constrain it.
+var intentSchema = sync.OnceValue(func() json.RawMessage {
+	linkedIssue := jsonObject(map[string]any{
+		"reference": stringSchema(),
+		"title":     stringSchema(),
+		"relevance": stringSchema(),
+	})
+	return mustSchema(jsonObject(map[string]any{
+		"intent":              stringSchema(),
+		"acceptance_criteria": arraySchema(stringSchema()),
+		"non_goals":           arraySchema(stringSchema()),
+		"linked_issues":       arraySchema(linkedIssue),
+	}, "intent"))
+})
+
 // AgentSchemas returns the per-agent JSON schema for every built-in JSON stage,
 // keyed by the agent name (code specialists, PR agents, "vibe-coach",
-// "repo-arbiter"). It is the registry-derived schema catalogue R5 wires into
-// each JSON stage's native-JSON request. User-defined code specialists share
-// the specialist schema; user-defined PR-wide agents share the slim schema.
+// "repo-arbiter", "intent"). It is the registry-derived schema catalogue R5
+// wires into each JSON stage's native-JSON request. User-defined code
+// specialists share the specialist schema; user-defined PR-wide agents share
+// the slim schema.
 func AgentSchemas() map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(AllSpecialists)+len(AllPRAgents)+2)
+	out := make(map[string]json.RawMessage, len(AllSpecialists)+len(AllPRAgents)+3)
 	for _, n := range AllSpecialists {
 		out[n] = specialistSchema()
 	}
@@ -546,6 +565,7 @@ func AgentSchemas() map[string]json.RawMessage {
 	}
 	out[SpecVibeCoach] = vibeCoachSchema()
 	out[specRepoArbiter] = arbiterSchema()
+	out[SpecIntent] = intentSchema()
 	return out
 }
 

@@ -93,7 +93,7 @@ func TestDowngradeFormatterSilencedFindings(t *testing.T) {
 func TestBuildReviewUserPromptInjectsStaticSection(t *testing.T) {
 	pr := &gh.PR{Number: 1, Title: "x", Repository: "o/r", BaseRef: "main", HeadRef: "feat"}
 	static := staticpass.WrapSpecialistSection("gofmt flags `x.go`; do not re-report.")
-	got := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced, "", "", static, "", "")
+	got := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced, "", "", static, "", "", "")
 	if !strings.Contains(got, staticpass.SpecialistSectionHeading) {
 		t.Fatalf("prompt missing static-analysis heading:\n%s", got)
 	}

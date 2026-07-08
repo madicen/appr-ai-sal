@@ -84,7 +84,7 @@ func TestPerStageModelRouting(t *testing.T) {
 	out := make(chan Progress, 1000)
 	breaker := newRunBreaker(time.Now(), 0, 0)
 	_ = runSpecialistsPhase(context.Background(), runCfg, sequentialRepoConfig(), "/tmp/wt", &gh.PR{}, "",
-		nil, "", "", nil, "", "", breaker, out)
+		nil, "", "", nil, "", "", "", breaker, out)
 	close(out)
 
 	got := map[string]string{}
@@ -118,7 +118,7 @@ func TestNoStageModelsBackwardCompat(t *testing.T) {
 	out := make(chan Progress, 1000)
 	breaker := newRunBreaker(time.Now(), 0, 0)
 	_ = runSpecialistsPhase(context.Background(), runCfg, sequentialRepoConfig(), "/tmp/wt", &gh.PR{}, "",
-		nil, "", "", nil, "", "", breaker, out)
+		nil, "", "", nil, "", "", "", breaker, out)
 	close(out)
 
 	if len(*calls) == 0 {
@@ -167,7 +167,7 @@ func TestEnsembleUnionAndDedupe(t *testing.T) {
 	out := make(chan Progress, 1000)
 	breaker := newRunBreaker(time.Now(), 0, 0)
 	results := runSpecialistsPhase(context.Background(), runCfg, sequentialRepoConfig(), "/tmp/wt", &gh.PR{}, "",
-		nil, "", "", nil, "", "", breaker, out)
+		nil, "", "", nil, "", "", "", breaker, out)
 	close(out)
 
 	// Both ensemble models were invoked for the security stage.

@@ -151,7 +151,7 @@ func TestSlimPRAgentContractIsMateriallySmaller(t *testing.T) {
 // TestPRAgentPromptUsesSlimContract proves the built PR-agent user prompt
 // carries the slim contract, not the full specialist contract.
 func TestPRAgentPromptUsesSlimContract(t *testing.T) {
-	got := buildPRAgentUserPrompt(SpecChecks, prAgentTestPR(), prAgentTestDiff, PRAgentInput{}, "")
+	got := buildPRAgentUserPrompt(SpecChecks, prAgentTestPR(), prAgentTestDiff, PRAgentInput{}, "", "")
 	if !strings.Contains(got, prAgentOutputContract) {
 		t.Fatalf("PR-agent prompt does not contain the slim contract")
 	}

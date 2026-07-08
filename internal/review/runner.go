@@ -133,6 +133,17 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// (only gh/git fetches), so no call escapes the cap.
 		ctx = ai.WithConcurrencyLimit(ctx, rc.MaxConcurrentInferenceOrDefault())
 
+		// Q8: PR-author intent pre-pass. One cheap LLM call over the PR
+		// description + linked issues, extracted into a structured section
+		// injected into the intent-aware stages (scope, testing, vibe-coach).
+		// Launched here — after the usage observer + concurrency cap are on
+		// ctx, so the call is metered and capped — and collected just before
+		// the specialist / PR-agent phases, overlapping with repo-context
+		// composition so it rarely adds wall-clock. Fully fail-open: a nil
+		// result means the intent-aware stages behave exactly as before Q8.
+		intentCh := make(chan *PRIntent, 1)
+		go func() { intentCh <- RunIntentPrepass(ctx, runCfg, ref, pr) }()
+
 		// R4: aggregate run circuit breaker. Trips when too many AI stages fail
 		// in a row OR the whole run exceeds a wall-clock cap; once tripped the
 		// remaining stages are skipped (never interrupted mid-call) and marked
@@ -303,6 +314,17 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// done before the arbiter. Default (flag off): PR agents run after the
 		// specialists, sequentially, to keep concurrent LLM calls (and
 		// rate-limit bursts) low — mirroring ParallelSpecialists.
+		// Collect the intent pre-pass result (launched above). Renders to an
+		// empty section on a fail-open nil, so the intent-aware stages stay
+		// byte-identical to pre-Q8 in that case.
+		prIntent := <-intentCh
+		intentSection := FormatIntentSection(prIntent)
+		if prIntent.HasContent() {
+			out <- Progress{Stage: "intent", Detail: fmt.Sprintf("%d bytes", len(intentSection))}
+		} else {
+			out <- Progress{Stage: "intent", Detail: "skipped (no description / issues)"}
+		}
+
 		var prAgents []SpecialistResult
 		prParallel := prAgentsEnabled && rc != nil && rc.ParallelPRAgents
 		var prWG sync.WaitGroup
@@ -312,7 +334,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				defer prWG.Done()
 				prData := <-prDataCh
 				prData.StaticAnnotations = staticChecks
-				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, breaker, out))
+				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
 			}()
 		}
 
@@ -320,14 +342,14 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// or parallel when configured / env override — see runSpecialistsPhase.
 		// They receive the shaped diff (R3) so no single call can overflow the
 		// provider context window.
-		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, perAgent, prEvidence, staticSection, staticCleanFiles, langSection, techSection, breaker, out)
+		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, perAgent, prEvidence, staticSection, staticCleanFiles, langSection, techSection, intentSection, breaker, out)
 
 		if prParallel {
 			prWG.Wait()
 		} else if prAgentsEnabled {
 			prData := <-prDataCh
 			prData.StaticAnnotations = staticChecks
-			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, breaker, out))
+			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
 		}
 
 		cv := <-cvCh
@@ -359,6 +381,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			Specialists:                allSpecialists,
 			RepositoryContext:          repoBlock,
 			ContextVersusChangeSummary: cvSummary,
+			PRIntent:                   prIntent,
 		}
 		// Carry the diff-budget report so the rendered body can disclose that
 		// the review ran on a truncated diff (R3). Only set when shaping
@@ -534,7 +557,10 @@ func HasUsableTechExperts(pr *gh.PR, rc *repoconfig.Config) bool {
 //
 // techSection is the rendered technology-experts section (one labelled block
 // per configured tech for this repo); shared across every specialist.
-func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
+// intentSection is the Q8 rendered `## PR author intent` block; it is injected
+// only into intent-aware specialists (testing) and is "" for the rest and for a
+// no-op pre-pass, keeping every other specialist's prompt byte-identical.
+func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, intentSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "specialist", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
@@ -548,6 +574,10 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 		if specWantsEvidence(name) {
 			ev = prEvidence
 		}
+		intent := ""
+		if specWantsIntent(name) {
+			intent = intentSection
+		}
 		// One member run against the given (possibly stage-routed / ensemble)
 		// config, with the stage's retry + per-stage timeout budget. Budget is
 		// read from the stage cfg, which is a clone of runCfg differing only in
@@ -557,7 +587,7 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 			_ = stageWithRetry(ctx, stageCfg, "specialist "+name, notify, func(sctx context.Context) error {
 				stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "specialist "+name), perStageBudget(stageCfg))
 				defer cancel()
-				r = runReviewSpecialist(stCtx, stageCfg, name, worktree, pr, diff, repoCtx, ev, staticSection, staticCleanFiles, langSection, techSection)
+				r = runReviewSpecialist(stCtx, stageCfg, name, worktree, pr, diff, repoCtx, ev, staticSection, staticCleanFiles, langSection, techSection, intent)
 				if r.Err != nil {
 					return r.Err
 				}
@@ -652,18 +682,24 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 // run sequentially by default, or concurrently among themselves when
 // rc.ParallelPRAgents is set. Results are returned in AllPRAgents order;
 // callers may re-sort with sortedPRAgentResults after parallel runs.
-func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, in PRAgentInput, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
+// intentSection is the Q8 rendered `## PR author intent` block; injected only
+// into intent-aware PR agents (scope) and "" for the rest / a no-op pre-pass.
+func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, in PRAgentInput, intentSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "pr-agent", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
 			out <- Progress{Stage: "pr-agent", Detail: fmt.Sprintf("%s:retry %d (%s)", name, attempt, retryReason(err))}
+		}
+		intent := ""
+		if specWantsIntent(name) {
+			intent = intentSection
 		}
 		runWith := func(stageCfg *aiconfig.Config) SpecialistResult {
 			var r SpecialistResult
 			_ = stageWithRetry(ctx, stageCfg, "pr-agent "+name, notify, func(sctx context.Context) error {
 				stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "pr-agent "+name), perStageBudget(stageCfg))
 				defer cancel()
-				r = runPRAgent(stCtx, stageCfg, name, worktree, pr, diff, in)
+				r = runPRAgent(stCtx, stageCfg, name, worktree, pr, diff, in, intent)
 				if r.Err != nil {
 					return r.Err
 				}

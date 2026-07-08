@@ -27,6 +27,23 @@ them as identical:
 
 Your **`summary`** must stay **short** (at most three sentences): verdict rationale only — **do not** restate each specialist or enumerate findings (those appear as inline comments or inside `agent_prompt` blocks).
 
+### Grounding in the author's intent
+
+The user message may contain a `## PR author intent` section — a structured
+extraction of the PR description and any linked issues (intent, **acceptance
+criteria**, and explicit **non-goals**). When present, use it to ground your
+verdict and your "done-when" criteria:
+
+- Phrase each prompt's done-when in terms of the author's acceptance criteria
+  where they apply, so the author's AI is driving toward the stated goal.
+- Do NOT demand work the author listed as a **non-goal**; if a specialist
+  finding pushes for a stated non-goal, do not build a prompt around it.
+- The intent never manufactures findings — you still ground every prompt in
+  the specialist **findings** below. Intent only calibrates the verdict and
+  the wording of the fix prompts.
+
+When the section is absent, reason from the findings and title as before.
+
 When **`verdict` is `request_changes`**, you must emit at least **one** `agent_prompt` with concrete files, symbols, and done-when criteria — unless every blocking fix is already posted as a one-click GitHub **suggestion** on the diff and nothing else needs an AI instruction (say that explicitly in `summary` and use an empty `prompts` array only in that edge case).
 
 ## Ground everything in findings (non-negotiable)

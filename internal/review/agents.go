@@ -67,7 +67,12 @@ func augmentPromptsForProvider(repoTools bool, systemPrompt, userPrompt string, 
 // the deterministic tools already flag, injected into EVERY code specialist so
 // they don't re-report tool findings. staticCleanFiles is the set of files a
 // formatter passed clean, driving the Q5.d "linter is silent" downgrade.
-func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string) SpecialistResult {
+// intentSection is the pre-rendered Q8 `## PR author intent` block. It is
+// non-empty only for intent-aware specs (testing, scope) AND only when the
+// intent pre-pass extracted something; it is "" for every other specialist and
+// whenever the pre-pass was a no-op, so those prompts are byte-for-byte
+// unchanged from before Q8.
+func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, intentSection string) SpecialistResult {
 	res := SpecialistResult{Specialist: name, Findings: []Finding{}}
 
 	systemPrompt, err := SpecialistPrompt(name)
@@ -76,7 +81,7 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		return res
 	}
 
-	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, staticSection, langSection, techSection)
+	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, staticSection, langSection, techSection, intentSection)
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, hasContext)
 
@@ -203,11 +208,16 @@ func RunVibeCoachForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, n
 	// both the streaming pipeline and the TUI's lazy re-run pick up routing.
 	cfg = cfg.ForStage(StageVibeCoach)
 	vibeInput := SpecialistsForVibeCoach(d, d.Specialists)
+	// Q8: ground the vibe-coach's verdict / "done-when" prompts in the
+	// extracted author intent (empty section when the pre-pass was a no-op →
+	// unchanged behaviour). Threaded via the Draft so the TUI's lazy re-run
+	// picks it up too.
+	intentSection := FormatIntentSection(d.PRIntent)
 	var res *VibeCoachResult
 	_ = stageWithRetry(ctx, cfg, "vibe-coach", notify, func(sctx context.Context) error {
 		stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "vibe-coach"), perStageBudget(cfg))
 		defer cancel()
-		res = runVibeCoach(stCtx, cfg, d.Worktree, d.PR, vibeInput, "")
+		res = runVibeCoach(stCtx, cfg, d.Worktree, d.PR, vibeInput, "", intentSection)
 		if res != nil && res.Err != nil {
 			return res.Err
 		}
@@ -222,7 +232,7 @@ func RunVibeCoachForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, n
 // runVibeCoach runs the vibe-coach specialist over the collected findings of
 // the other specialists, producing a small set of high-leverage prompts the
 // PR author can paste back into their AI assistant.
-func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, repoContext string) *VibeCoachResult {
+func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, repoContext string, intentSection string) *VibeCoachResult {
 	res := &VibeCoachResult{Prompts: []AuthorPrompt{}}
 
 	systemPrompt, err := SpecialistPrompt(SpecVibeCoach)
@@ -232,7 +242,7 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	}
 	systemPrompt += vibeCoachSystemAddendum
 
-	userPrompt := buildVibeCoachUserPrompt(pr, specialists, cfg.ReviewStrictness, repoContext)
+	userPrompt := buildVibeCoachUserPrompt(pr, specialists, cfg.ReviewStrictness, repoContext, intentSection)
 	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, strings.TrimSpace(repoContext) != "")
 
 	// R5: hand the vibe-coach's registry-derived schema to schema-capable
@@ -259,7 +269,7 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	return res
 }
 
-func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, staticSection string, langSection string, techSection string) string {
+func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, staticSection string, langSection string, techSection string, intentSection string) string {
 	var b strings.Builder
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	if hasContext {
@@ -275,6 +285,13 @@ func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictn
 	if strings.TrimSpace(pr.Body) != "" {
 		b.WriteString("PR description:\n")
 		b.WriteString(pr.Body)
+		b.WriteString("\n\n")
+	}
+	// Q8: the extracted author-intent section (empty for non-intent-aware
+	// specialists and whenever the pre-pass was a no-op → byte-identical to
+	// pre-Q8 output).
+	if s := strings.TrimSpace(intentSection); s != "" {
+		b.WriteString(s)
 		b.WriteString("\n\n")
 	}
 	b.WriteString(strictnessBlockForSpecialists(strict))
@@ -343,7 +360,7 @@ func briefsReReadReminder(repoContext, evidence, langSection, techSection string
 	return b.String()
 }
 
-func buildVibeCoachUserPrompt(pr *gh.PR, specialists []SpecialistResult, strict aiconfig.ReviewStrictness, repoContext string) string {
+func buildVibeCoachUserPrompt(pr *gh.PR, specialists []SpecialistResult, strict aiconfig.ReviewStrictness, repoContext string, intentSection string) string {
 	var b strings.Builder
 	b.WriteString("You are the vibe coach for an AI-assisted code review. Other specialists have already reviewed the PR. Your job is to read their combined output and produce a small set of high-leverage prompts the PR author can paste into their own AI assistant to fix the most important issues in one or two iterations.\n\n")
 	b.WriteString(strictnessBlockForVibeCoachUser(strict))
@@ -352,6 +369,12 @@ func buildVibeCoachUserPrompt(pr *gh.PR, specialists []SpecialistResult, strict 
 	b.WriteString("\nTitle: " + pr.Title + "\n\n")
 	if sec := strings.TrimSpace(FormatRepoContextSection(repoContext)); sec != "" {
 		b.WriteString(sec)
+		b.WriteString("\n\n")
+	}
+	// Q8: the extracted author-intent section grounds the verdict / done-when
+	// prompts. Empty when the pre-pass was a no-op → unchanged behaviour.
+	if s := strings.TrimSpace(intentSection); s != "" {
+		b.WriteString(s)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("Specialist findings:\n\n")

@@ -157,6 +157,13 @@ type SpecialistSpec struct {
 	// false-positive filter — a whitespace/indentation/style finding on a
 	// gofmt-clean file is almost always noise.
 	FormatterSilenceAware bool
+	// IntentAware marks a spec that receives the Q8 `## PR author intent`
+	// section (the structured description + linked-issue extraction). Built-ins:
+	// testing (acceptance_criteria → expected cases) and scope (stops guessing
+	// intent from the title). The vibe-coach also consumes intent but is a
+	// named agent, not a registry spec, so it is wired directly. When no intent
+	// is extracted the section is empty and these specs' prompts are unchanged.
+	IntentAware bool
 
 	// userDefined is true for specs loaded from the user config dir.
 	userDefined bool
@@ -218,6 +225,7 @@ var builtinSpecs = []SpecialistSpec{
 		LanePriority:      4,
 		ArbiterPolicy:     ArbiterPolicy{Suppressible: true, Demotable: true},
 		Witnessable:       true,
+		IntentAware:       true,
 		deficiencyPattern: testingDeficiencyRe,
 	},
 	{
@@ -289,6 +297,7 @@ var builtinSpecs = []SpecialistSpec{
 		LanePriority:  9,
 		ArbiterPolicy: ArbiterPolicy{Suppressible: true, Demotable: true},
 		PRScope:       ScopeWholePR,
+		IntentAware:   true,
 	},
 }
 
@@ -427,6 +436,13 @@ func specWantsFormattingEvidence(name string) bool {
 func specFormatterSilenceAware(name string) bool {
 	s, ok := lookupSpec(name)
 	return ok && s.FormatterSilenceAware
+}
+
+// specWantsIntent reports whether the named spec receives the Q8 `## PR author
+// intent` section (built-ins: testing, scope). See SpecialistSpec.IntentAware.
+func specWantsIntent(name string) bool {
+	s, ok := lookupSpec(name)
+	return ok && s.IntentAware
 }
 
 // specSuppressible reports whether the repo arbiter may suppress the named

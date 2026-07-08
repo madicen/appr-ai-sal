@@ -65,7 +65,7 @@ const prAgentTestDiff = `diff --git a/run.go b/run.go
 // Description / scope agents get the title, body, and diff with no extra
 // data section.
 func TestBuildPRAgentUserPromptDescription(t *testing.T) {
-	got := buildPRAgentUserPrompt(SpecDescription, prAgentTestPR(), prAgentTestDiff, PRAgentInput{}, "")
+	got := buildPRAgentUserPrompt(SpecDescription, prAgentTestPR(), prAgentTestDiff, PRAgentInput{}, "", "")
 	for _, want := range []string{"Add timeout flag", "Adds a --timeout flag", "```diff", "var timeout int"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("description prompt missing %q\n%s", want, got)

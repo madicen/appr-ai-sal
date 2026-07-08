@@ -64,7 +64,11 @@ type PRAgentInput struct {
 // line 0) which the anchor gates leave untouched, but an agent may still anchor
 // a concrete fix to a changed line (e.g. the Checks agent), so the same gates
 // apply.
-func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, in PRAgentInput) SpecialistResult {
+// intentSection is the pre-rendered Q8 `## PR author intent` block. It is
+// non-empty only for intent-aware PR agents (scope) AND only when the pre-pass
+// extracted something; "" for every other agent and for a no-op pre-pass, so
+// those prompts are byte-for-byte unchanged from before Q8.
+func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, in PRAgentInput, intentSection string) SpecialistResult {
 	res := SpecialistResult{Specialist: name, Findings: []Finding{}}
 
 	systemPrompt, err := SpecialistPrompt(name)
@@ -73,7 +77,7 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 		return res
 	}
 
-	userPrompt := buildPRAgentUserPrompt(name, pr, diff, in, cfg.ReviewStrictness)
+	userPrompt := buildPRAgentUserPrompt(name, pr, diff, in, cfg.ReviewStrictness, intentSection)
 	// PR agents do not inject repo/lang/tech briefs; pass hasRepoContext=false
 	// so non-Claude backends get the diff-only tooling hint.
 	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, false)
@@ -331,7 +335,7 @@ func threadAnchorKey(path string, line int) string {
 // orients the model on what data it has.
 const prAgentIntro = "You are reviewing a pull request as a whole, not line by line. The PR's head branch is checked out in the working directory and you may read files for extra context, but focus strictly on the single aspect described in the system prompt above. Base your judgement on the PR metadata, the unified diff, and the sections in this message.\n\n"
 
-func buildPRAgentUserPrompt(name string, pr *gh.PR, diff string, in PRAgentInput, strict aiconfig.ReviewStrictness) string {
+func buildPRAgentUserPrompt(name string, pr *gh.PR, diff string, in PRAgentInput, strict aiconfig.ReviewStrictness, intentSection string) string {
 	var b strings.Builder
 	b.WriteString(prAgentIntro)
 	b.WriteString("PR: " + pr.Repository + "#")
@@ -348,6 +352,13 @@ func buildPRAgentUserPrompt(name string, pr *gh.PR, diff string, in PRAgentInput
 		b.WriteString("(no description provided)")
 	}
 	b.WriteString("\n\n")
+
+	// Q8: extracted author-intent section (empty for non-intent-aware agents
+	// and for a no-op pre-pass → byte-identical to pre-Q8 output).
+	if s := strings.TrimSpace(intentSection); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
 
 	b.WriteString(strictnessBlockForSpecialists(strict))
 

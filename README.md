@@ -351,6 +351,28 @@ happen in.
   paths). Currently injected only into the `testing` and `docs`
   specialists and reused by the convention witness below.
 
+- **Intent pre-pass** (`intent`). A single cheap LLM call at the very
+  start of the run that reads the PR **description** plus any **linked
+  issues** and extracts a structured object —
+  `{intent, acceptance_criteria, non_goals, linked_issues}` — via a
+  schema-backed JSON call (native JSON mode applies just like the other
+  stages). Linked issues are discovered two ways and unioned: GitHub's
+  own `closingIssuesReferences` connection **and** closing keywords
+  parsed from the body (`closes #12`, `fixes owner/repo#34`, a full
+  issue URL); each issue's title + body is fetched behind the gh cache.
+  The extracted intent is injected as a `## PR author intent` section
+  into the three stages that otherwise guess intent from the title —
+  **scope** (judges scope creep against the stated intent, not the
+  title), **testing** (turns acceptance criteria into expected test
+  cases), and the **vibe coach** (grounds its verdict and "done-when"
+  prompts). It routes as its own `intent` stage, so
+  [per-stage model routing](#per-stage-model-routing--ensembles) can
+  send it to a small/cheap model. The whole pre-pass is **fully
+  fail-open**: no description and no issues, an inaccessible/private
+  issue, a fetch error, or a model/parse failure all mean the section
+  is simply empty and those three stages behave exactly as they did
+  before — byte-for-byte.
+
 - **Static-analysis pre-pass**. Before any LLM call, cheap
   deterministic tools run over the changed files in the worktree:
   `gofmt -l` and `go vet` (they ship with the Go toolchain),
@@ -416,6 +438,12 @@ happen in.
    calls): `gofmt`/`go vet` and any configured linters run over the
    changed files behind timeouts, fail-open, grounding the specialists
    and the `checks` agent in real tool output.
+   The **intent pre-pass** (one cheap LLM call, routed as the `intent`
+   stage) also runs here, concurrently with context composition: it
+   fetches the linked issues and extracts the author's intent /
+   acceptance criteria / non-goals for the `scope`, `testing`, and
+   vibe-coach stages. Fail-open — an empty result leaves those stages
+   unchanged.
 3. **Specialists** run with their injected briefs (parallel by
    default; set `parallel_specialists: false` to serialize). Concurrency
    across the whole run is capped by `max_concurrent_inference` (default
@@ -561,9 +589,10 @@ A stage model overrides **only the model id**: the profile's provider, base URL,
 and key are reused, so every stage/ensemble model must be servable by this
 profile's provider. Recognized stage names are the code specialists
 (`formatting`, `design`, `testing`, `docs`, `security`, `tech`), the PR agents
-(`description`, `checks`, `discussion`, `scope`), and the synthesis stages
-(`arbiter`, `witness`, `vibe-coach`); a user-defined specialist's name works
-too.
+(`description`, `checks`, `discussion`, `scope`), the synthesis stages
+(`arbiter`, `witness`, `vibe-coach`), and the `intent` pre-pass (a cheap
+description/linked-issue extraction — a natural fit for `stage_models["intent"]`
+pointing at a small model); a user-defined specialist's name works too.
 
 **Ensemble mode** (opt-in, off by default) runs a stage on two or more models
 and unions their findings through the same cross-specialist dedupe the pipeline
