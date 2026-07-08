@@ -137,49 +137,6 @@ func dedupeRefBetterKeeper(specs []SpecialistResult, a, b dedupeRef) bool {
 	return a.findIdx < b.findIdx
 }
 
-// specialistLanePriority orders agents by whose specialty owns code-level
-// findings, so when a line is flagged by several agents the keeper comes from
-// the most-relevant lane. Lower is higher priority; unknown agents sort last.
-//
-// Security is the MOST-PROTECTED lane (priority 0): a near-duplicate merge
-// must never let formatting/design/etc. swallow a security finding out from
-// under the arbiter's never-suppress-security guard. The merge additionally
-// carries the highest severity of the collapsed set onto the keeper (see
-// dedupeInlineFindingsAcrossSpecialists), so protection is by both lane and
-// severity.
-func specialistLanePriority(name string) int {
-	switch name {
-	case SpecSecurity:
-		// Never lose a security finding to a same-line duplicate from
-		// another lane — security is the one lane the arbiter may never
-		// suppress, so it must also win every dedupe.
-		return 0
-	case SpecTech:
-		// The tech specialist owns value-correctness on config/IaC lines
-		// (e.g. a Kubernetes memory unit). When it collides with a stylistic
-		// flag on the same line it should keep the domain-correct finding, so
-		// it ranks ahead of the generalist lanes.
-		return 1
-	case SpecFormatting:
-		return 2
-	case SpecDesign:
-		return 3
-	case SpecTesting:
-		return 4
-	case SpecDocs:
-		return 5
-	case SpecChecks:
-		return 6
-	case SpecDescription:
-		return 7
-	case SpecDiscussion:
-		return 8
-	case SpecScope:
-		return 9
-	}
-	return 99
-}
-
 // findingsLikelyDuplicate decides whether two same-line findings are the same
 // concern. It is deliberately strict so distinct issues on one line are not
 // collapsed: an identical (whitespace-normalised) suggestion is a strong

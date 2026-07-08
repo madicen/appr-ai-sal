@@ -250,6 +250,51 @@ without rebuilding from source, drop an override at
 `~/.config/appr-ai-sal/prompts/<name>.md` (or `$XDG_CONFIG_HOME/appr-ai-sal/prompts/<name>.md`).
 The override takes precedence over the embedded prompt.
 
+### User-defined specialists
+
+The built-in panel is described by a declarative **registry** (each specialist
+is a `SpecialistSpec`: its kind, inputs, deterministic gates, lane priority,
+arbiter policy, witnessability, and severity ladder). You can add your own
+review lane — for example a `performance` or `i18n` specialist — without
+rebuilding the binary by dropping a **`.json` + `.md` pair** into:
+
+```
+~/.config/appr-ai-sal/specialists/<name>.json   # the spec
+~/.config/appr-ai-sal/specialists/<name>.md      # the system prompt
+```
+
+(honours `$XDG_CONFIG_HOME` / `APPR_AI_SAL_CONFIG_DIR` like every other config
+path). The `.json` is the serializable subset of a spec:
+
+```json
+{
+  "name": "performance",
+  "kind": "code",                       // "code" (diff, line-by-line) or "pr-wide"
+  "prompt_file": "performance.md",       // optional; defaults to <name>.md
+  "inputs": ["diff"],                    // diff | evidence-pack | checks | threads | discussion
+  "gates": [],                            // e.g. "actionability" (demote bare "lacks X" findings)
+  "lane_priority": 40,                    // lower wins a same-line dedupe; built-ins use 0–9
+  "arbiter_policy": { "suppressible": true, "demotable": true },
+  "witnessable": false,                   // feed findings to the convention witness
+  "pr_scope": "",                         // pr-wide agents only: "whole-pr" | "thread-anchored"
+  "severity_ladder": "info: …; warning: …; error: …"
+}
+```
+
+A code specialist you add runs on every review alongside the built-ins and its
+findings flow through the same deterministic gates, cross-specialist dedupe,
+and repo arbiter as any built-in. The `severity_ladder` is appended to your
+prompt so the model calibrates against it.
+
+Loading is **fail-open**: a malformed or incomplete spec (bad JSON, missing
+prompt, name colliding with a built-in) is logged to the
+[log file](#logging) and skipped — it never crashes a review run. A built-in
+specialist's name can never be shadowed by a user file.
+
+A ready-to-copy example ships in the repo at
+[`docs/examples/specialists/performance.{json,md}`](docs/examples/specialists/) —
+copy the pair into `~/.config/appr-ai-sal/specialists/` to try it.
+
 ## Review pipeline
 
 A run is a chain of small agents, each with a narrow job. The

@@ -45,14 +45,12 @@ const (
 // the tech specialist that enforces the configured technology-expert briefs
 // against the diff. The vibe coach is intentionally omitted — it runs after
 // the others as a second pass.
-var AllSpecialists = []string{
-	SpecFormatting,
-	SpecDesign,
-	SpecTesting,
-	SpecDocs,
-	SpecSecurity,
-	SpecTech,
-}
+//
+// It is derived from the declarative registry (registry.go) rather than
+// hand-maintained: the registry is the single source of truth for a
+// specialist's behaviour, and this slice is just its KindCode members in
+// registry order, kept exported for the many callers that range/len over it.
+var AllSpecialists = builtinNames(KindCode)
 
 // Finding is one item from a specialist. Use a concrete path and line > 0 for
 // feedback tied to a location in the diff (posted as a GitHub inline review

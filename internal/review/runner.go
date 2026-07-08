@@ -436,21 +436,27 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 }
 
 // ActiveSpecialists returns the specialists to run (and to surface in the
-// overlay) for one review. The tech specialist exists only to enforce the
-// repo's technology-expert briefs, so when none are configured it has nothing
-// to do, ever — exclude it entirely rather than run a guaranteed-empty pass or
-// show a permanently empty tab. Every other specialist is a universal baseline
-// reviewer and is always included.
+// overlay) for one review. It consults the registry: every KindCode spec runs,
+// in registry order (built-ins first, then any user-defined code specialists),
+// except specs marked RequiresTechBriefs (the tech specialist), which are
+// dropped when techConfigured is false — the tech specialist exists only to
+// enforce the repo's technology-expert briefs, so with none configured it has
+// nothing to do and would otherwise cost a guaranteed-empty API call.
+//
+// The returned slice is freshly allocated, so callers may mutate it without
+// disturbing the registry or AllSpecialists.
 func ActiveSpecialists(techConfigured bool) []string {
-	if techConfigured {
-		return append([]string(nil), AllSpecialists...)
-	}
-	out := make([]string, 0, len(AllSpecialists))
-	for _, s := range AllSpecialists {
-		if s == SpecTech {
+	r := getRegistry()
+	out := make([]string, 0, len(r.order))
+	for _, name := range r.order {
+		s := r.byName[name]
+		if s.Kind != KindCode {
 			continue
 		}
-		out = append(out, s)
+		if s.RequiresTechBriefs && !techConfigured {
+			continue
+		}
+		out = append(out, s.Name)
 	}
 	return out
 }
@@ -506,7 +512,7 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 			repoCtx = perAgent[name]
 		}
 		ev := ""
-		if name == SpecTesting || name == SpecDocs {
+		if specWantsEvidence(name) {
 			ev = prEvidence
 		}
 		_ = stageWithRetry(ctx, runCfg, "specialist "+name, notify, func(sctx context.Context) error {
@@ -699,7 +705,7 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 		if s.Err != nil {
 			continue
 		}
-		if s.Specialist != SpecTesting && s.Specialist != SpecDocs && s.Specialist != SpecTech {
+		if !specWitnessable(s.Specialist) {
 			continue
 		}
 		for _, f := range s.Findings {
@@ -714,7 +720,7 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 				Severity:   string(f.Severity),
 				Comment:    f.Comment,
 			})
-			if s.Specialist == SpecTech {
+			if specWantsConventionEvidence(s.Specialist) {
 				techFindings = append(techFindings, f)
 			}
 		}

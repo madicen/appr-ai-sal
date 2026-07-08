@@ -21,6 +21,13 @@ var promptFS embed.FS
 // embedded in the binary at internal/review/prompts/<name>.md. This lets
 // users tweak specialist behavior without rebuilding from source.
 func SpecialistPrompt(name string) (string, error) {
+	// User-defined specialists carry their prompt (loaded from
+	// <ConfigDir>/specialists/<name>.md, with any severity ladder appended) in
+	// the registry. They have no embedded default to fall back to.
+	if s, ok := lookupSpec(name); ok && s.userDefined {
+		return s.prompt, nil
+	}
+
 	if override, ok, err := readOverride(name); err != nil {
 		return "", err
 	} else if ok {

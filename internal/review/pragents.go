@@ -28,20 +28,18 @@ const (
 // AllPRAgents is the ordered set of PR-level agents. Description and Scope read
 // only the title/body/diff; Checks reads the CI rollup; Discussion reads the
 // unresolved review threads and conversation.
-var AllPRAgents = []string{
-	SpecDescription,
-	SpecChecks,
-	SpecDiscussion,
-	SpecScope,
-}
+//
+// Like AllSpecialists it is derived from the declarative registry
+// (registry.go): its KindPRWide members in registry order, kept exported for
+// callers.
+var AllPRAgents = builtinNames(KindPRWide)
 
-// IsPRAgent reports whether name is one of the PR-level agents.
+// IsPRAgent reports whether name is one of the PR-level agents. It consults the
+// registry (Kind == KindPRWide) rather than a hard-coded name switch, so a
+// user-defined PR-wide specialist is classified correctly too.
 func IsPRAgent(name string) bool {
-	switch name {
-	case SpecDescription, SpecChecks, SpecDiscussion, SpecScope:
-		return true
-	}
-	return false
+	s, ok := lookupSpec(name)
+	return ok && s.Kind == KindPRWide
 }
 
 // PRAgentInput carries the PR-level signals the agents reason over. The runner
@@ -96,12 +94,13 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 		// runs first so we never waste a repair call on a finding we are
 		// about to drop or de-anchor. See constrainPRAgentScope.
 		res.Findings = constrainPRAgentScope(name, res.Findings, in.Threads)
-		if name == SpecDiscussion {
+		if spec, ok := lookupSpec(name); ok && spec.RebuttalAware {
 			// Backstop: when the PR author had the last word in an unresolved
 			// thread (e.g. "it's already there" with a link), the concern is
 			// disputed, not unaddressed. Demote a "not addressed" finding so
 			// it doesn't block on the author's own rebuttal. See
-			// downrankAuthorRebuttedThreads.
+			// downrankAuthorRebuttedThreads. Registry-driven (RebuttalAware)
+			// rather than a hard-coded SpecDiscussion comparison.
 			res.Findings = downrankAuthorRebuttedThreads(pr, res.Findings, in.Threads)
 		}
 		parsedFiles := ParseDiff(diff)
@@ -132,8 +131,12 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 //   - checks (and anything else): unchanged — Checks legitimately anchors a fix
 //     to a failing-check line.
 func constrainPRAgentScope(name string, findings []Finding, threads []gh.ReviewThread) []Finding {
-	switch name {
-	case SpecDescription, SpecScope:
+	spec, ok := lookupSpec(name)
+	if !ok {
+		return findings
+	}
+	switch spec.PRScope {
+	case ScopeWholePR:
 		for i := range findings {
 			f := &findings[i]
 			if findingIsInlinePostable(*f) {
@@ -146,7 +149,7 @@ func constrainPRAgentScope(name string, findings []Finding, threads []gh.ReviewT
 			}
 		}
 		return findings
-	case SpecDiscussion:
+	case ScopeThreadAnchored:
 		anchors := unresolvedThreadAnchors(threads)
 		out := findings[:0]
 		for _, f := range findings {

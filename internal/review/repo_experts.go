@@ -209,8 +209,8 @@ func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 			ar.DroppedSuppressions = append(ar.DroppedSuppressions, "no matching inline finding: "+k)
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
-			ar.DroppedSuppressions = append(ar.DroppedSuppressions, "cannot suppress security finding: "+k)
+		if !specSuppressible(ff.Specialist) {
+			ar.DroppedSuppressions = append(ar.DroppedSuppressions, "cannot suppress "+specKey(ff.Specialist)+" finding: "+k)
 			continue
 		}
 		if ff.Finding.Severity == SeverityError || ff.Finding.Severity == SeverityCritical {
@@ -254,8 +254,8 @@ func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 			ar.DroppedDemotions = append(ar.DroppedDemotions, "no matching inline finding: "+k)
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
-			ar.DroppedDemotions = append(ar.DroppedDemotions, "cannot demote security finding: "+k)
+		if !specDemotable(ff.Specialist) {
+			ar.DroppedDemotions = append(ar.DroppedDemotions, "cannot demote "+specKey(ff.Specialist)+" finding: "+k)
 			continue
 		}
 		if ff.Finding.Severity == SeverityCritical {
@@ -390,8 +390,8 @@ func isGeneralRef(path string, line int) bool {
 // finding out of the review.
 func suppressGuardForGeneral(matches []FlatFinding) string {
 	for _, ff := range matches {
-		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
-			return "cannot suppress security finding"
+		if !specSuppressible(ff.Specialist) {
+			return "cannot suppress " + specKey(ff.Specialist) + " finding"
 		}
 		if ff.Finding.Severity == SeverityError || ff.Finding.Severity == SeverityCritical {
 			return "cannot suppress error-or-critical-severity finding"
@@ -415,8 +415,8 @@ func demoteGeneralFindings(d *Draft, matches []FlatFinding, dem DemotedFindingRe
 	}
 	plans := make([]plan, 0, len(matches))
 	for _, ff := range matches {
-		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
-			return nil, "", "cannot demote security finding"
+		if !specDemotable(ff.Specialist) {
+			return nil, "", "cannot demote " + specKey(ff.Specialist) + " finding"
 		}
 		if ff.Finding.Severity == SeverityCritical {
 			return nil, "", "cannot demote critical-severity finding"

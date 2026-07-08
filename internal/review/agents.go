@@ -472,8 +472,24 @@ If you have nothing to say, return an empty findings array. Stay strictly in you
 
 String values must be valid JSON only: use one pair of double quotes per string and escape internal newlines as \n and quotes as \". Never use Python-style """ triple-quoted strings inside the JSON. Do not use // or /* */ comments, JSON5/JSONC extensions, or trailing commas — the tool parses strict JSON.`
 
+// vibeFindingRefSpecialistEnum builds the finding_refs.specialist enum for the
+// vibe-coach contract from the registry (all built-in code specialists in order
+// followed by the PR agents), so the enum can never drift from the set of lanes
+// the pipeline can actually emit — the enum-drift bug class that 0.4 fix #1 had
+// to correct by hand. This is the "contract enum membership consults the
+// registry" half of Q1.
+func vibeFindingRefSpecialistEnum() string {
+	names := make([]string, 0, len(AllSpecialists)+len(AllPRAgents))
+	names = append(names, AllSpecialists...)
+	names = append(names, AllPRAgents...)
+	return strings.Join(names, " | ")
+}
+
 // vibeCoachOutputContract is the strict-JSON instruction for the vibe coach.
-const vibeCoachOutputContract = `Return your output as a single JSON object and nothing else — no prose before, no prose after, no markdown fencing. The object must conform to:
+// The finding_refs.specialist enum is filled from the registry at init time
+// (see vibeFindingRefSpecialistEnum) so it stays in lockstep with the set of
+// specialists and PR agents.
+var vibeCoachOutputContract = fmt.Sprintf(`Return your output as a single JSON object and nothing else — no prose before, no prose after, no markdown fencing. The object must conform to:
 
 {
   "verdict": "approve" | "request_changes" | "comment",
@@ -484,7 +500,7 @@ const vibeCoachOutputContract = `Return your output as a single JSON object and 
       "rationale": "<1–2 sentences for the HUMAN reader: which specialist findings this bundles and what category of problem they amount to. Do NOT include any instructions for the AI assistant here.>",
       "agent_prompt": "<the verbatim block the author will paste into their AI coding assistant. Self-contained, second-person, references concrete paths/symbols. NOT a meta-summary; an actionable instruction. NEVER refer to the rationale or to other prompts; the AI receives only this string.>",
       "finding_refs": [
-        { "specialist": "<formatting | design | testing | docs | security | tech | description | checks | discussion | scope>",
+        { "specialist": "<%s>",
           "path":       "<exact path from the bundled specialist finding>",
           "line":       <integer line number from that finding>,
           "side":       "RIGHT" | "LEFT" }
@@ -514,9 +530,9 @@ Verdict vs prompts (critical):
 
 Hard rules:
 
-- **One prompts entry per distinct topic** the author would naturally hand to their AI in one go. A refactor is one topic; a README update is a separate topic; a CHANGELOG entry is a separate topic. The posted review concatenates all agent_prompt strings into a single paste block, separated by ` + "`---`" + ` between entries — that separator is how the human sees that there are multiple topics to address. Cramming unrelated work ("refactor X. Then update the README. Then add a CHANGELOG entry.") into a single agent_prompt hides everything but the first topic.
+- **One prompts entry per distinct topic** the author would naturally hand to their AI in one go. A refactor is one topic; a README update is a separate topic; a CHANGELOG entry is a separate topic. The posted review concatenates all agent_prompt strings into a single paste block, separated by `+"`---`"+` between entries — that separator is how the human sees that there are multiple topics to address. Cramming unrelated work ("refactor X. Then update the README. Then add a CHANGELOG entry.") into a single agent_prompt hides everything but the first topic.
 - **PR-wide findings get their own dedicated prompts.** Any specialist finding with empty path and line 0 MUST be the sole subject of its own prompts entry, with finding_refs listing exactly that one finding. Bundling a PR-wide finding alongside inline findings in the same prompt risks losing it: if any of the inline siblings is suppressed by the repo arbiter or skipped during review, the whole prompt can be filtered out and the PR-wide work silently disappears from the rendered review. A dedicated entry guarantees the PR-wide finding's prompt survives independently.
-- **Coverage requirement.** Every error / critical-severity finding (inline OR PR-wide) that does NOT carry an inline one-click ` + "`" + `suggestion` + "`" + ` block MUST appear in some prompt's finding_refs, and that prompt's agent_prompt MUST give the author's AI a concrete instruction for fixing it. The renderer will auto-generate fallback prompts for any uncovered blocker, but a fallback is a safety net (it can only quote the specialist comment verbatim) and not a substitute for you writing a real instruction.
+- **Coverage requirement.** Every error / critical-severity finding (inline OR PR-wide) that does NOT carry an inline one-click `+"`"+`suggestion`+"`"+` block MUST appear in some prompt's finding_refs, and that prompt's agent_prompt MUST give the author's AI a concrete instruction for fixing it. The renderer will auto-generate fallback prompts for any uncovered blocker, but a fallback is a safety net (it can only quote the specialist comment verbatim) and not a substitute for you writing a real instruction.
 - Bundle related specialist findings inside a single prompt when they're on the same topic AND none of them is a PR-wide finding (e.g. four inline security findings about input validation in one handler family) — that reduces iteration count without hiding anything.
 - Cap: at most 4 prompts entries. If you need more, consolidate within a topic, never across topics.
 - Within a single agent_prompt, separate distinct steps with a blank line (\n\n in JSON) so the pasted block is scannable; don't return a wall-of-text paragraph.
@@ -530,7 +546,7 @@ All natural-language prose you emit — "summary", "title", "rationale", and "ag
 
 If a clean PR doesn't warrant any follow-up prompts and verdict is approve, return an empty "prompts" array. Don't manufacture work.
 
-String values must be valid JSON only (escape newlines as \n); never use Python """ triple-quoted strings inside the JSON.`
+String values must be valid JSON only (escape newlines as \n); never use Python """ triple-quoted strings inside the JSON.`, vibeFindingRefSpecialistEnum())
 
 // parseSpecialistJSON parses a code specialist's textual output via the shared
 // llmjson salvage ladder (fence/extract/comment/triple-quote/trailing-comma),

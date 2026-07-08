@@ -1,0 +1,14 @@
+{
+  "name": "performance",
+  "kind": "code",
+  "prompt_file": "performance.md",
+  "inputs": ["diff"],
+  "gates": [],
+  "lane_priority": 40,
+  "arbiter_policy": {
+    "suppressible": true,
+    "demotable": true
+  },
+  "witnessable": false,
+  "severity_ladder": "info: micro-optimisation with no measurable impact; warning: an avoidable allocation, N+1 query, or redundant work on a hot path; error: a change that makes an established hot path materially slower (e.g. quadratic loop over request-scoped data, unbounded in-memory buffering of a stream)."
+}
