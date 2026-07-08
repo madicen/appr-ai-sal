@@ -31,7 +31,7 @@ const ChromeTitleFallback = "appr-ai-sal · review"
 // CloseMsg handler is a no-op on the empty stack — Pop is idempotent —
 // so we don't double-pop.
 func (m *Model) OnOverlayClose() tea.Cmd {
-	return func() tea.Msg { return CloseMsg{} }
+	return m.closeCmd()
 }
 
 // OverlayTitle satisfies bubble-overlay's OverlayTitler interface so the

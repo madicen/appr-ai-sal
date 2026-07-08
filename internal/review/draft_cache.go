@@ -191,6 +191,13 @@ func (c *DraftCache) LoadPrior(ref gh.Ref, currentSHA string) (*CachedDraft, boo
 		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".json") {
 			continue
 		}
+		// U2 session documents (…__<sha>.session.json) share the prefix and
+		// end in ".json" but are NOT B2 draft documents — skip them so a
+		// session file is never mis-parsed as a prior review (its shape would
+		// unmarshal into a mostly-empty CachedDraft with a matching Version).
+		if strings.HasSuffix(name, sessionFileSuffix) {
+			continue
+		}
 		if name == currentName {
 			continue // the in-progress head SHA, not a prior review
 		}
@@ -222,6 +229,11 @@ func (c *DraftCache) PruneOtherSHAs(ref gh.Ref, keepSHA string) {
 	}
 	prefix := c.prefixFor(ref)
 	keepName := c.fileNameFor(ref, keepSHA)
+	// The U2 session document for the kept SHA shares the prefix and ends in
+	// ".json" too; keep it beside the kept draft (an in-progress approval for
+	// the current head SHA must survive pruning). Session docs for OTHER SHAs
+	// are stale and get pruned like their draft siblings.
+	keepSessionName := c.sessionFileNameFor(ref, keepSHA)
 	names := make([]string, 0)
 	for _, e := range entries {
 		if e.IsDir() {
@@ -231,7 +243,7 @@ func (c *DraftCache) PruneOtherSHAs(ref gh.Ref, keepSHA string) {
 		if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		if name == keepName {
+		if name == keepName || name == keepSessionName {
 			continue
 		}
 		names = append(names, name)

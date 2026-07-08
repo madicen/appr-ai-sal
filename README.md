@@ -574,6 +574,43 @@ cache, so the pipeline runs a full review that is byte-identical to before this
 feature. Whole-PR agents (description/checks/discussion/scope) always re-run.
 Any cache problem degrades gracefully to a full review.
 
+### Draft persistence & resume (pick up a mid-approval review)
+
+A completed review can be a multi-minute, multi-dollar run. If you quit the
+approval overlay partway through triaging findings, appr-ai-sal remembers where
+you were: reopen the same PR (at the same head commit) and it offers to
+**resume** exactly where you left off — no LLM re-run.
+
+- **What's saved.** Alongside the incremental-re-review draft (above), the TUI
+  writes a **session** file capturing the completed `Draft` snapshot **plus your
+  in-progress decision layer**: each approval card's state
+  (`pending` / `posted` / `skipped` / `already-on-PR`), memory-suppression
+  resurface flags, PR-wide demoted opt-ins, the cursor position, and the focused
+  tab. It is a self-contained snapshot, so resuming rehydrates the whole overlay
+  (cards, summary body, posting payload) without calling any model.
+- **Location / key.** `~/.cache/appr-ai-sal/draft-cache/<owner>__<repo>__<N>__<sha>.session.json`
+  — a **sibling** of the incremental draft document under the **same**
+  `(owner/repo#N, headSHA)` key (honouring `APPR_AI_SAL_CACHE_DIR` / XDG). The
+  two coexist: the draft doc feeds incremental re-review, the session doc feeds
+  resume, and neither perturbs the other.
+- **When it's written.** Only after the pipeline finishes (there's nothing
+  resumable before then), and **never in demo mode**. Decision changes schedule a
+  **debounced, atomic** write (a burst of keystrokes collapses to one write);
+  quitting the overlay flushes the last decision synchronously so nothing is
+  lost.
+- **Resume prompt.** Reopening a PR that has a valid session for its current head
+  SHA shows a small overlay: **resume** rehydrates the draft + decisions +
+  cursor, or **discard** deletes the session and falls back to a fresh run.
+- **Head-SHA invalidation.** The session is keyed by head SHA, so a session
+  captured against an **older** commit is never silently resumed onto new code —
+  the reopen simply finds no session for the new SHA (and incremental re-review
+  takes over instead). Stale sessions for other SHAs are pruned after a
+  successful review, just like the draft cache.
+- **Clearing & fail-open.** A **successful post** clears the session (the run is
+  done). A missing, corrupt, or version-mismatched session is ignored → today's
+  behaviour exactly (no resume offered). A write failure never breaks the
+  approval flow.
+
 ### Thread-aware posting & replies
 
 When you post findings, appr-ai-sal is aware of the PR's existing **inline
@@ -954,6 +991,10 @@ Large PRs may exceed smaller models’ context windows; prefer a large-context m
   (e.g. `~/.cache/appr-ai-sal/draft-cache`), one JSON per PR keyed by head SHA;
   safe to delete (the next review just runs in full). See
   [Incremental re-review](#incremental-re-review-odelta-on-new-commits).
+  In-progress approval **sessions** live beside them as
+  `<owner>__<repo>__<N>__<sha>.session.json` (same key, `.session.json` suffix);
+  also safe to delete (you just lose the resume offer). See
+  [Draft persistence & resume](#draft-persistence--resume-pick-up-a-mid-approval-review).
 
 ### Logging
 

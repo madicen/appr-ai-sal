@@ -57,7 +57,10 @@ type VibeCoachResult struct {
 	// RequestChangesWithoutPrompts is true when verdict was request_changes but
 	// the model returned no prompts (contract violation); RenderBody adds a notice.
 	RequestChangesWithoutPrompts bool
-	Err                          error
+	// Err is non-nil if the vibe-coach stage failed. json:"-" because an error
+	// value is not round-trippable and would break the U1 headless Draft dump
+	// and the U2 session snapshot.
+	Err error `json:"-"`
 }
 
 // FindingRef identifies a specific specialist finding that an AuthorPrompt

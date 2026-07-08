@@ -287,6 +287,19 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Sequence(popCmd, data.PostReviewCmd(m.draft.Ref, m.draft, m.opts.DryRun, m.opts.Demo))
 			}
 			return m, popCmd
+		case overlays.ResumeOverlay:
+			// U2 resume prompt answered. Yes → rehydrate the saved session into
+			// a review overlay (no LLM re-run). No → discard the stored session
+			// so it isn't offered again, and fall back to today's behaviour.
+			ans, _ := msg.Result.(overlays.ResumeAnswer)
+			if ans.Resume && m.pendingResume != nil {
+				return m, m.resumeFromSession(popCmd)
+			}
+			if s := m.pendingResume; s != nil {
+				review.NewDraftCache().ClearSession(s.Ref, s.HeadSHA)
+			}
+			m.pendingResume = nil
+			return m, popCmd
 		default:
 			// DryRunOverlay and any future acknowledgement-only modal: pop.
 			return m, popCmd
@@ -353,7 +366,10 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.scrollToSelectedFile = true
 		m.mode = modeDetail
 		m.refreshDetailViews()
-		return m, nil
+		// U2: if this PR's current head SHA has an in-progress saved review
+		// session, offer to resume it (rehydrate the Draft + decisions, no
+		// re-run) instead of silently discarding a multi-minute run.
+		return m, m.maybeOfferResumeCmd()
 
 	case data.ChecksMsg:
 		// Stale ref guard: ignore the result if the user has since opened

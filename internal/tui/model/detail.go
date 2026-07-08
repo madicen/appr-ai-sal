@@ -716,6 +716,78 @@ func reviewWindowConfig() overlay.OverlayConfig {
 	return cfg
 }
 
+// maybeOfferResumeCmd checks whether the just-opened PR has an in-progress
+// saved review session (U2) for its CURRENT head SHA and, if so, returns a cmd
+// that pushes the resume-prompt overlay. Returns nil (today's behaviour) when
+// there is no valid session to resume: demo mode, no PR / head SHA, another
+// modal already open, or a missing / corrupt / SHA-mismatched session.
+//
+// SHA invalidation is inherent: LoadSession is keyed by the CURRENT head SHA,
+// so a session saved against an older commit is never found and never resumed
+// onto new code — the user just runs a fresh review, which B2 will make
+// incremental. Corrupt / version-mismatched sessions fail-open to no resume.
+func (m *Model) maybeOfferResumeCmd() tea.Cmd {
+	if m.opts.Demo || m.currentPR == nil {
+		return nil
+	}
+	if m.overlayStack.Top() != nil {
+		return nil
+	}
+	sha := strings.TrimSpace(m.currentPR.HeadSHA)
+	if sha == "" {
+		return nil
+	}
+	ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
+	sess, ok := review.NewDraftCache().LoadSession(ref, sha)
+	if !ok || sess.Draft == nil {
+		return nil
+	}
+	m.pendingResume = sess
+	pending := 0
+	for _, d := range sess.Decisions {
+		if d.Decision == "" || d.Decision == "pending" {
+			pending++
+		}
+	}
+	modal := overlays.NewResumeOverlay(ref.String(), sess.SavedAt, pending)
+	cfg := overlay.DefaultOverlayConfig()
+	cfg.CloseOnClickOutside = false
+	return tea.Batch(
+		m.overlayStack.Push(modal, cfg),
+		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
+	)
+}
+
+// resumeFromSession rehydrates a review overlay from the stashed pending
+// session (U2) and returns the cmd sequence that pushes it. popCmd is the
+// resume-prompt overlay's Pop cmd, sequenced first so the prompt is gone before
+// the review overlay is pushed. No LLM pipeline runs — the Draft and decisions
+// are restored from disk.
+func (m *Model) resumeFromSession(popCmd tea.Cmd) tea.Cmd {
+	sess := m.pendingResume
+	m.pendingResume = nil
+	if sess == nil {
+		return popCmd
+	}
+	parallelSpec, parallelRE, _ := repoParallelExecutionFlags()
+	ro, adopt := reviewtab.NewResumed(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo, sess)
+	m.currentReviewOverlay = ro
+	// Surface the rehydrated draft on the detail view behind the overlay so
+	// the file tree shows finding markers and `a` can reopen approval.
+	m.draft = ro.Draft()
+	m.recomputeTreeRows()
+	cfg := reviewWindowConfig()
+	prep := tea.Sequence(
+		popCmd,
+		m.overlayStack.Push(ro, cfg),
+		func() tea.Msg { return tea.WindowSizeMsg{Width: m.width, Height: m.height} },
+	)
+	if adopt != nil {
+		return tea.Batch(prep, adopt)
+	}
+	return prep
+}
+
 func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
 	if m.draft == nil {
 		return m, nil

@@ -386,6 +386,10 @@ func (m *Model) MarkSummaryPosted() {
 	m.syncUserSkipsToDraft()
 	m.syncMemorySuppressionOutcomes()
 	review.RecordReviewerMemory(m.draft)
+	// U2: the review is posted, so the run is done — drop any persisted resume
+	// session for this head SHA so reopening the PR doesn't offer to resume a
+	// completed review.
+	m.clearSession()
 	// The receipt lives on the summary tab; focus it so the posted body
 	// renders and the summary tab's glyph flips to ✓.
 	m.activeTab = m.summaryTabIndex()

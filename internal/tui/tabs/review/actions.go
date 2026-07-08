@@ -259,7 +259,7 @@ func (m *Model) actToggleDemotedPRWide() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.rebuildBody()
-	return m, nil
+	return m, m.scheduleSessionSave()
 }
 
 // actPostCurrentFileLevel is the file-level fallback: post the current
@@ -412,7 +412,7 @@ func (m *Model) actResurfaceCurrent() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.rebuildBody()
-	return m, nil
+	return m, m.scheduleSessionSave()
 }
 
 // syncMemorySuppressionOutcomes reconciles the final card states of the B1
@@ -448,7 +448,7 @@ func (m *Model) actSkipCurrent() (tea.Model, tea.Cmd) {
 	m.cards[m.idx].state = cardSkipped
 	advCmd := m.advanceCard()
 	m.rebuildBody()
-	return m, advCmd
+	return m, tea.Batch(advCmd, m.scheduleSessionSave())
 }
 
 // actNext / actPrev move the focused finding within the active agent tab.

@@ -50,9 +50,15 @@ const (
 	// top panel. Mirrors the keyboard "R" binding so users who don't
 	// read the status bar still have an obvious way to re-fetch the
 	// review queue from GitHub.
-	RefreshList              = "zone:list:refresh"
-	ConfirmYes               = "zone:confirm:yes"
-	ConfirmNo                = "zone:confirm:no"
+	RefreshList = "zone:list:refresh"
+	ConfirmYes  = "zone:confirm:yes"
+	ConfirmNo   = "zone:confirm:no"
+	// ResumeYes / ResumeNo mark the two buttons on the U2 resume prompt
+	// (offered when reopening a PR that has an in-progress saved review
+	// session for the current head SHA). Yes rehydrates the saved draft +
+	// decisions; No discards the session and starts fresh.
+	ResumeYes                = "zone:resume:yes"
+	ResumeNo                 = "zone:resume:no"
 	ErrorDismiss             = "zone:error:dismiss"
 	ErrorCopy                = "zone:error:copy"
 	DryDismiss               = "zone:dry:dismiss"

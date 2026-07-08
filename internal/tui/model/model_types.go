@@ -278,6 +278,13 @@ type Model struct {
 	// Active review overlay reference (for direct state pokes when posting).
 	currentReviewOverlay *reviewtab.Model
 
+	// pendingResume holds a saved review session (U2) loaded when the user
+	// reopened a PR whose current head SHA has an in-progress approval session.
+	// It is stashed here while the resume-prompt overlay is up so the
+	// DismissMsg handler can rehydrate (yes) or discard (no) it. Nil when no
+	// resume is being offered.
+	pendingResume *review.SessionState
+
 	// List: single click selects; double-click (same row, within window) opens PR.
 	listClickArmed     bool
 	listClickIndex     int

@@ -530,6 +530,13 @@ type Model struct {
 	// header so the user knows the summary they're seeing may be stale
 	// or missing fix-prompts.
 	coachErr error
+
+	// U2 draft-persistence bookkeeping. sessionDirty flags that a decision
+	// changed since the last write; sessionSaveSeq lets a later debounced save
+	// tick supersede an earlier pending one so a burst of decisions collapses
+	// to a single atomic write. See session.go.
+	sessionDirty   bool
+	sessionSaveSeq int
 }
 
 func zoneOverlayAgent(i int) string {
@@ -1051,6 +1058,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rebuildBody()
 		return m, cmd
 
+	case sessionSaveMsg:
+		// Debounced U2 session write: only the latest scheduled tick (seq)
+		// performs the write, coalescing a burst of decision changes.
+		if msg.seq == m.sessionSaveSeq && m.sessionDirty {
+			m.persistSession()
+		}
+		return m, nil
+
 	case data.StagedFindingPostedMsg:
 		// Single finding succeeded — mark current as posted and advance.
 		var advCmd tea.Cmd
@@ -1059,7 +1074,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			advCmd = m.advanceCard()
 		}
 		m.rebuildBody()
-		return m, advCmd
+		return m, tea.Batch(advCmd, m.scheduleSessionSave())
 
 	case data.PRRefreshedMsg:
 		// User pressed R after a 422 / drift; we have a fresh PR + diff. Adopt
@@ -1103,7 +1118,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.phase == phaseApprove && m.idx >= 0 && m.idx < len(m.cards):
 			m.cards[m.idx].state = cardPosted // treat preview as accepted under dry-run
-			advCmd = m.advanceCard()
+			advCmd = tea.Batch(m.advanceCard(), m.scheduleSessionSave())
 		case m.phase == phaseSummary, m.phase == phaseConfirmApprove:
 			// Mirror the real-post path: record the receipt and move to
 			// phasePosted so the user gets a "Close (enter)" hint instead of
@@ -1176,7 +1191,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// The goroutine continues; if it eventually finishes, m.draft on the
 			// root model is populated and the user can press 'a' to reopen
 			// approval against that draft.
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	case phaseApprove:
 		switch msg.String() {
@@ -1207,7 +1222,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// isn't in a state where this makes sense.
 			return m.actPostCurrentFileLevel()
 		case "q", "esc":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	case phaseGeneratingSummary:
 		// Refining-summary interstitial. The only escape is to abort
@@ -1215,7 +1230,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// VibeCoachDoneMsg to flip into phaseSummary.
 		switch msg.String() {
 		case "q", "esc":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 		return m, nil
 	case phaseSummary:
@@ -1235,7 +1250,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "r", "R":
 			return m.actRefreshPR()
 		case "esc", "q":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	case phaseConfirmApprove:
 		switch msg.String() {
@@ -1266,12 +1281,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "r", "R":
 			return m.actRefreshPR()
 		case "esc", "q":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	case phasePosted:
 		switch msg.String() {
 		case "esc", "enter", "q", " ":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	}
 	// Fall through: pass scroll keys to the viewport.
@@ -1331,7 +1346,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m.actRefreshPR()
 			}
 			if z := zone.Get(zones.StagedQuit); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return CloseMsg{} }
+				return m, m.closeCmd()
 			}
 		case phaseSummary:
 			if z := zone.Get(zones.StagedSummaryYes); z != nil && z.InBounds(msg) {
@@ -1352,7 +1367,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m.actRefreshPR()
 			}
 			if z := zone.Get(zones.StagedQuit); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return CloseMsg{} }
+				return m, m.closeCmd()
 			}
 		case phaseConfirmApprove:
 			if z := zone.Get(zones.StagedSummaryYes); z != nil && z.InBounds(msg) {
@@ -1383,11 +1398,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m.actRefreshPR()
 			}
 			if z := zone.Get(zones.StagedQuit); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return CloseMsg{} }
+				return m, m.closeCmd()
 			}
 		case phasePosted:
 			if z := zone.Get(zones.PostedOK); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return CloseMsg{} }
+				return m, m.closeCmd()
 			}
 		}
 	}

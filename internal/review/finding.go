@@ -347,7 +347,11 @@ type RepoArbiterResult struct {
 	demoteKeySet        map[string]Severity // populated by FinalizeRepoArbiter; key→original severity
 	DroppedDemotions    []string            // human-readable reject reasons
 	DroppedSuppressions []string            // human-readable reject reasons
-	Err                 error
+	// Err is non-nil if the arbiter stage failed. json:"-" because an error
+	// value is not round-trippable (marshals to {}, unmarshal into an
+	// interface fails) and would break the U1 headless Draft dump and the U2
+	// session snapshot; a rehydrated arbiter is only used when Err is nil.
+	Err error `json:"-"`
 }
 
 // RepoArbiterSuppressionCount returns how many inline findings were suppressed for posting.
