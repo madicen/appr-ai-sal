@@ -125,7 +125,7 @@ func TestUserSpecialistRegistersAndRunsEndToEnd(t *testing.T) {
 	cfg.ReviewStrictness = aiconfig.ReviewBalanced
 	pr := &gh.PR{Repository: "o/r", Number: 1, Title: "t", Author: "a", BaseRef: "main", HeadRef: "feat"}
 
-	res := runReviewSpecialist(context.Background(), cfg, "performance", "", pr, "", "", "", "", nil, "", "", "")
+	res := runReviewSpecialist(context.Background(), cfg, "performance", "", pr, "", "", "", "", nil, "", "", "", "")
 	if res.Err != nil {
 		t.Fatalf("performance specialist errored: %v", res.Err)
 	}

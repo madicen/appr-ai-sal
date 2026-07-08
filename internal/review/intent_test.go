@@ -103,7 +103,7 @@ func TestFormatIntentSectionRenders(t *testing.T) {
 func TestBuildersByteIdenticalWithoutIntent(t *testing.T) {
 	pr := intentTestPR()
 
-	spec := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced, "", "", "", "", "", "")
+	spec := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced, "", "", "", "", "", "", "")
 	if strings.Contains(spec, "PR author intent") {
 		t.Errorf("specialist prompt must not contain the intent block when section is empty")
 	}
@@ -123,7 +123,7 @@ func TestBuildersInjectIntentWhenPresent(t *testing.T) {
 	if section == "" {
 		t.Fatal("precondition: section should be non-empty")
 	}
-	spec := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced, "", "", "", "", "", section)
+	spec := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced, "", "", "", "", "", section, "")
 	prAgent := buildPRAgentUserPrompt(SpecScope, pr, "diff", PRAgentInput{}, aiconfig.ReviewBalanced, section)
 	vibe := buildVibeCoachUserPrompt(pr, nil, aiconfig.ReviewBalanced, "", section)
 	for name, got := range map[string]string{"specialist": spec, "pr-agent": prAgent, "vibe-coach": vibe} {

@@ -391,6 +391,42 @@ happen in.
   -json` when terraform is present, falling back to a built-in table of
   non-taggable AWS resources otherwise.
 
+- **Context expansion for backends without repo tools** (`context-expand`).
+  Only the `claude` subprocess provider gets live repo tools
+  (`Read,Glob,Grep`, scoped to the PR worktree); every HTTP provider
+  (`ollama` / `openai_compatible`, `gemini`) reviews the **diff blind** —
+  it sees only the changed hunks, not the enclosing function bodies, the
+  types the changed code references, or who calls the changed functions.
+  When the active provider's capabilities report `RepoTools == false`,
+  appr-ai-sal deterministically gathers that surrounding code and injects
+  it into every code specialist as a **read-only** `## Expanded code
+  context` section (placed just before the diff, clearly framed as *not*
+  part of the change). For the Claude subprocess (`RepoTools == true`) it
+  is a **no-op** — that backend reads the worktree itself, so the prompts
+  are byte-for-byte unchanged.
+  - **What it gathers**, in relevance order: (1) the **full enclosing
+    function body** for each changed hunk (a hunk usually shows only part
+    of a function); (2) the **type definitions** the changed code
+    references (same package); (3) **callers / callees** of the changed
+    functions.
+  - **Source ladder** (most authoritative first, all fail-open): a
+    hermetic **Go `go/parser` + `go/ast`** pass over the worktree files is
+    the always-available baseline for (1), (2) and same-package (3) — no
+    external binary, fully deterministic. **`gopls`** (references) and
+    **ctags** (definitions) are *optional enrichers*, run behind an
+    on-PATH check and a per-call timeout, that add cross-file
+    callers/callees the AST baseline can't cheaply see; they are never
+    required.
+  - **Budget**: the whole block is capped under a per-provider byte budget
+    derived from the same R3 diff-budget table (an eighth of it, clamped),
+    filled greedily by relevance with a per-item cap; truncation/omission
+    is disclosed inline. The expansion can never blow the context window.
+  - **Language coverage**: the AST path is **Go-only**. Non-Go changed
+    files are skipped (the ctags enricher can still resolve cross-file
+    references when present); an unparseable file, a missing tool, a
+    timeout, or a non-Go repo all contribute nothing and never break the
+    review.
+
 - **Convention witness**. A per-finding sanity check that fires
   *between* the specialists and the arbiter for `testing` / `docs`
   findings. For each finding it answers a single question — "does the
@@ -438,6 +474,11 @@ happen in.
    calls): `gofmt`/`go vet` and any configured linters run over the
    changed files behind timeouts, fail-open, grounding the specialists
    and the `checks` agent in real tool output.
+   For HTTP providers (no repo tools) the **context-expand** pass also
+   runs here — still no LLM calls — deterministically gathering the
+   enclosing functions, referenced types, and callers/callees the change
+   touches so those backends don't review blind. It is a no-op for the
+   `claude` subprocess (which reads the worktree live).
    The **intent pre-pass** (one cheap LLM call, routed as the `intent`
    stage) also runs here, concurrently with context composition: it
    fetches the linked issues and extracts the author's intent /
@@ -823,7 +864,7 @@ reflects what you set in the **Settings** tab or edited in the file directly.
 
 | Provider | Behavior |
 |----------|----------|
-| `claude` (default) | Subprocess `claude -p --output-format json` with repo tools scoped to the PR worktree. |
+| `claude` (default) | Subprocess `claude -p --output-format json` with repo tools (`Read,Glob,Grep`) scoped to the PR worktree. |
 | `gemini` | `generateContent` on the Google Generative Language API. Requires `APPR_AI_SAL_AI_API_KEY` and a model id (e.g. `gemini-2.0-flash`). Optional `APPR_AI_SAL_AI_BASE_URL` overrides the API origin (default `https://generativelanguage.googleapis.com`). |
 | `ollama` | OpenAI-style `POST {base}/v1/chat/completions`. Default base `http://127.0.0.1:11434/v1` if `base_url` is empty. Bearer uses the string `ollama` when no API key is set (local servers). |
 | `openai_compatible` | Same chat schema as Ollama; you must set `APPR_AI_SAL_AI_BASE_URL` to your server’s OpenAI root (e.g. `https://api.example.com/v1`). |
@@ -836,6 +877,13 @@ pass — not the markdown-brief calls): `ollama`/`openai_compatible` send
 when one is supplied). This reduces parse-failure retries; the JSON-salvage
 ladder still runs on every response, so nothing breaks if a backend ignores the
 hint. Claude (CLI subprocess) is unchanged.
+
+Only the `claude` subprocess advertises repo tools (`Capabilities().RepoTools ==
+true`); the HTTP providers report `RepoTools == false` and would otherwise review
+the diff blind. For those, the [context-expansion pass](#review-pipeline)
+deterministically injects the enclosing functions, referenced types, and
+callers/callees the change touches so design/security lanes off-Claude aren't
+starved of context.
 
 ### Environment variables
 

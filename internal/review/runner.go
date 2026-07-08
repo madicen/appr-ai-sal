@@ -320,6 +320,27 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			}
 		}
 
+		// B5: deterministic context expander for backends WITHOUT live repo
+		// tools. Gated on Capabilities().RepoTools == false — the Claude
+		// subprocess reads the worktree with Read/Glob/Grep, so this is a
+		// no-op for it (empty section → specialist prompts byte-identical).
+		// For HTTP providers (which review the diff blind) it gathers, under a
+		// provider-sized byte budget, the enclosing function bodies, referenced
+		// type definitions, and callers/callees the change touches (Go AST
+		// baseline, optionally enriched by gopls/ctags). Fully fail-open. The
+		// section is shared across every code specialist, like staticSection.
+		expandedSection, expandRes := buildExpandedContextSection(ctx, runCfg, worktree, diff)
+		if expandRes.HasContent() {
+			detail := fmt.Sprintf("%d item(s)", len(expandRes.Items))
+			if len(expandRes.EnrichersUsed) > 0 {
+				detail += " (via " + strings.Join(expandRes.EnrichersUsed, "+") + ")"
+			}
+			if expandRes.Truncated {
+				detail += "; truncated to budget"
+			}
+			out <- Progress{Stage: "context-expand", Detail: detail}
+		}
+
 		// Language briefs: pick the dominant language(s) the PR touches
 		// and inject the matching brief(s). Bundled briefs are
 		// guaranteed available for our top-5 languages; the runner
@@ -381,7 +402,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			specialists = emptyActiveSpecialistResults(strings.TrimSpace(techSection) != "")
 			out <- Progress{Stage: "incremental", Detail: "no files changed since prior review; carrying prior findings forward"}
 		} else {
-			specialists = runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, specialistDiff, perAgent, prEvidence, staticSection, staticCleanFiles, langSection, techSection, intentSection, breaker, out)
+			specialists = runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, specialistDiff, perAgent, prEvidence, staticSection, staticCleanFiles, langSection, techSection, intentSection, expandedSection, breaker, out)
 		}
 		// Merge the carried-forward prior findings (on unchanged files) into the
 		// freshly-produced ones (over the changed files). No-op on a first
@@ -643,7 +664,7 @@ func HasUsableTechExperts(pr *gh.PR, rc *repoconfig.Config) bool {
 // intentSection is the Q8 rendered `## PR author intent` block; it is injected
 // only into intent-aware specialists (testing) and is "" for the rest and for a
 // no-op pre-pass, keeping every other specialist's prompt byte-identical.
-func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, intentSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
+func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, intentSection string, expandedSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "specialist", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
@@ -670,7 +691,7 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 			_ = stageWithRetry(ctx, stageCfg, "specialist "+name, notify, func(sctx context.Context) error {
 				stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "specialist "+name), perStageBudget(stageCfg))
 				defer cancel()
-				r = runReviewSpecialist(stCtx, stageCfg, name, worktree, pr, diff, repoCtx, ev, staticSection, staticCleanFiles, langSection, techSection, intent)
+				r = runReviewSpecialist(stCtx, stageCfg, name, worktree, pr, diff, repoCtx, ev, staticSection, staticCleanFiles, langSection, techSection, intent, expandedSection)
 				if r.Err != nil {
 					return r.Err
 				}

@@ -72,7 +72,13 @@ func augmentPromptsForProvider(repoTools bool, systemPrompt, userPrompt string, 
 // intent pre-pass extracted something; it is "" for every other specialist and
 // whenever the pre-pass was a no-op, so those prompts are byte-for-byte
 // unchanged from before Q8.
-func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, intentSection string) SpecialistResult {
+// expandedSection is the pre-rendered B5 "expanded code context" block: for
+// backends without repo tools (RepoTools == false), a deterministic gather of
+// the enclosing function bodies, referenced type definitions, and
+// callers/callees the diff touches, so an HTTP provider isn't reviewing blind.
+// It is "" for the Claude subprocess (which reads the worktree live) and
+// whenever the expander gathered nothing, keeping those prompts byte-identical.
+func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, intentSection string, expandedSection string) SpecialistResult {
 	res := SpecialistResult{Specialist: name, Findings: []Finding{}}
 
 	systemPrompt, err := SpecialistPrompt(name)
@@ -81,7 +87,7 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		return res
 	}
 
-	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, staticSection, langSection, techSection, intentSection)
+	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, staticSection, langSection, techSection, intentSection, expandedSection)
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, hasContext)
 
@@ -269,7 +275,7 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	return res
 }
 
-func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, staticSection string, langSection string, techSection string, intentSection string) string {
+func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, staticSection string, langSection string, techSection string, intentSection string, expandedSection string) string {
 	var b strings.Builder
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	if hasContext {
@@ -315,6 +321,15 @@ func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictn
 	// flag, and which files a formatter passed clean. Pre-rendered (heading +
 	// body) by the runner via staticpass; empty when nothing ran.
 	if s := strings.TrimSpace(staticSection); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
+	// B5 expanded code context: for backends without live repo tools, the
+	// deterministically-gathered enclosing functions / referenced types /
+	// callers-callees the change touches, placed just before the diff and
+	// clearly framed as read-only. Empty (byte-identical to pre-B5) for the
+	// Claude subprocess and whenever the expander gathered nothing.
+	if s := strings.TrimSpace(expandedSection); s != "" {
 		b.WriteString(s)
 		b.WriteString("\n\n")
 	}

@@ -170,10 +170,12 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 		if specWantsIntent(name) {
 			intent = intentSection
 		}
-		// The evals harness intentionally runs no static-analysis pre-pass:
-		// it must be deterministic and independent of which external tools are
-		// installed, so staticSection / staticCleanFiles are empty.
-		r := runReviewSpecialist(sctx, cfg, name, in.Worktree, in.PR, in.Diff, brief, ev, "", nil, in.LangSection, in.TechSection, intent)
+		// The evals harness intentionally runs no static-analysis pre-pass and
+		// no B5 context expansion: both must be deterministic and independent
+		// of which external tools are installed, so staticSection /
+		// staticCleanFiles / expandedSection are empty. This keeps the eval
+		// corpus prompts byte-identical regardless of the environment.
+		r := runReviewSpecialist(sctx, cfg, name, in.Worktree, in.PR, in.Diff, brief, ev, "", nil, in.LangSection, in.TechSection, intent, "")
 		specResults = append(specResults, r)
 		obs.Agents = append(obs.Agents, agentObservation(name, KindCode, r))
 	}

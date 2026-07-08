@@ -24,6 +24,7 @@ func TestBuildReviewUserPromptOrdersLangThenTechThenRepo(t *testing.T) {
 		"## Language: Go\n\nLANG_BODY",
 		"## Technology context: Kestra\n\nTECH_BODY",
 		"",
+		"",
 	)
 	idxLang := strings.Index(got, "LANG_BODY")
 	idxTech := strings.Index(got, "TECH_BODY")
@@ -49,6 +50,7 @@ func TestBuildReviewUserPromptHasContextIntroOnTechAlone(t *testing.T) {
 		"",
 		"",
 		"## Technology context: Kestra\n\nTECH",
+		"",
 		"",
 	)
 	if !strings.Contains(got, claudeReviewIntro) {
