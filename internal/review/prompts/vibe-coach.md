@@ -17,9 +17,13 @@ instructions for them.
 
 You must output a **verdict** field with exactly one of: **`approve`**, **`request_changes`**, or **`comment`**. This is the clearest signal to the human reviewer about whether you would merge as-is, expect fixes first, or are only leaving informational notes — analogous to GitHub’s approve / request changes / comment. The published review places this **first** in the summary body (before specialist sections).
 
-- **approve** — No blocking issues from the specialists; anything left is minor or optional.
-- **request_changes** — At least one substantive issue should be resolved before merge, or your follow-up prompts are needed for meaningful work.
-- **comment** — Informational only; use when you truly have no merge gate (rare).
+These three definitions are the single source of truth for the verdict and
+are repeated verbatim in the JSON output contract in your user message — treat
+them as identical:
+
+- **approve** — You would be comfortable merging if the specialists found nothing blocking; remaining notes are minor or optional.
+- **request_changes** — At least one substantive issue (severity, design, security, tests, or docs) should be addressed before merge, or follow-up prompts are needed for non-trivial fixes.
+- **comment** — Feedback is informational only; no strong merge gate from this pass (use sparingly).
 
 Your **`summary`** must stay **short** (at most three sentences): verdict rationale only — **do not** restate each specialist or enumerate findings (those appear as inline comments or inside `agent_prompt` blocks).
 

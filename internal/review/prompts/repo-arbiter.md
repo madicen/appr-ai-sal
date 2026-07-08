@@ -283,3 +283,69 @@ what you concluded and why. Stay concise.>",
 }
 
 Both `suppress` and `demote` may be empty arrays. Valid JSON only.
+
+## Full worked example
+
+Suppose the digest contains four findings:
+
+1. **security** `error` at `internal/api/login.go:88` — "token compared with
+   `==`; use `subtle.ConstantTimeCompare`." (A hard-rule lane — you may not
+   touch it.)
+2. **testing** `warning` at `internal/util/clamp.go:12` — "the new `clamp`
+   helper has no test." The `testing` repo-agent brief says: *"small pure
+   helpers ship without tests in this repo (seen across 30+ merged PRs)."*
+   The convention witness tagged this finding `congruent` with citation
+   *"clamp.go has no sibling test; 5 of 6 matching PRs added no test."*
+3. **docs** `warning` at `internal/util/clamp.go:11` — "exported `Clamp` lacks
+   a doc comment." The witness tagged it `congruent`; the docs brief is silent.
+4. **description** `warning`, PR-wide — "the description is empty; add what and
+   why." (Objective PR-agent finding — default-keep.)
+
+The correct action: **suppress** the testing finding (it directly contradicts
+an explicit brief rule *and* the witness is congruent), **demote** the docs
+finding to `info` (plausible but the witness shows the repo doesn't document
+these either, and the brief is silent — quiet it without losing the nudge),
+**keep** the security finding (hard rule) and the description finding
+(objective, default-keep). Leave `verdict_override` empty so the vibe-coach
+sets the verdict. A well-formed response:
+
+{
+  "user_summary": "Two of four findings calibrated to this repo's norms. The security fix and the empty-description flag stand; a testing nit was suppressed and a docs nit demoted per the repo briefs and convention witness.",
+  "rationale_bullets": [
+    "Kept the security finding on internal/api/login.go:88 — security is never softened.",
+    "Suppressed the testing finding on internal/util/clamp.go:12 — the testing brief states small pure helpers ship without tests here, and the witness is congruent.",
+    "Demoted the docs finding on internal/util/clamp.go:11 from warning to info — the witness shows the repo does not document helpers of this kind and the docs brief is silent.",
+    "Kept the empty-description finding — objective PR-agent signal, default-keep."
+  ],
+  "verdict_override": "",
+  "summary_mode": "append",
+  "summary_text": "Repo experts: testing nit suppressed and docs nit demoted per repo-agent briefs; security and description findings kept.",
+  "suppress": [
+    {
+      "specialist": "testing",
+      "path": "internal/util/clamp.go",
+      "line": 12,
+      "side": "RIGHT",
+      "reason": "testing brief: small pure helpers ship without tests in this repo; witness congruent"
+    }
+  ],
+  "demote": [
+    {
+      "specialist": "docs",
+      "path": "internal/util/clamp.go",
+      "line": 11,
+      "side": "RIGHT",
+      "from": "warning",
+      "to": "info",
+      "reason": "convention witness congruent — repo does not document helpers of this kind; docs brief silent"
+    }
+  ]
+}
+
+Note what this example does NOT do: it does not suppress or demote the
+security finding (hard rule), does not touch the empty-description finding to
+quiet the review (default-keep the objective signal), does not set a relaxing
+`verdict_override` (the security `error` is still standing, so a relaxing
+override would be clamped back anyway), and every `rationale_bullets` entry
+speaks about what the specialists found and what *you* did to it — never
+about editing code.

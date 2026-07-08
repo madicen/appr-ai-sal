@@ -20,10 +20,14 @@ import (
 //     1–2 class of bug (an enum that forgot `tech` / the PR agents) can never
 //     return. A test (contracts_test.go) proves the generated enums equal the
 //     registry-derived sets.
-//   - The built-in code-specialist contract stays behaviour-equivalent: the
-//     generated reviewOutputContract is byte-identical to the pre-Q2 const
-//     except that its severity enum is spliced in from severityLadderEnum()
-//     (which yields the exact same string). The model sees the same text.
+//   - The built-in code-specialist contract keeps every structural section
+//     the built-ins relied on, and its severity enum is spliced in from
+//     severityLadderEnum() (so the ladder can never drift). Q3 augmented the
+//     shared suggestion/anchor guidance in reviewOutputContract with worked
+//     multi-line and adversarial examples and a corrected (non-double-negative)
+//     anchor_excerpt rule; the contracts_test markers pin the structural
+//     sections and the registry-sourced severity line so the additions cannot
+//     silently drop content.
 //   - PR agents get a dedicated slim contract (prAgentOutputContract) that
 //     drops the ~2.5k-token suggestion machinery they never use (their inline
 //     suggestions are force-stripped / never produced — see
@@ -68,10 +72,11 @@ func severityLadderEnum() string {
 // code-reviewing specialist's user prompt. Don't mince words here; if the
 // model returns prose around the JSON, parsing fails.
 //
-// It is generated from a template whose only registry-sourced substitution is
-// the severity enum (severityLadderEnum), so it is byte-identical to the
-// pre-Q2 hand-maintained const for the built-in specialists (behaviour
-// preserved) while the ladder can no longer drift.
+// Its only registry-sourced substitution is the severity enum
+// (severityLadderEnum), so the severity ladder can never drift from the
+// Severity constants. The surrounding suggestion/anchor guidance is
+// hand-maintained prose (Q3 sharpened it — see the head-of-file note); the
+// contracts_test markers guard that no structural section is lost.
 var reviewOutputContract = reviewOutputContractHead + severityLadderEnum() + reviewOutputContractTail
 
 const reviewOutputContractHead = `Return your review as a single JSON object and nothing else — no prose before, no prose after, no markdown fencing. The object must conform to:
@@ -102,7 +107,7 @@ You own exactly one lens, defined in the system prompt above. Every finding you 
 
 ANCHOR PROOF (anchor_excerpt — DETERMINISTICALLY ENFORCED):
 
-Whenever "suggestion" is non-empty, "anchor_excerpt" MUST be the exact post-image text of the diff line at "line" (the line that will be DELETED when the author clicks Apply). Copy it character-for-character from the unified diff including its leading whitespace; do not strip leading "+", "-", or " " from the diff prefix (the diff shows them; the line itself does not have them). The tool normalises whitespace before comparing.
+Whenever "suggestion" is non-empty, "anchor_excerpt" MUST be the exact post-image text of the diff line at "line" (the line that will be DELETED when the author clicks Apply). The unified diff prepends a one-character marker ("+", "-", or " ") to the front of every line — that marker is part of the DIFF FORMAT, not part of the source line. STRIP that single leading marker and copy everything after it verbatim, INCLUDING the line's own leading indentation. Example: for the diff row that reads (with its leading plus) "+    name := strings.toLower(s)", the correct "anchor_excerpt" is "    name := strings.toLower(s)" — the four spaces of indentation are KEPT, only the "+" is dropped. Do NOT leave the "+"/"-"/" " diff marker on the front (that guarantees a mismatch and your suggestion is stripped), and do NOT strip the code's real indentation. The tool normalises interior and trailing whitespace before comparing, but the safest excerpt is a clean copy of the line as it exists in the file.
 
 Mismatch handling (so you know what's at stake):
    - If your excerpt does not match the line at "line" but UNIQUELY matches a different line in the same hunk, we auto-relocate the finding to that line and surface a banner to the reviewer. Quote the line correctly and this is invisible.
@@ -201,6 +206,19 @@ Worked example (docs specialist, Terraform/HCL, anchored at the resource declara
   "suggestion": "# web is the security group attached to the public ALB; rules below open 80/443 to the world.\nresource \"aws_security_group\" \"web\" {"
 
 Note how the original ` + "`resource \"aws_security_group\" \"web\" {`" + ` line is REPLAYED verbatim at the end of the suggestion — without that, applying the suggestion would delete the resource declaration. Note also that the comment uses HCL syntax (` + "`#`" + `) and not Go's godoc framing.
+
+Worked example (multi-line suggestion WITH indentation — Python, testing specialist, anchored at the closing bracket line "    ]" of a table of cases):
+
+  "comment": "The cases table has no row for empty input; add one asserting parse_timeout(\"\") raises. Anchor at the table's closing bracket and replay it so the new row lands inside the list.",
+  "anchor_excerpt": "    ]",
+  "suggestion": "        (\"empty\", \"\", None, True),\n    ]"
+
+The suggestion keeps the file's own indentation — 8 spaces for the new row (matching the sibling rows), 4 spaces for the closing bracket — and REPLAYS the "    ]" anchor line at the end so the bracket is not deleted. Indentation is literal: a row indented wrong will not parse. (A bare "    ]" excerpt is short and may be treated as un-relocatable; quote a more distinctive line when one is available, or accept the tool may keep only the prose.)
+
+Adversarial example (a WRONG suggestion — study why it fails, then never do it):
+
+  The diff shows an added line whose diff row reads "+    result := compute(x)".
+  A finding that sets "anchor_excerpt": "+    result := compute(x)" (WRONG — it kept the leading "+") will NOT match the real line "    result := compute(x)", so the tool strips the suggestion entirely and only the prose survives. A second common form of the same mistake is anchoring one line ABOVE the target so you can "insert before" it: there is no insert in this contract — your suggestion REPLACES the anchor line, so anchoring above silently deletes the wrong line. Both failures share one root cause: the "anchor_excerpt" did not equal the exact post-image line at "line". Quote the line you actually mean — marker-stripped, indentation intact — and only fill "suggestion" once you are certain it matches.
 
 Inline vs general: prefer a non-empty path and line > 0 whenever the issue ties to a changed line in the diff (those become GitHub inline review comments). Use path "" and line 0 only for repo-wide or cross-cutting notes that truly cannot be anchored to one line; suggestion must be empty for general findings.
 
@@ -314,7 +332,7 @@ Finding refs (REQUIRED for prompts that bundle specialist findings):
 - Without these refs the rendered review cannot tell when a referenced finding was suppressed by the repo arbiter or skipped by the reviewer; prompts whose every referenced finding is suppressed/skipped will be silently dropped at render time, so the listed refs are how you guarantee a prompt survives.
 - "finding_refs" may be empty only for prompts that don't tie to any specific specialist finding (general process advice). Such prompts are kept unconditionally, but use this case sparingly — most useful prompts bundle concrete findings.
 
-Verdict (required — human reviewer-facing merge recommendation, analogous to GitHub review states):
+Verdict (required — human reviewer-facing merge recommendation, analogous to GitHub review states; these definitions are identical to the ones in your system prompt):
 
 - "approve" — You would be comfortable merging if the specialists found nothing blocking; remaining notes are minor or optional.
 - "request_changes" — At least one substantive issue (severity, design, security, tests, or docs) should be addressed before merge, or follow-up prompts are needed for non-trivial fixes.

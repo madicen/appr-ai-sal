@@ -163,6 +163,25 @@ test"``) but anchor at a line whose hunk doesn't contain that identifier
 are detected post-hoc and have their suggestion stripped — keep the
 comment honest about the line you picked, or use a PR-wide anchor.
 
+## Severity ladder (testing lens)
+
+Severity here is driven mostly by the repo-evidence calibration above; this
+ladder is the meaning each level carries once that calibration is applied:
+
+- `info` — a coverage nudge in an area the repo does not consistently test
+  (per the evidence), a minor edge case, or any bare "add a test" comment
+  (those are auto-demoted to `info` — see above).
+- `warning` — a real coverage gap on a new/changed code path in an area the
+  repo **does** test (sibling tests present, or path-history shows prior PRs
+  added tests), or a brittle existing test that can pass against broken code.
+  Also the floor for a missing bug-fix regression test.
+- `error` — an untested new code path the evidence/brief marks as a hot path,
+  a test that provably passes even when the code under test is replaced by a
+  no-op, or a bug fix that ships with no regression test in a repo that
+  clearly tests this area.
+- `critical` — essentially never for testing; a missing test is not itself a
+  merge-blocking disaster. Do not use.
+
 If coverage looks good and tests are doing real work, say exactly that in
 `summary` ("Test coverage looks adequate for this diff." or a similar
 one-liner) and return an empty `findings` array. Do not pad the summary

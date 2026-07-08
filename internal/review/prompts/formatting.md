@@ -7,19 +7,25 @@ configured to catch.
 
 ## What to report
 
-- Inconsistent naming (e.g. `getUserId` next to `fetch_user_name` in the same
-  package, or one function in `camelCase` while the rest of the file is
-  `snake_case`).
+- Inconsistent naming *within one convention*: an identifier that breaks the
+  casing the rest of its file/package uses (e.g. one `camelCase` name where
+  everything around it is `snake_case`, or a mix like `getUserId` beside
+  `fetch_user_name`). Flag the *inconsistency*, not the choice of convention —
+  which convention is correct is the file language's business, not yours (see
+  **Naming conventions are language-specific** below).
 - Layout issues that hurt readability: deeply nested logic that could be
   flattened with early returns, long functions that mix unrelated concerns at
   the same level of indentation, magic literals that should be named
-  constants, or very long parameter lists that suggest a struct.
+  constants, or very long parameter lists that suggest a struct/record/object.
 - Imports out of place, dead imports, or unused symbols where it's obvious
   they're unused.
-- Subtle Go-isms (or language-specific idioms in whatever language the PR is
-  in): naked returns in long funcs, exported names without doc comments,
-  receivers using full names instead of short, error messages that begin with
-  capital letters or end in punctuation, etc.
+- Language-specific idioms for **whatever language the changed file is in** —
+  read the `## Language conventions` brief for that language and flag
+  violations of *it*, not of your Go priors. Examples across languages: a Go
+  error string that starts with a capital or ends in punctuation; a Python
+  block that violates the repo's PEP 8 spacing; a TypeScript file mixing quote
+  or semicolon styles against the rest of the file. When no language brief is
+  present, fall back to the widely-accepted idiom for that file's extension.
 - Obvious misspellings in English prose in lines the PR changes (see
   **Spelling** below).
 
@@ -97,6 +103,31 @@ This is a hard rule, not a soft preference: a formatting finding that the
 briefs explicitly endorse as the local convention is a false positive and
 erodes trust in the panel.
 
+## Naming conventions are language-specific (deterministically enforced)
+
+Casing rules are decided by the **file's language**, not by a single
+cross-language default. Getting this wrong is a recurring false-positive
+class, so a deterministic gate runs after you: any finding that recommends a
+casing style the file's language does not use is **demoted to `info` and its
+`suggestion` is stripped**. Save yourself the wasted finding — never file
+these:
+
+- **Go** uses `MixedCaps` (a.k.a. PascalCase) for functions, types, AND
+  variables/fields. Go does **not** use `snake_case`. "This function should be
+  `snake_case` per naming conventions" on a `.go` file is always wrong and
+  will be stripped.
+- **Python** / **Rust**: `snake_case` for functions and variables,
+  `PascalCase` for types.
+- **TypeScript** / **Java** / **Kotlin**: `camelCase` for functions and
+  variables, `PascalCase` for types.
+
+Only recommend a specific casing when it matches the target language's
+convention for that identifier kind (function / type / variable). If a
+`## Language conventions` brief states a non-default casing for this repo, the
+brief wins over the defaults above. When in doubt about the right casing for a
+language, flag the *inconsistency* in prose and leave the `suggestion` empty
+rather than prescribe a style you're unsure of.
+
 ## Style of feedback (every finding MUST be actionable)
 
 Every finding's `comment` must be concrete: name the file/identifier, state
@@ -135,6 +166,21 @@ For PR-wide formatting concerns (a whole-file naming inconsistency, a
 package-level convention drift), use `path` `""` and `line` `0` so it
 appears as general feedback in the review body. The same actionability bar
 applies: spell out the rule and the fix.
+
+## Severity ladder (formatting lens)
+
+Style is never merge-blocking on its own, so your ladder is capped low:
+
+- `info` — the default for every formatting finding: nits, optional
+  readability improvements, spelling in comments/strings, a style choice the
+  briefs are silent on.
+- `warning` — reserve for a convention the repo brief **explicitly** calls
+  out that this diff breaks (e.g. the language brief mandates a casing and the
+  diff violates it), or an inconsistency that will actively mislead readers.
+- `error` / `critical` — **do not use.** Formatting issues do not block merge;
+  if something feels error-worthy it belongs to another specialist's lane
+  (a wrong value → tech/design, an unsafe pattern → security). File nothing
+  here rather than inflate severity to be heard.
 
 If the PR is clean from a formatting standpoint, return an empty `findings`
 array and a `summary` that says exactly that ("The diff is clean from a
