@@ -379,6 +379,18 @@ type approvalCard struct {
 	// press y to post one by hand. renderCardDetail shows a "post anyway"
 	// banner instead of the plain skipped badge.
 	demoted bool
+	// memorySuppressed marks a card built from draft.MemorySuppressed — an
+	// inline finding the deterministic reviewer-memory suppressor (B1) held
+	// back BEFORE the arbiter because the reviewer has skipped a near-identical
+	// finding memorySuppSkipCount times in this repo. Like demoted cards they
+	// start cardSkipped and never affect the verdict, but the disclosure
+	// invites the reviewer to press `x` to resurface (un-suppress) the finding
+	// so they can post it. memorySuppIdx is its index in draft.MemorySuppressed
+	// so resurfacing can flip that entry's Resurfaced flag (fed back into the
+	// memory store at post time).
+	memorySuppressed    bool
+	memorySuppIdx       int
+	memorySuppSkipCount int
 }
 
 // Model is the persistent overlay that hosts the entire review flow:
@@ -709,6 +721,11 @@ func (m *Model) hydrateAgentRowsFromDraft(d *review.Draft) {
 	for _, f := range d.DemotedHidden {
 		demotedBySpec[f.Specialist] = append(demotedBySpec[f.Specialist], f.Finding)
 	}
+	// B1 memory-suppressed findings are also surfaced (as opt-in, resurfaceable
+	// cards), so they count toward what the agent's tab shows.
+	for _, ms := range d.MemorySuppressed {
+		demotedBySpec[ms.Specialist] = append(demotedBySpec[ms.Specialist], ms.Finding)
+	}
 	for _, sr := range d.Specialists {
 		i := m.agentIndex(sr.Specialist)
 		if i < 0 {
@@ -780,9 +797,28 @@ func (m *Model) AdoptDraft(d *review.Draft) tea.Cmd {
 	}
 	m.files = review.ParseDiff(d.Diff)
 	flat := d.FlatPostableFindingsForPost()
-	m.cards = make([]approvalCard, 0, len(flat)+len(d.DemotedHidden))
+	m.cards = make([]approvalCard, 0, len(flat)+len(d.DemotedHidden)+len(d.MemorySuppressed))
 	for _, f := range flat {
 		card := approvalCard{finding: f}
+		anchorCardToDiff(&card, m.files)
+		m.cards = append(m.cards, card)
+	}
+	// B1: findings the reviewer-memory suppressor held back before the arbiter
+	// (the reviewer skipped a near-identical finding N≥3 times). They are
+	// surfaced as disclosed, opt-in cards — never silently dropped — starting
+	// skipped, with an `x`-to-resurface affordance. They belong to their
+	// original specialist so they land on that agent's tab.
+	for i, ms := range d.MemorySuppressed {
+		if strings.TrimSpace(ms.Finding.Path) == "" || ms.Finding.Line <= 0 {
+			continue
+		}
+		card := approvalCard{
+			finding:             review.FlatFinding{Specialist: ms.Specialist, Finding: ms.Finding},
+			memorySuppressed:    true,
+			memorySuppIdx:       i,
+			memorySuppSkipCount: ms.SkipCount,
+			state:               cardSkipped,
+		}
 		anchorCardToDiff(&card, m.files)
 		m.cards = append(m.cards, card)
 	}
@@ -1100,6 +1136,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.actPostCurrent()
 		case "n", "N", "s":
 			return m.actSkipCurrent()
+		case "x", "X":
+			// Resurface a reviewer-memory-suppressed finding: bring it back
+			// from suppressed→pending so the reviewer can post it with y. A
+			// no-op on any other card.
+			return m.actResurfaceCurrent()
 		case "right", "l":
 			return m.actNext()
 		case "left", "h":

@@ -47,6 +47,16 @@ func main() {
 		}
 		return
 	}
+	// `memory` inspects / clears the per-repo reviewer-memory store (B1). It
+	// is a maintenance subcommand, not part of the interactive TUI flow.
+	if len(os.Args) >= 2 && os.Args[1] == "memory" {
+		ctx := context.Background()
+		if err := review.RunMemoryCLI(ctx, os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	// `evals` runs the prompt-quality regression harness (Q4). It is a
 	// developer/CI subcommand, not part of the interactive TUI flow.
 	if len(os.Args) >= 2 && os.Args[1] == "evals" {

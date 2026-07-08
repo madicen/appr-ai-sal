@@ -434,11 +434,11 @@ func (m *Model) renderAgentSuppressions(name string, rowW int) string {
 func (m *Model) agentCardTally(name string) (onPR, posted, skipped int) {
 	for _, gi := range m.agentCardIndices(name) {
 		c := m.cards[gi]
-		// A demoted card sits at its default skipped state until the
-		// reviewer acts; only count it once they post it (a real action).
-		// Leaving it out of the skipped count keeps the strip honest about
-		// what the reviewer actually did.
-		if c.demoted && c.state != cardPosted {
+		// A demoted / memory-suppressed card sits at its default skipped state
+		// until the reviewer acts; only count it once they post it (a real
+		// action). Leaving it out of the skipped count keeps the strip honest
+		// about what the reviewer actually did.
+		if (c.demoted || c.memorySuppressed) && c.state != cardPosted {
 			continue
 		}
 		switch c.state {
@@ -1144,6 +1144,14 @@ func (m *Model) renderCardDetail(rowW int) string {
 		b.WriteString(styles.WarnStyle.Render("⊘ Demoted below the review threshold by the repo arbiter — it won't post and doesn't affect the verdict.") + "\n")
 		b.WriteString(styles.DimStyle.Render("Press y to post it anyway as a normal inline comment.") + "\n")
 	}
+	if cur.memorySuppressed {
+		b.WriteString(styles.WarnStyle.Render(fmt.Sprintf("⊘ Suppressed: you've skipped this pattern %d× in this repo — held back before the arbiter and excluded from the verdict.", cur.memorySuppSkipCount)) + "\n")
+		if cur.state == cardPending {
+			b.WriteString(styles.DimStyle.Render("Resurfaced — press y to post it, or x to re-suppress.") + "\n")
+		} else {
+			b.WriteString(styles.DimStyle.Render("Press x to resurface it (then y to post).") + "\n")
+		}
+	}
 	// Anchor auto-correction notes. Two independent code paths can move
 	// a finding off its model-reported line, and we surface each so the
 	// reviewer can sanity-check the new position before posting:
@@ -1206,9 +1214,12 @@ func (m *Model) renderCardDetail(rowW int) string {
 			b.WriteString(styles.OkStyle.Render("✓ posted") + "\n\n")
 		}
 	case cardSkipped:
-		if cur.demoted {
+		switch {
+		case cur.demoted:
 			b.WriteString(styles.DimStyle.Render("— not posting (demoted); press y to post anyway") + "\n\n")
-		} else {
+		case cur.memorySuppressed:
+			b.WriteString(styles.DimStyle.Render("— suppressed by reviewer memory; press x to resurface") + "\n\n")
+		default:
 			b.WriteString(styles.DimStyle.Render("— skipped") + "\n\n")
 		}
 	case cardError:

@@ -259,11 +259,11 @@ func (m *Model) renderPostedBody() string {
 
 func (m *Model) tallyCardKinds() (onPR, posted, skipped int) {
 	for _, c := range m.cards {
-		// Demoted (opt-in) cards aren't part of the AI's at-floor finding
-		// set: they start skipped by default, so counting them here would
-		// distort the summary routing (e.g. "skipped every objection →
-		// offer approve") and the verdict the arbiter/vibe-coach settled on.
-		if c.demoted {
+		// Demoted / memory-suppressed (opt-in) cards aren't part of the AI's
+		// at-floor finding set: they start skipped by default, so counting them
+		// here would distort the summary routing (e.g. "skipped every objection
+		// → offer approve") and the verdict the arbiter/vibe-coach settled on.
+		if c.demoted || c.memorySuppressed {
 			continue
 		}
 		switch c.state {
@@ -346,7 +346,7 @@ func (m *Model) helpForPhase() string {
 		if !m.done {
 			return "tab/[ ] switch tab · ↑/↓ scroll · q abort · wheel"
 		}
-		return "tab/[ ] switch tab · y post · n/s skip · ←/→ finding · R refresh PR · q abort · wheel"
+		return "tab/[ ] switch tab · y post · n/s skip · x resurface · ←/→ finding · R refresh PR · q abort · wheel"
 	case phaseGeneratingSummary:
 		return "refining summary with your final selections… · q abort"
 	case phaseSummary:
@@ -374,6 +374,16 @@ func (m *Model) helpForPhase() string {
 func (m *Model) MarkSummaryPosted() {
 	m.summaryDone = true
 	m.posted = true
+	// B1 reviewer memory: fold this run's accept/skip/reversal decisions into
+	// the per-repo store now that the review has actually been posted. Doing it
+	// here (not on dry-run, which never reaches MarkSummaryPosted) means only
+	// real posts train the memory. syncUserSkipsToDraft mirrors the card skip
+	// states onto the draft; syncMemorySuppressionOutcomes records which
+	// suppressed findings were resurfaced-and-posted. RecordReviewerMemory is
+	// fail-open, so a store error never blocks the posted-state transition.
+	m.syncUserSkipsToDraft()
+	m.syncMemorySuppressionOutcomes()
+	review.RecordReviewerMemory(m.draft)
 	// The receipt lives on the summary tab; focus it so the posted body
 	// renders and the summary tab's glyph flips to ✓.
 	m.activeTab = m.summaryTabIndex()

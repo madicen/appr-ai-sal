@@ -63,6 +63,17 @@ type Draft struct {
 	// review ran on a truncated diff so PR authors know it didn't see
 	// everything.
 	DiffBudget *BudgetReport `json:"-"`
+	// MemorySuppressed holds inline findings the deterministic reviewer-memory
+	// suppressor (B1) held back BEFORE the arbiter because the reviewer has
+	// skipped a near-identical finding at least memory.DefaultSuppressThreshold
+	// times in this repo (see reviewer_memory.go). They are removed from
+	// Specialists[].Findings so they don't reach the arbiter, the verdict, the
+	// summary body, or vibe-coach — but they are never silently dropped: the
+	// TUI surfaces each one as a disclosed, resurfaceable card ("suppressed:
+	// you've skipped this N×; press x to resurface"). Nil when memory
+	// suppression didn't fire, keeping every downstream surface byte-identical
+	// to a no-memory run.
+	MemorySuppressed []MemorySuppressedFinding `json:"-"`
 	// PRIntent is the Q8 author-intent extraction (description + linked issues)
 	// produced by the intent pre-pass. Nil when the pre-pass was skipped or
 	// failed (fail-open) — in which case the vibe-coach's lazy re-run injects

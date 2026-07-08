@@ -71,10 +71,18 @@ func formatPerAgentBriefs(perAgent map[string]string) string {
 	return b.String()
 }
 
-func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) string {
+func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness, rejectedMemory string) string {
 	var b strings.Builder
 	b.WriteString("PR: " + pr.Repository + "#")
 	fmt.Fprintf(&b, "%d %s\n\n", pr.Number, pr.Title)
+	// B1 reviewer memory: patterns the human has repeatedly declined in this
+	// repo. Injected only when non-empty, so a repo with no memory produces a
+	// byte-identical prompt to pre-B1.
+	if rm := strings.TrimSpace(rejectedMemory); rm != "" {
+		b.WriteString("## Previously rejected patterns (reviewer memory)\n\n")
+		b.WriteString(rm)
+		b.WriteString("\n")
+	}
 	briefs := formatPerAgentBriefs(perAgent)
 	if strings.TrimSpace(briefs) != "" {
 		b.WriteString("## Per-specialist repo-agent briefs\n\n")
@@ -472,14 +480,14 @@ func demotedSeverity(s Severity) (Severity, bool) {
 	}
 }
 
-func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) *RepoArbiterResult {
+func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness, rejectedMemory string) *RepoArbiterResult {
 	ar := &RepoArbiterResult{}
 	sys, err := SpecialistPrompt(specRepoArbiter)
 	if err != nil {
 		ar.Err = err
 		return ar
 	}
-	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses)
+	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses, rejectedMemory)
 	sys, user = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, sys, user, true)
 	// R5: constrain the arbiter's output shape (suppress/demote refs) on
 	// schema-capable providers with the registry-derived arbiter schema.
@@ -518,11 +526,15 @@ func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, 
 // (already injected into specialist prompts), the cross-specialist
 // technology experts section, and optional convention witnesses produced
 // between the specialists and this pass.
-func RunRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) *RepoArbiterResult {
+// rejectedMemory is the pre-rendered "previously rejected patterns" section
+// (B1) from the per-repo reviewer memory, or "" when there is no memory. When
+// empty the arbiter prompt is byte-identical to pre-B1; the runner supplies it
+// and evals pass "".
+func RunRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness, rejectedMemory string) *RepoArbiterResult {
 	// Q7: route the arbiter to its configured model (stage_models["arbiter"] /
 	// "default"); a no-op clone when unrouted. Applied here so every caller
 	// (runner, evals) picks up arbiter routing uniformly.
 	cfg = cfg.ForStage(StageArbiter)
 	specDigest := buildSpecialistDigestForRepoExperts(specialists)
-	return runRepoArbiter(ctx, cfg, worktree, pr, specDigest, perAgent, techSection, witnesses)
+	return runRepoArbiter(ctx, cfg, worktree, pr, specDigest, perAgent, techSection, witnesses, rejectedMemory)
 }

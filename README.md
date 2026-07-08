@@ -450,20 +450,85 @@ happen in.
    3). Each one is independently retried inside its own per-stage budget.
 4. **Convention witness** (optional) classifies every testing/docs
    finding against the PR evidence pack.
-5. **Repo arbiter** (optional) reconciles the specialist findings with
+5. **Reviewer memory** (see [Reviewer memory](#reviewer-memory-learns-from-acceptskip))
+   runs its deterministic pre-arbiter suppressor here: any finding matching a
+   pattern you've skipped ≥3× in this repo is held back (disclosed and
+   resurfaceable in the overlay), and your repeatedly-rejected patterns are
+   injected into the arbiter prompt below.
+6. **Repo arbiter** (optional) reconciles the specialist findings with
    the briefs and witnesses; may suppress, demote, or override the
    verdict.
-6. **Vibe coach** consumes the post-arbiter findings and produces the
+7. **Vibe coach** consumes the post-arbiter findings and produces the
    verdict + paste-ready author prompts.
-7. **Review overlay** opens. You walk findings one card at a time
-   (`y` to post, `n` / `s` to skip, `←` / `→` to navigate, `f` to skip
-   the rest), then confirm the summary. **Nothing hits GitHub until
-   you press `y` on the final confirmation.**
+8. **Review overlay** opens. You walk findings one card at a time
+   (`y` to post, `n` / `s` to skip, `x` to resurface a memory-suppressed
+   finding, `←` / `→` to navigate, `f` to skip the rest), then confirm the
+   summary. **Nothing hits GitHub until you press `y` on the final
+   confirmation.**
 
 The chrome `[-]` button collapses the modal to its tab strip so you
 can keep browsing the diff while the pipeline runs; flip **Start
 review minimized** in the Run options pane to open the modal that way
 by default.
+
+### Reviewer memory (learns from accept/skip)
+
+appr-ai-sal remembers what you do with each finding and uses it to make future
+reviews of the **same repository** quieter — the accept/skip signal every
+reviewer already produces is fed back into the pipeline instead of being thrown
+away after each run.
+
+**What is captured.** When you actually post a review, each finding's outcome
+is folded into a per-repo store:
+
+- **posted** — you posted the finding (an accept signal),
+- **skipped** — you skipped it (the core reject signal),
+- **demote_reversed** — you reinstated something the tool held back (opted an
+  arbiter-demoted finding into the body, or resurfaced-and-posted a
+  memory-suppressed finding).
+
+Each decision is stored as a **fingerprint** — `{specialist, path_glob,
+comment_hash, severity}` — not the raw finding. The path is generalized to a
+directory + extension glob (`internal/review/agents.go` →
+`internal/review/*.go`) so a decision transfers to sibling files, and the
+comment is stored only as a hash of its normalized (lowercased, de-punctuated,
+word-sorted) form, so near-identical rewordings collapse to the same
+fingerprint while **the raw comment text never touches disk**.
+
+**How it's used, in escalating order:**
+
+1. **Arbiter hint.** Patterns you've skipped ≥2× are injected into the repo
+   arbiter's prompt as a "previously rejected patterns" section, nudging the
+   LLM arbiter to down-weight them. With no memory the arbiter prompt is
+   byte-identical to before.
+2. **Deterministic pre-arbiter suppression.** Once you've skipped a
+   near-identical finding **≥3 times** (and skipped it more often than you've
+   kept it), the finding is held back **before** the arbiter runs. It is never
+   silently dropped: the review overlay shows it as a disclosed, suppressed
+   card — *"Suppressed: you've skipped this pattern N× in this repo"* — and you
+   can press **`x`** to resurface it (then `y` to post). Security and
+   error/critical findings are never suppressed this way.
+3. **Evals feed.** `appr-ai-sal memory export owner/repo` prints your
+   repeatedly-skipped patterns as scaffolding for the evals corpus'
+   `must_not_appear` list (see [Evals](#evals-prompt-quality-regression-harness)).
+   The `Pattern` field is left blank on purpose — the raw comment isn't stored —
+   for you to fill in from your own review history.
+
+**Privacy & safety.** The store is **local only** (under
+`~/.cache/appr-ai-sal/repo-profiles/<owner>__<repo>/reviewer-memory.json`) and
+holds no comment text, only hashes. It is **fail-open**: a missing or corrupt
+file is treated as "no memory" and never breaks a review or the TUI. Memory is
+only written on a **real post** (dry-run and demo mode never train it).
+
+**Inspect & clear** it any time:
+
+```bash
+appr-ai-sal memory list                 # repos with stored memory
+appr-ai-sal memory list owner/repo       # that repo's records
+appr-ai-sal memory clear owner/repo --all
+appr-ai-sal memory clear owner/repo --specialist formatting --comment-hash <hash>
+appr-ai-sal memory export owner/repo     # emit must_not_appear scaffolding
+```
 
 ## AI configuration
 

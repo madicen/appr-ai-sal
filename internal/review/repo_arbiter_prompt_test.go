@@ -17,7 +17,7 @@ func TestBuildRepoArbiterUserPromptIncludesPerAgentBriefs(t *testing.T) {
 		// design / docs / security intentionally absent.
 	}
 
-	got := buildRepoArbiterUserPrompt(pr, digest, per, "", nil)
+	got := buildRepoArbiterUserPrompt(pr, digest, per, "", nil, "")
 
 	if !strings.Contains(got, "## Per-specialist repo-agent briefs") {
 		t.Fatalf("expected briefs section header, got:\n%s", got)
@@ -52,7 +52,7 @@ func TestBuildRepoArbiterUserPromptIncludesWitnessSection(t *testing.T) {
 	witnesses := []conventionwitness.Witness{
 		{Specialist: "testing", Path: "a.go", Line: 5, Side: "RIGHT", Verdict: conventionwitness.VerdictCongruent, Citation: "no sib tests"},
 	}
-	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", witnesses)
+	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", witnesses, "")
 	if !strings.Contains(got, "## Convention witness") {
 		t.Fatalf("missing witness section header in:\n%s", got)
 	}
@@ -63,7 +63,7 @@ func TestBuildRepoArbiterUserPromptIncludesWitnessSection(t *testing.T) {
 
 func TestBuildRepoArbiterUserPromptOmitsEmptyWitnessSection(t *testing.T) {
 	pr := &gh.PR{Number: 42, Title: "x", Repository: "acme/widget"}
-	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil)
+	got := buildRepoArbiterUserPrompt(pr, "digest", nil, "", nil, "")
 	if strings.Contains(got, "## Convention witness") {
 		t.Fatalf("witness section should be omitted when empty:\n%s", got)
 	}

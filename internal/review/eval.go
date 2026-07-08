@@ -243,7 +243,10 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 	// --- Repo arbiter (optional) -----------------------------------------
 	if in.RunArbiter {
 		actx := applog.WithStage(ctx, "repo-arbiter")
-		obs.Arbiter = RunRepoArbiter(actx, cfg, in.Worktree, in.PR, all, in.PerAgentBriefs, in.TechSection, obs.Witness)
+		// Evals never touch the local reviewer-memory store — they must stay
+		// hermetic and reproducible — so the arbiter's "previously rejected
+		// patterns" section is always empty here (byte-identical to pre-B1).
+		obs.Arbiter = RunRepoArbiter(actx, cfg, in.Worktree, in.PR, all, in.PerAgentBriefs, in.TechSection, obs.Witness, "")
 	}
 
 	// --- Vibe-coach (optional) -------------------------------------------

@@ -370,6 +370,19 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// counts are consistent across every surface. See finding_dedupe.go.
 		allSpecialists = dedupeInlineFindingsAcrossSpecialists(allSpecialists)
 
+		// B1 reviewer memory: load once for this repo (fail-open → empty).
+		// The deterministic pre-arbiter suppressor holds back inline findings
+		// matching a pattern the reviewer has skipped N≥3 times; the held-back
+		// findings are carried on the draft (MemorySuppressed) so the TUI can
+		// disclose and resurface them — never silently dropped. The rejected-
+		// patterns section (built below) is injected into the arbiter prompt.
+		repoMemory := LoadRepoMemory(pr)
+		var memSuppressed []MemorySuppressedFinding
+		allSpecialists, memSuppressed = ApplyMemorySuppression(repoMemory, allSpecialists)
+		if len(memSuppressed) > 0 {
+			out <- Progress{Stage: "reviewer-memory", Detail: fmt.Sprintf("suppressed %d finding(s) matching repeatedly-skipped patterns", len(memSuppressed))}
+		}
+
 		skipDownstream := !SpecialistsHaveAnyFindings(allSpecialists)
 
 		final := &Draft{
@@ -382,6 +395,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			RepositoryContext:          repoBlock,
 			ContextVersusChangeSummary: cvSummary,
 			PRIntent:                   prIntent,
+			MemorySuppressed:           memSuppressed,
 		}
 		// Carry the diff-budget report so the rendered body can disclose that
 		// the review ran on a truncated diff (R3). Only set when shaping
@@ -428,7 +442,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				_ = stageWithRetry(ctx, runCfg, "repo-arbiter", arbNotify, func(sctx context.Context) error {
 					stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "repo-arbiter"), perStageBudget(runCfg))
 					defer cancel()
-					arb = RunRepoArbiter(stCtx, runCfg, worktree, pr, allSpecialists, perAgent, techSection, witnesses)
+					arb = RunRepoArbiter(stCtx, runCfg, worktree, pr, allSpecialists, perAgent, techSection, witnesses, RejectedPatternsSection(repoMemory))
 					if arb != nil && arb.Err != nil {
 						return arb.Err
 					}

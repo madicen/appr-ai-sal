@@ -148,11 +148,14 @@ func (m *Model) syncUserSkipsToDraft() {
 	}
 	m.draft.UserSkipPostKeys = nil
 	for _, c := range m.cards {
-		// Demoted cards default to skipped but were never in the at-floor
-		// finding set, so their key matches nothing in the body/inline
-		// batch. Recording it would only pollute the skip-set hash and
-		// force a needless vibe-coach re-run on entering the summary.
-		if c.demoted {
+		// Demoted / memory-suppressed cards default to skipped but were never
+		// in the at-floor finding set (they live on the draft's DemotedHidden /
+		// MemorySuppressed side-lists), so their key matches nothing in the
+		// body/inline batch. Recording it would only pollute the skip-set hash
+		// and force a needless vibe-coach re-run on entering the summary. Their
+		// outcome is folded into reviewer memory via their own side-lists at
+		// post time instead.
+		if c.demoted || c.memorySuppressed {
 			continue
 		}
 		if c.state != cardSkipped {
@@ -383,6 +386,52 @@ func shortSHA(s string) string {
 		return s[:7]
 	}
 	return s
+}
+
+// actResurfaceCurrent un-suppresses a reviewer-memory-suppressed finding (B1):
+// it flips the focused suppressed card from cardSkipped to cardPending so the
+// reviewer can post it with y. Pressing x again re-suppresses it (pending →
+// skipped). It is a no-op on any card that isn't memory-suppressed, and on
+// posted/error cards.
+func (m *Model) actResurfaceCurrent() (tea.Model, tea.Cmd) {
+	if m.idx < 0 || m.idx >= len(m.cards) {
+		return m, nil
+	}
+	cur := &m.cards[m.idx]
+	if !cur.memorySuppressed {
+		return m, nil
+	}
+	switch cur.state {
+	case cardSkipped:
+		cur.state = cardPending
+	case cardPending:
+		cur.state = cardSkipped
+	default:
+		return m, nil
+	}
+	m.rebuildBody()
+	return m, nil
+}
+
+// syncMemorySuppressionOutcomes reconciles the final card states of the B1
+// memory-suppressed cards back onto the draft so RecordReviewerMemory folds
+// the right signal at post time: a suppressed finding the reviewer actually
+// posted marks its draft entry Resurfaced (recorded as demote_reversed — the
+// suppressor was wrong, back off), while one left un-posted stays a skip
+// (reinforcing the pattern). Called just before recording at post time.
+func (m *Model) syncMemorySuppressionOutcomes() {
+	if m.draft == nil {
+		return
+	}
+	for _, c := range m.cards {
+		if !c.memorySuppressed {
+			continue
+		}
+		if c.memorySuppIdx < 0 || c.memorySuppIdx >= len(m.draft.MemorySuppressed) {
+			continue
+		}
+		m.draft.MemorySuppressed[c.memorySuppIdx].Resurfaced = (c.state == cardPosted)
+	}
 }
 
 func (m *Model) actSkipCurrent() (tea.Model, tea.Cmd) {
