@@ -2,6 +2,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
@@ -34,6 +35,11 @@ func Complete(ctx context.Context, cfg *aiconfig.Config, systemPrompt, userPromp
 		// JSON mode then request json_object / responseMimeType. The F2
 		// salvage ladder still runs on every response as the fallback.
 		WantJSON: ai.JSONModeFromContext(ctx),
+		// Q2: a JSON stage may also attach its per-agent, registry-derived
+		// schema with ai.WithJSONSchema. Schema-capable providers (Gemini
+		// responseSchema) constrain the output shape; schema-less JSON
+		// providers ignore it and use plain json_object mode.
+		JSONSchema: ai.JSONSchemaFromContext(ctx),
 	})
 	return res.Text, err
 }
@@ -50,4 +56,15 @@ var _ ai.CompleteFunc = Complete
 // replace the ladder.
 func completeJSON(ctx context.Context, cfg *aiconfig.Config, systemPrompt, userPrompt, worktree string) (string, error) {
 	return Complete(ai.WithJSONMode(ctx), cfg, systemPrompt, userPrompt, worktree)
+}
+
+// completeJSONWithSchema is completeJSON that also attaches a per-agent,
+// registry-derived JSON schema (Q2) to the call so schema-capable providers
+// constrain the response shape (Gemini responseSchema). It keeps the
+// ai.CompleteFunc-shaped call convention (schema rides the context, not the
+// signature) and degrades to plain native JSON mode when schema is empty or
+// the provider only supports schema-less JSON mode. The llmjson salvage ladder
+// still parses every response as the fallback.
+func completeJSONWithSchema(ctx context.Context, cfg *aiconfig.Config, systemPrompt, userPrompt, worktree string, schema json.RawMessage) (string, error) {
+	return completeJSON(ai.WithJSONSchema(ctx, schema), cfg, systemPrompt, userPrompt, worktree)
 }

@@ -73,7 +73,10 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 	// so non-Claude backends get the diff-only tooling hint.
 	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, false)
 
-	out, err := completeJSON(ctx, cfg, systemPrompt, userPrompt, worktree)
+	// R5: PR agents get the slim schema (no suggestion/anchor_excerpt fields),
+	// matching the slim prAgentOutputContract; user-defined PR-wide specs share
+	// it via schemaForAgent's Kind check.
+	out, err := completeJSONWithSchema(ctx, cfg, systemPrompt, userPrompt, worktree, schemaForAgent(name))
 	if err != nil {
 		res.Err = err
 		return res
@@ -353,7 +356,11 @@ func buildPRAgentUserPrompt(name string, pr *gh.PR, diff string, in PRAgentInput
 	b.WriteString("```diff\n")
 	b.WriteString(diff)
 	b.WriteString("\n```\n\n")
-	b.WriteString(reviewOutputContract)
+	// PR agents get the dedicated slim contract (no suggestion mechanics) —
+	// their inline suggestions are force-stripped / never produced, so the
+	// full reviewOutputContract's ~2.5k tokens of suggestion machinery is dead
+	// weight for them. See contracts.go.
+	b.WriteString(prAgentOutputContract)
 	return b.String()
 }
 

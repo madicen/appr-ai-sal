@@ -481,7 +481,9 @@ func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, 
 	}
 	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses)
 	sys, user = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, sys, user, true)
-	out, err := completeJSON(ctx, cfg, sys, user, worktree)
+	// R5: constrain the arbiter's output shape (suppress/demote refs) on
+	// schema-capable providers with the registry-derived arbiter schema.
+	out, err := completeJSONWithSchema(ctx, cfg, sys, user, worktree, arbiterSchema())
 	if err != nil {
 		ar.Err = err
 		return ar

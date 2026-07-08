@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
@@ -108,10 +109,12 @@ func Run(ctx context.Context, cfg *aiconfig.Config, complete ai.CompleteFunc, wo
 		return Result{Err: err}
 	}
 	user := buildUserPrompt(pr, findings, evidence)
-	// The witness emits strict JSON; opt into native JSON mode. The injected
-	// complete func (review.Complete) reads this off the context and requests
-	// json_object / responseMimeType where the provider supports it.
-	out, err := complete(ai.WithJSONMode(ctx), cfg, system, user, worktree)
+	// The witness emits strict JSON; opt into native JSON mode and hand the
+	// per-agent schema to schema-capable providers (Gemini responseSchema).
+	// The injected complete func (review.Complete) reads both off the context
+	// and requests json_object / responseMimeType / responseSchema where the
+	// provider supports it; schema-less providers ignore the schema.
+	out, err := complete(ai.WithJSONSchema(ai.WithJSONMode(ctx), witnessSchema()), cfg, system, user, worktree)
 	if err != nil {
 		return Result{Err: fmt.Errorf("convention witness: %w", err)}
 	}
@@ -126,6 +129,40 @@ func Run(ctx context.Context, cfg *aiconfig.Config, complete ai.CompleteFunc, wo
 type witnessJSON struct {
 	Witnesses []Witness `json:"witnesses"`
 }
+
+// witnessSchema is the per-agent JSON schema for the witness output (R5),
+// kept to the OpenAPI-3.0 subset Gemini's responseSchema accepts (no $schema,
+// no additionalProperties). The verdict enum is sourced from the canonical
+// Verdict constants so it can never drift from NormalizeVerdict. Schema-less
+// JSON providers ignore it and use plain json_object mode.
+var witnessSchema = sync.OnceValue(func() json.RawMessage {
+	witness := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"specialist": map[string]any{"type": "string"},
+			"path":       map[string]any{"type": "string"},
+			"line":       map[string]any{"type": "integer"},
+			"side":       map[string]any{"type": "string", "enum": []string{"LEFT", "RIGHT"}},
+			"verdict": map[string]any{"type": "string", "enum": []string{
+				string(VerdictCongruent), string(VerdictDivergent), string(VerdictUnknown),
+			}},
+			"citation": map[string]any{"type": "string"},
+		},
+		"required": []string{"specialist", "verdict"},
+	}
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"witnesses": map[string]any{"type": "array", "items": witness},
+		},
+		"required": []string{"witnesses"},
+	}
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return nil
+	}
+	return b
+})
 
 func parseWitnessJSON(s string) (*witnessJSON, error) {
 	v, err := llmjson.Parse[witnessJSON](s)
