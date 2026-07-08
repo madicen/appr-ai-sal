@@ -22,6 +22,14 @@ func ReviewTab(i int) string {
 	return fmt.Sprintf("zone:review:tab:%d", i)
 }
 
+// PaletteRow marks one command row in the ctrl+k command palette overlay.
+// Indexed by the row's position within the currently-visible window so a
+// click runs the command under the cursor. Only the visible window is
+// marked each frame.
+func PaletteRow(i int) string {
+	return fmt.Sprintf("zone:palette:row:%d", i)
+}
+
 // TreeFolder marks a folder header row in the hierarchical files tree.
 // Clicks on a folder zone toggle that folder's collapsed state. Indexed
 // by view-row position (i.e. index into treeViewRows) so the same row
@@ -61,9 +69,11 @@ const (
 	ResumeNo     = "zone:resume:no"
 	ErrorDismiss = "zone:error:dismiss"
 	ErrorCopy    = "zone:error:copy"
-	DryDismiss   = "zone:dry:dismiss"
-	StagedPost   = "zone:staged:post"
-	StagedSkip   = "zone:staged:skip"
+	// HelpDismiss is the "close" affordance on the `?` help overlay.
+	HelpDismiss = "zone:help:dismiss"
+	DryDismiss  = "zone:dry:dismiss"
+	StagedPost  = "zone:staged:post"
+	StagedSkip  = "zone:staged:skip"
 	// StagedChallenge is the clickable "Challenge (c)" button on a finding
 	// card that opens the B4 scoped challenge exchange with the finding's
 	// specialist.
@@ -153,7 +163,12 @@ const (
 	// it must be handled at the root before mode/tab delegation so it
 	// works even while the settings / repo-agents / lang-agents tabs
 	// own the rest of the event stream.
-	StatusQuit           = "zone:status:quit"
+	StatusQuit = "zone:status:quit"
+	// StatusHelp / StatusPalette are the always-available global hints:
+	// open the `?` help overlay and the ctrl+k command palette. Present in
+	// both list and detail status rows.
+	StatusHelp           = "zone:status:help"
+	StatusPalette        = "zone:status:palette"
 	StatusSearch         = "zone:status:search"
 	StatusURL            = "zone:status:url"
 	StatusFilter         = "zone:status:filter"

@@ -211,19 +211,64 @@ Opens a two-pane TUI:
 
 ### Keybinds
 
+Every binding lives in one central keymap (`internal/tui/keys`), so the bottom
+status bar, the `?` help overlay, and the `ctrl+k` command palette all describe
+the *same* keys — a hint can't drift from the action it triggers. Two global
+shortcuts are always available from the queue and detail screens (they yield to
+the search / URL fields while you're typing into them):
+
 | Key       | Action                                                  |
 |-----------|---------------------------------------------------------|
-| `↑` / `↓` | Move in the PR list (or `j` / `k`)                      |
+| `?`       | Toggle the full **keyboard-shortcut help** overlay (all bindings by context; `?` / `esc` closes) |
+| `ctrl+k`  | Open the **command palette** — fuzzy-search every action available right now, `↑` / `↓` to move, `enter` to run, `esc` to close |
+| `ctrl+c`  | Quit from anywhere                                       |
+
+**Review queue (list):**
+
+| Key       | Action                                                  |
+|-----------|---------------------------------------------------------|
+| `↑` / `↓` | Move in the PR list                                     |
 | `enter`   | Open the highlighted PR                                 |
+| `/`       | Focus the inline search field (title / repo / author / `#123`) |
+| `u`       | Focus the URL field — paste a PR URL or `owner/repo#N` shorthand |
+| `f`       | Cycle the review-queue filter                           |
+| `tab` / `shift+tab` | Cycle focus between the list and the search / URL fields |
+| `R`       | Refresh the PR list                                     |
+| `O`       | Open the highlighted PR in the browser                  |
+| `q`       | Quit                                                    |
+
+**PR detail:**
+
+| Key       | Action                                                  |
+|-----------|---------------------------------------------------------|
+| `j` / `k` | Move the file-tree cursor (or `↓` / `↑`)               |
+| `tab` / `shift+tab` | Cycle the tree / diff / controls panes        |
+| `space` / `enter` | Fold the current folder row                     |
 | `r`       | Run the specialist panel on the open PR                 |
-| `p`       | Post the draft as a review (with a confirm step)        |
+| `c`       | Show / hide the Review controls pane                    |
+| `a`       | Reopen the approval overlay                             |
+| `g`       | Toggle description / diff                               |
+| `d`       | Toggle full-width diff                                  |
+| `P`       | Bulk-post the draft (with a confirm step)               |
+| `ctrl+d` / `ctrl+u` | Half-page down / up in the diff               |
+| `O`       | Open the PR in the browser                              |
+| `esc` / `q` | Back to the list                                      |
+
+**Shared navigation (queue + detail):**
+
+| Key       | Action                                                  |
+|-----------|---------------------------------------------------------|
 | `o`       | Open **Settings** with AI fields focused (provider, model, URL, key, timeout); **ctrl+s** saves to `ai.json` |
 | `,`       | Open **Settings** with review strictness focused (**ctrl+,** is often sent as **ctrl+@** and works the same) |
-| `u`       | Paste a PR URL or `owner/repo#N` shorthand              |
-| `R`       | Refresh the PR list                                     |
-| `/`       | Filter the PR list                                      |
-| `esc`     | Back / cancel                                           |
-| `q`       | Quit (or back to list from a sub-view)                  |
+| `ctrl+g`  | Open **Settings** on the repo-context tab               |
+| `ctrl+r`  | Open the **Repo agents** tab                            |
+| `ctrl+l`  | Open the **Language experts** tab                       |
+| `ctrl+b`  | Build / refresh repo agents for the current PR / repo   |
+| `ctrl+t`  | Tech experts for the current PR (detail only)           |
+
+Not sure what's available? Press `?` for the full list, or `ctrl+k` to
+fuzzy-search commands — the palette shows exactly the actions enabled on the
+current screen and runs each one via the same code path as its key.
 
 ### Specialists
 

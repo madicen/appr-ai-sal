@@ -13,6 +13,8 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/review"
 	langagentsstore "github.com/madicen/appr-ai-sal/internal/review/langagents"
 	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
+	"github.com/madicen/appr-ai-sal/internal/tui/commands"
+	"github.com/madicen/appr-ai-sal/internal/tui/keys"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
 	reviewtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/review"
 	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
@@ -134,6 +136,17 @@ type paneDrag struct {
 type Model struct {
 	opts Options
 	mode mode
+
+	// keys is the central keymap (Phase 5 item 1): the single source of
+	// truth for every list/detail/global binding. Handlers match against
+	// it (key.Matches), and the status bar + `?` help overlay + command
+	// palette all read their labels from it so hints can't drift.
+	keys keys.Map
+
+	// palette is the command registry (Phase 5 item 6) shared by the
+	// keymap and the ctrl+k fuzzy palette. Built once in New(); commands
+	// wire their Run closures to existing model handlers.
+	palette *commands.Registry
 
 	// tabs is the registry of full-screen sub-model tabs, keyed by the
 	// ViewMode they own (settings, repo-agents, lang-agents). Exactly one

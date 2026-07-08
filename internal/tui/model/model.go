@@ -23,6 +23,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review"
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
+	"github.com/madicen/appr-ai-sal/internal/tui/keys"
 	"github.com/madicen/appr-ai-sal/internal/tui/overlays"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
 	reviewtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/review"
@@ -109,6 +110,7 @@ func New(opts Options) *Model {
 	m := &Model{
 		opts:               opts,
 		mode:               modeList,
+		keys:               keys.Default(),
 		tabs:               map[mode]Tab{},
 		list:               l,
 		urlInput:           ti,
@@ -123,6 +125,7 @@ func New(opts Options) *Model {
 		controlsPaneWidth:  defaultControlsPaneWidth,
 	}
 	m.overlayFocus.Stack = &m.overlayStack
+	m.palette = m.buildCommandRegistry()
 	return m
 }
 
@@ -285,6 +288,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case overlays.BulkConfirmOverlay:
 			if ans, ok := msg.Result.(overlays.BulkPostAnswer); ok && ans.Confirm && m.draft != nil && m.draft.PR != nil {
 				return m, tea.Sequence(popCmd, data.PostReviewCmd(m.draft.Ref, m.draft, m.opts.DryRun, m.opts.Demo))
+			}
+			return m, popCmd
+		case *overlays.PaletteOverlay:
+			// Command palette closed. When the user ran a command, the
+			// dismiss carries a PaletteChoice — run its wired action, which
+			// returns the exact tea.Cmd the command's key binding does.
+			if choice, ok := msg.Result.(overlays.PaletteChoice); ok && choice.Cmd.Run != nil {
+				return m, tea.Sequence(popCmd, choice.Cmd.Run())
 			}
 			return m, popCmd
 		case overlays.ResumeOverlay:

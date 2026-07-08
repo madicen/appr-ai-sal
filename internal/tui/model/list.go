@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -192,7 +193,6 @@ func (m *Model) listHandleItemClick(gi int) (tea.Model, tea.Cmd) {
 
 func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.resetListClickTracking()
-	key := msg.String()
 
 	// Field-focused arms — keys that route directly into the inline
 	// search / URL inputs are handled first so the bubbles list never
@@ -201,49 +201,53 @@ func (m *Model) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handlePanelInputKey(msg)
 	}
 
-	switch key {
-	case "q":
+	// Every arm below matches against the central keymap (m.keys) rather
+	// than a raw string case, so the status bar / help / palette labels
+	// and the handler share one source of truth.
+	km := m.keys
+	switch {
+	case key.Matches(msg, km.ListQuit):
 		util.FlushMouse()
 		return m, tea.Quit
-	case "f":
+	case key.Matches(msg, km.ListFilter):
 		return m, m.cycleFilterCmd()
-	case "/":
+	case key.Matches(msg, km.ListSearch):
 		return m, m.focusSearchInput()
-	case "u":
+	case key.Matches(msg, km.ListURL):
 		return m, m.focusURLInput()
-	case "tab":
+	case key.Matches(msg, km.ListCycleFocus):
 		return m, m.cyclePanelFocusForward()
-	case "shift+tab":
+	case key.Matches(msg, km.ListCycleFocusB):
 		return m, m.cyclePanelFocusBackward()
-	case "R":
+	case key.Matches(msg, km.ListRefresh):
 		return m, m.refreshPRListCmd()
-	case "o":
+	case key.Matches(msg, km.SettingsAI):
 		return m, m.openSettings(settings.StartAI)
-	case ",", "ctrl+@":
+	case key.Matches(msg, km.SettingsReview):
 		return m, m.openSettings(settings.StartReview)
-	case "ctrl+g":
+	case key.Matches(msg, km.RepoCtx):
 		return m, m.openSettings(settings.StartRepoContext)
-	case "ctrl+r":
+	case key.Matches(msg, km.RepoAgents):
 		// From the list view we can't pre-focus a single repo (the highlight
 		// might not even point at a PR), so open the tab as-is.
 		return m, m.openRepoAgents("", false)
-	case "ctrl+l":
+	case key.Matches(msg, km.LangAgents):
 		return m, m.openLangAgents()
-	case "ctrl+b":
+	case key.Matches(msg, km.BuildAgents):
 		// Build/refresh repo agents for the highlighted PR's repo, if any.
 		if it, ok := m.list.SelectedItem().(prItem); ok {
 			focus := it.pr.Owner + "/" + it.pr.Repo
 			return m, m.openRepoAgents(focus, true)
 		}
 		return m, m.openRepoAgents("", false)
-	case "O":
+	case key.Matches(msg, km.Browser):
 		if it, ok := m.list.SelectedItem().(prItem); ok {
 			if u := strings.TrimSpace(it.pr.URL); u != "" {
 				return m, util.OpenInBrowserCmd(u)
 			}
 		}
 		return m, nil
-	case "enter":
+	case key.Matches(msg, km.ListOpen):
 		it, ok := m.list.SelectedItem().(prItem)
 		if !ok {
 			return m, nil

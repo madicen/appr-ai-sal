@@ -30,6 +30,14 @@ func (m *Model) handleStatusBarMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd, bool
 		util.FlushMouse()
 		return m, tea.Quit, true
 	}
+	// Help / palette are the global hints present on both the list and
+	// detail status rows; handle them here before the per-mode switch.
+	if zoneInBounds(zones.StatusHelp, msg) {
+		return m, m.openHelpOverlay(), true
+	}
+	if zoneInBounds(zones.StatusPalette, msg) {
+		return m, m.openCommandPalette(), true
+	}
 	switch m.mode {
 	case modeList:
 		switch {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -378,50 +379,55 @@ func (m *Model) detailOpenBrowserCmd() tea.Cmd {
 }
 
 func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "esc", "q":
+	// Match against the central keymap (m.keys). Space / enter deliberately
+	// do NOT return in every branch: when the focused pane isn't the tree
+	// they fall out of the switch to the viewport page-scroll below, exactly
+	// as the pre-migration raw-string switch did.
+	km := m.keys
+	switch {
+	case key.Matches(msg, km.DetailBack):
 		m.detailBackToList()
 		return m, nil
-	case "g":
+	case key.Matches(msg, km.DetailDescription):
 		// Description is now an overview row, but `g` keeps its old job
 		// as a one-key shortcut — toggle Description ↔ Diff so muscle
 		// memory carries over.
 		return m, m.detailToggleDescription()
-	case "tab":
+	case key.Matches(msg, km.DetailCyclePane):
 		m.cyclePane(+1)
 		m.refreshDetailViews()
 		return m, nil
-	case "shift+tab":
+	case key.Matches(msg, km.DetailCyclePaneB):
 		m.cyclePane(-1)
 		m.refreshDetailViews()
 		return m, nil
-	case "d":
+	case key.Matches(msg, km.DetailDiffOnly):
 		m.detailToggleDiffOnly()
 		return m, nil
-	case "r":
+	case key.Matches(msg, km.DetailReview):
 		return m.startReviewOverlay()
-	case "c":
+	case key.Matches(msg, km.DetailToggleControls):
 		m.detailToggleControls()
 		return m, nil
-	case "ctrl+t":
+	case key.Matches(msg, km.DetailTech):
 		// Tech experts share storage with repo agents (sibling json file
 		// in the same per-repo cache dir), so the build path is the
 		// same: open the repo-agents tab focused on the current PR's
 		// repo and let the user pick the Techs section.
 		return m, m.openRepoAgentsForCurrentPR(false)
-	case "a":
+	case key.Matches(msg, km.DetailReopenApproval):
 		return m.reopenApprovalIfPossible()
-	case "P":
+	case key.Matches(msg, km.DetailBulk):
 		return m, m.detailBulkConfirmCmd()
-	case "j", "down":
+	case key.Matches(msg, km.DetailNavDown):
 		m.detailNavigate(+1)
 		m.refreshDetailViews()
 		return m, m.ensureCenterDataLoaded()
-	case "k", "up":
+	case key.Matches(msg, km.DetailNavUp):
 		m.detailNavigate(-1)
 		m.refreshDetailViews()
 		return m, m.ensureCenterDataLoaded()
-	case " ":
+	case key.Matches(msg, km.DetailFold):
 		// Space on a folder row toggles its collapsed state; on a file
 		// row it's consumed (no-op) so it doesn't accidentally page-scroll
 		// the tree pane. Other panes still page-scroll on space via the
@@ -435,7 +441,7 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-	case "enter":
+	case key.Matches(msg, km.DetailEnter):
 		// Enter on a folder row toggles collapse, on a file row it's a
 		// no-op (selection is already updated by j/k or click).
 		if m.focusedPane == paneTree && m.treeIdx >= 0 && m.treeIdx < len(m.treeViewRows) {
@@ -445,31 +451,31 @@ func (m *Model) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-	case "ctrl+d":
+	case key.Matches(msg, km.DetailHalfDown):
 		m.diffView.ScrollDown(max(1, m.diffView.Height/2))
 		return m, nil
-	case "ctrl+u":
+	case key.Matches(msg, km.DetailHalfUp):
 		m.diffView.ScrollUp(max(1, m.diffView.Height/2))
 		return m, nil
-	case "o":
+	case key.Matches(msg, km.SettingsAI):
 		return m, m.openSettings(settings.StartAI)
-	case ",", "ctrl+@":
+	case key.Matches(msg, km.SettingsReview):
 		return m, m.openSettings(settings.StartReview)
-	case "ctrl+g":
+	case key.Matches(msg, km.RepoCtx):
 		return m, m.openSettings(settings.StartRepoContext)
-	case "ctrl+r":
+	case key.Matches(msg, km.RepoAgents):
 		// Pre-focus on the current PR's repo so the tab opens on the row
 		// that matters for this PR rather than the alphabetical first repo.
 		return m, m.openRepoAgentsForCurrentPR(false)
-	case "ctrl+l":
+	case key.Matches(msg, km.LangAgents):
 		return m, m.openLangAgents()
-	case "ctrl+b":
+	case key.Matches(msg, km.BuildAgents):
 		// "Build/refresh repo agents for this PR's repo" — focus on the
 		// PR's repo and immediately fire Regenerate all. This is the
 		// one-key path the user asked for: from a PR, build the per-repo
 		// agents that will be injected into the next review.
 		return m, m.openRepoAgentsForCurrentPR(true)
-	case "O":
+	case key.Matches(msg, km.Browser):
 		return m, m.detailOpenBrowserCmd()
 	}
 	// fallthrough: pane scroll for the focused pane

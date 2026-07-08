@@ -5,10 +5,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
 
+	"github.com/madicen/appr-ai-sal/internal/tui/keys"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
@@ -142,46 +144,62 @@ func joinStatusSegs(segs []statusSeg) string {
 }
 
 func (m *Model) statusSegs() []statusSeg {
+	km := m.keys
+	// seg builds a status segment whose label is derived from a keymap
+	// binding (keys.SegText) so the hint text can never drift from the key
+	// that triggers it. The zone (when set) makes the hint clickable.
+	seg := func(b key.Binding, z string) statusSeg {
+		return statusSeg{text: keys.SegText(b), zone: z}
+	}
 	var segs []statusSeg
 	switch m.mode {
 	case modeList:
 		owner, repo := m.repoAgentsFreshnessForListSelection()
 		lOwner, lRepo, lNum := m.listSelectionForLangFreshness()
 		segs = []statusSeg{
-			{text: "↑/↓"},
-			{text: "click"},
-			{text: "double-click open"},
-			{text: "enter"},
-			{text: "tab fields"},
-			{text: "/ search", zone: zones.StatusSearch},
-			{text: "u URL", zone: zones.StatusURL},
-			{text: "esc clear"},
-			{text: "f filter", zone: zones.StatusFilter},
-			{text: "O browser", zone: zones.StatusOpenBrowser},
-			{text: "o/, settings", zone: zones.StatusSettingsAI},
-			{text: "ctrl+g repo ctx", zone: zones.StatusRepoCtx},
-			{text: "ctrl+r repo agents", zone: zones.StatusRepoAgents},
+			seg(km.ListNav, ""),
+			seg(km.ListClick, ""),
+			seg(km.ListOpenClick, ""),
+			seg(km.ListOpen, ""),
+			seg(km.ListCycleFocus, ""),
+			seg(km.ListSearch, zones.StatusSearch),
+			seg(km.ListURL, zones.StatusURL),
+			seg(km.ListClearSearch, ""),
+			seg(km.ListFilter, zones.StatusFilter),
+			seg(km.Browser, zones.StatusOpenBrowser),
+			seg(km.SettingsAI, zones.StatusSettingsAI),
+			seg(km.RepoCtx, zones.StatusRepoCtx),
+			seg(km.RepoAgents, zones.StatusRepoAgents),
+			// The lang / build-agents hints carry a dynamic freshness
+			// suffix (missing / stale), so their text is rendered from the
+			// per-PR freshness state rather than the plain binding label;
+			// the base label ("ctrl+l lang experts" / "ctrl+b build
+			// agents") still matches the keymap keys.
 			{text: m.renderBuildLangAgentsHint(lOwner, lRepo, lNum), zone: zones.StatusLangAgents},
 			{text: m.renderBuildAgentsHint(owner, repo), zone: zones.StatusBuildAgents},
-			{text: "R refresh", zone: zones.StatusRefresh},
-			{text: "q quit", zone: zones.StatusQuit},
+			seg(km.ListRefresh, zones.StatusRefresh),
+			seg(km.Palette, zones.StatusPalette),
+			seg(km.Help, zones.StatusHelp),
+			seg(km.ListQuit, zones.StatusQuit),
 		}
 	case modeDetail:
 		// Per-agent state (repo / tech / lang) is owned by the right-hand
 		// "Review controls" pane now; the bottom status bar carries only
 		// the cross-cutting keybindings.
 		segs = []statusSeg{
-			{text: "tab pane", zone: zones.StatusCyclePane},
-			{text: "j/k nav"},
-			{text: "space fold"},
-			{text: "r review", zone: zones.StatusReview},
-			{text: "c toggle controls", zone: zones.StatusToggleControls},
-			{text: "a reopen approval", zone: zones.StatusReopenApproval},
-			{text: "O browser", zone: zones.StatusOpenBrowser},
-			{text: "g description", zone: zones.StatusDescription},
-			{text: "d diff-only", zone: zones.StatusDiffOnly},
-			{text: "P bulk", zone: zones.StatusBulk},
-			{text: "esc back", zone: zones.StatusBack},
+			seg(km.DetailCyclePane, zones.StatusCyclePane),
+			seg(km.DetailNav, ""),
+			seg(km.DetailFold, ""),
+			seg(km.DetailReview, zones.StatusReview),
+			seg(km.DetailToggleControls, zones.StatusToggleControls),
+			seg(km.DetailReopenApproval, zones.StatusReopenApproval),
+			seg(km.Browser, zones.StatusOpenBrowser),
+			seg(km.DetailDescription, zones.StatusDescription),
+			seg(km.DetailDiffOnly, zones.StatusDiffOnly),
+			seg(km.DetailBulk, zones.StatusBulk),
+			seg(km.Palette, zones.StatusPalette),
+			seg(km.Help, zones.StatusHelp),
+			seg(km.DetailBack, zones.StatusBack),
 		}
 	case modeSettings:
 		// The settings tab strip, Save/Cancel, strictness rows, and
