@@ -29,7 +29,7 @@ import (
 // Progress messages are emitted on the channel returned by Run so the TUI can
 // stream updates to the user as specialists complete.
 type Progress struct {
-	Stage   string // "checkout", "diff", "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "pr-agent", "vibe-coach", "repo-arbiter", "circuit-breaker", "degraded", "usage", "done"; specialist/pr-agent Detail is "<name>:start"/"<name>:done"/"<name>:retry N (...)"/"<name>:skipped" (pr-agent also emits "warning: ..." for fetch failures); vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed; circuit-breaker/degraded (R4) carry the abort reason / partial-degradation summary in Detail
+	Stage   string // "checkout", "diff", "incremental" (B2 re-review plan), "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "pr-agent", "vibe-coach", "repo-arbiter", "circuit-breaker", "degraded", "usage", "done"; specialist/pr-agent Detail is "<name>:start"/"<name>:done"/"<name>:retry N (...)"/"<name>:skipped" (pr-agent also emits "warning: ..." for fetch failures); vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed; circuit-breaker/degraded (R4) carry the abort reason / partial-degradation summary in Detail
 	Detail  string // free-form detail about the stage
 	Err     error  // non-nil if this stage hit an error worth surfacing
 	Result  *SpecialistResult
@@ -116,6 +116,18 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		}
 		out <- Progress{Stage: "diff", Detail: fmt.Sprintf("%d bytes", len(diff))}
 
+		// B2: incremental re-review. When a prior review of this PR (an earlier
+		// head SHA) is cached, plan carries the interdiff (which files changed),
+		// the carried-forward prior findings on unchanged files, and the
+		// discussion agent's prior-findings section. plan is nil on a FIRST
+		// review (no cache) — the pipeline below then runs exactly as it did
+		// before B2 (the first-review backward-compat guarantee). Fully
+		// fail-open: any cache problem yields nil → full review.
+		plan := planIncremental(ref, pr, diff)
+		if plan != nil {
+			out <- Progress{Stage: "incremental", Detail: plan.progressDetail()}
+		}
+
 		rc, rerr := repoconfig.Load()
 		if rerr != nil {
 			rc = repoconfig.Default()
@@ -171,6 +183,23 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				"elided", len(budgetReport.Elided),
 				"truncated", len(budgetReport.Truncations))
 			out <- Progress{Stage: "diff", Detail: "warning: " + budgetReport.DisclosureLine()}
+		}
+
+		// B2: on a re-review the code specialists only need the files that
+		// changed since the prior review — carried-forward findings cover the
+		// unchanged files, so we skip them entirely (the O(delta) win). The PR
+		// agents keep the full shaped diff (they reason about the whole PR).
+		// On a first review plan is nil, specialistDiff stays the full shaped
+		// diff, and skipSpecialists is false, so the specialist phase is
+		// byte-identical to pre-B2.
+		specialistDiff := shapedDiff
+		skipSpecialists := false
+		if plan != nil {
+			if len(plan.interdiff.Changed) == 0 {
+				skipSpecialists = true
+			} else if reduced := reduceDiffToFiles(shapedDiff, plan.interdiff.Changed); strings.TrimSpace(reduced) != "" {
+				specialistDiff = reduced
+			}
 		}
 
 		// PR-level agents (description / checks / discussion / scope) read the
@@ -334,6 +363,9 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				defer prWG.Done()
 				prData := <-prDataCh
 				prData.StaticAnnotations = staticChecks
+				if plan != nil {
+					prData.PriorFindingsStatus = plan.priorStatus
+				}
 				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
 			}()
 		}
@@ -341,14 +373,31 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// Specialists: sequential by default (repo-context.json parallel_specialists),
 		// or parallel when configured / env override — see runSpecialistsPhase.
 		// They receive the shaped diff (R3) so no single call can overflow the
-		// provider context window.
-		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, perAgent, prEvidence, staticSection, staticCleanFiles, langSection, techSection, intentSection, breaker, out)
+		// provider context window. On a re-review (plan != nil) they receive
+		// the reduced diff (changed files only); when nothing changed the phase
+		// is skipped and every prior finding is carried forward.
+		var specialists []SpecialistResult
+		if skipSpecialists {
+			specialists = emptyActiveSpecialistResults(strings.TrimSpace(techSection) != "")
+			out <- Progress{Stage: "incremental", Detail: "no files changed since prior review; carrying prior findings forward"}
+		} else {
+			specialists = runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, specialistDiff, perAgent, prEvidence, staticSection, staticCleanFiles, langSection, techSection, intentSection, breaker, out)
+		}
+		// Merge the carried-forward prior findings (on unchanged files) into the
+		// freshly-produced ones (over the changed files). No-op on a first
+		// review (plan nil / no carried findings).
+		if plan != nil {
+			specialists = mergeCarriedFindings(specialists, plan.carried)
+		}
 
 		if prParallel {
 			prWG.Wait()
 		} else if prAgentsEnabled {
 			prData := <-prDataCh
 			prData.StaticAnnotations = staticChecks
+			if plan != nil {
+				prData.PriorFindingsStatus = plan.priorStatus
+			}
 			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
 		}
 
@@ -489,6 +538,19 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				"failed", strings.Join(failedStages, ","),
 				"skipped", strings.Join(skippedStages, ","))
 			out <- Progress{Stage: "degraded", Detail: degradedDetail(failedStages, skippedStages)}
+		}
+
+		// B2: cache the completed draft under the new head SHA so the next
+		// review of this PR (with new commits) can re-review incrementally.
+		// Fail-open: a write failure is logged and never affects this run.
+		// Prune older-SHA drafts so the cache keeps one document per PR.
+		if pr != nil && strings.TrimSpace(pr.HeadSHA) != "" {
+			dc := NewDraftCache()
+			if err := dc.Save(final, pr.HeadSHA); err != nil {
+				applog.Warn("draft cache: save failed (continuing)", "ref", ref.String(), "err", err.Error())
+			} else {
+				dc.PruneOtherSHAs(ref, pr.HeadSHA)
+			}
 		}
 
 		runUsage := usageAcc.snapshot(time.Since(runStart))

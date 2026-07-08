@@ -448,6 +448,10 @@ happen in.
    default; set `parallel_specialists: false` to serialize). Concurrency
    across the whole run is capped by `max_concurrent_inference` (default
    3). Each one is independently retried inside its own per-stage budget.
+   On a **re-review** of a PR that received new commits, the specialists
+   run only over the files that changed since the last review and prior
+   findings on unchanged files are carried forward — see
+   [Incremental re-review](#incremental-re-review-odelta-on-new-commits).
 4. **Convention witness** (optional) classifies every testing/docs
    finding against the PR evidence pack.
 5. **Reviewer memory** (see [Reviewer memory](#reviewer-memory-learns-from-acceptskip))
@@ -529,6 +533,46 @@ appr-ai-sal memory clear owner/repo --all
 appr-ai-sal memory clear owner/repo --specialist formatting --comment-hash <hash>
 appr-ai-sal memory export owner/repo     # emit must_not_appear scaffolding
 ```
+
+### Incremental re-review (O(delta) on new commits)
+
+When you review the same PR again after it has received new commits,
+appr-ai-sal reviews **only what changed** instead of re-reviewing the whole PR
+from scratch — matching how a human reviewer works and cutting the number of
+specialist LLM calls to the size of the delta.
+
+**How it works.** After every completed review, the resulting draft is cached
+keyed by `(owner/repo#N, headSHA)`:
+
+- **Location / key.** `~/.cache/appr-ai-sal/draft-cache/<owner>__<repo>__<N>__<sha>.json`
+  (a sibling of the worktrees dir, honouring `APPR_AI_SAL_CACHE_DIR` / XDG). The
+  file carries a **schema version**; a missing, corrupt, or version-mismatched
+  entry is ignored (→ full review), so the cache can never break a run. Only the
+  reviewed **diff** and the per-specialist **findings** are stored — enough to
+  interdiff and carry findings forward; the arbiter/vibe-coach/witness output and
+  all TUI state are regenerated every run. The cache keeps one document per PR
+  (older SHAs are pruned after a successful review).
+- **Interdiff.** On a re-review (a prior draft exists under a different head
+  SHA), the new diff is compared with the cached diff **per file**: a file whose
+  post-image content is byte-identical is *unchanged*; anything else is
+  *changed*. The code specialists then re-run over a diff **reduced to the
+  changed files only** (when nothing changed, the specialist phase is skipped
+  entirely).
+- **Carry-forward + re-anchor.** Prior code-specialist findings on *unchanged*
+  files are carried into the new draft, re-anchored via the same unique-excerpt
+  relocation used for stale-diff cards (Q6): a finding survives if its quoted
+  code is still uniquely locatable, is dropped if that code is **gone**, and is
+  dropped for **re-review** when its file changed (the specialist re-runs and
+  re-emits over it, so nothing stale is blindly carried). Carried + freshly
+  filed findings are then merged and deduped.
+- **Discussion verification.** The `discussion` agent additionally receives the
+  prior findings tagged with whether each one's file changed since, so it can
+  note which appear **resolved by the new commits** vs **still present**.
+
+**Backward-compatible & fail-open.** On the **first** review of a PR there is no
+cache, so the pipeline runs a full review that is byte-identical to before this
+feature. Whole-PR agents (description/checks/discussion/scope) always re-run.
+Any cache problem degrades gracefully to a full review.
 
 ## AI configuration
 
@@ -746,6 +790,10 @@ Large PRs may exceed smaller models’ context windows; prefer a large-context m
 - Repository profiles (merged-PR digest cache) live next to that layout under
   `repo-profiles` (e.g. `~/.cache/appr-ai-sal/repo-profiles` when using the
   default cache root).
+- Completed-review drafts (for incremental re-review) live under `draft-cache`
+  (e.g. `~/.cache/appr-ai-sal/draft-cache`), one JSON per PR keyed by head SHA;
+  safe to delete (the next review just runs in full). See
+  [Incremental re-review](#incremental-re-review-odelta-on-new-commits).
 
 ### Logging
 

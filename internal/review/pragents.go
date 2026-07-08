@@ -55,6 +55,13 @@ type PRAgentInput struct {
 	// the checks agent consumes it (it is the agent that reasons over
 	// mechanical PR health); empty when the pre-pass produced no annotations.
 	StaticAnnotations string
+	// PriorFindingsStatus is the pre-rendered `## Prior review findings`
+	// section (B2 incremental re-review) — the findings a prior review of an
+	// earlier head SHA produced, tagged with whether their file changed since.
+	// Only the discussion agent consumes it (it is the agent that verifies
+	// whether prior feedback was addressed). Empty on a first review (no prior
+	// cache), so the discussion prompt is then byte-identical to pre-B2.
+	PriorFindingsStatus string
 }
 
 // runPRAgent runs a single PR-level agent over the PR metadata and diff and
@@ -373,6 +380,14 @@ func buildPRAgentUserPrompt(name string, pr *gh.PR, diff string, in PRAgentInput
 		}
 	case SpecDiscussion:
 		b.WriteString(formatDiscussionSection(in.Threads, in.Discussion))
+		// B2: on a re-review, feed the discussion agent the prior review's
+		// findings tagged with whether their file changed since, so it can
+		// note which were addressed by the new commits. Empty on a first
+		// review → byte-identical to pre-B2.
+		if s := strings.TrimSpace(in.PriorFindingsStatus); s != "" {
+			b.WriteString(s)
+			b.WriteString("\n\n")
+		}
 	}
 
 	b.WriteString("Unified diff (line numbers in `+` hunks are the lines you cite in findings, with side=\"RIGHT\"):\n\n")

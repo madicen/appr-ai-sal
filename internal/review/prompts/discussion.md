@@ -51,6 +51,24 @@ Also surface clear, actionable asks from the top-level conversation
 (e.g. a reviewer wrote "please add a CHANGELOG entry") that the diff does not
 satisfy, as PR-wide findings.
 
+## Prior review findings (incremental re-review)
+
+On a re-review of a PR that has received new commits, the user message may
+include a `## Prior review findings` section listing what a previous review of
+an earlier commit reported, each tagged `file changed since` or
+`file unchanged since`. This is a second, distinct source of "existing
+feedback" you also track:
+
+- A prior finding whose file **changed since** is a strong candidate for having
+  been addressed by the new commits — verify against the current diff before
+  concluding anything.
+- If a prior finding still clearly applies to the current diff (the code it
+  objected to is still present and untouched), you may re-surface it as a
+  finding so it is not lost across the re-review.
+- Do NOT invent new concerns from this section, and do NOT re-file a prior
+  finding that the new commits plainly resolved. When this section is absent
+  (a first review), behave exactly as described above for discussion threads.
+
 ## What NOT to report
 
 - New issues you notice that no reviewer raised — that is the job of the code
