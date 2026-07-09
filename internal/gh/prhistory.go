@@ -2,12 +2,11 @@ package gh
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/madicen/appr-ai-sal/internal/applog"
 )
 
 // MergedPRDigestRow is one merged pull request used for repository culture digests.
@@ -41,42 +40,7 @@ func (p PRFileTouches) HasDocs() bool { return p.DocFiles > 0 }
 
 // ListMergedPRs returns up to limit recently updated merged PRs for owner/repo.
 func ListMergedPRs(ctx context.Context, owner, repo string, limit int) ([]MergedPRDigestRow, error) {
-	if limit < 1 {
-		limit = 30
-	}
-	repoPath := owner + "/" + repo
-	args := []string{
-		"pr", "list",
-		"--repo", repoPath,
-		"--state", "merged",
-		"--limit", strconv.Itoa(limit),
-		"--json", "number,title,url,body,updatedAt",
-	}
-	out, err := runJSON(ctx, args)
-	if err != nil {
-		return nil, fmt.Errorf("list merged PRs: %w", err)
-	}
-	var raw []struct {
-		Number    int       `json:"number"`
-		Title     string    `json:"title"`
-		URL       string    `json:"url"`
-		Body      string    `json:"body"`
-		UpdatedAt time.Time `json:"updatedAt"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parse merged PR list: %w", err)
-	}
-	rows := make([]MergedPRDigestRow, 0, len(raw))
-	for _, r := range raw {
-		rows = append(rows, MergedPRDigestRow{
-			Number:        r.Number,
-			Title:         strings.TrimSpace(r.Title),
-			URL:           strings.TrimSpace(r.URL),
-			BodyFirstLine: firstMeaningfulLine(r.Body),
-			UpdatedAt:     r.UpdatedAt,
-		})
-	}
-	return rows, nil
+	return listMergedPRsGraphQL(ctx, owner, repo, limit)
 }
 
 func firstMeaningfulLine(body string) string {
@@ -93,26 +57,11 @@ func firstMeaningfulLine(body string) string {
 	return ""
 }
 
-// PRFiles returns the file list for a single PR (path + additions/deletions),
-// retrieved from `gh pr view --json files`. The caller is responsible for
-// classifying which of those paths matter to the request (filename heuristics).
+// PRFiles returns the file list for a single PR (path + additions/deletions).
+// The caller is responsible for classifying which of those paths matter to
+// the request (filename heuristics).
 func PRFiles(ctx context.Context, owner, repo string, prNumber int) ([]PRFile, error) {
-	args := []string{
-		"pr", "view", strconv.Itoa(prNumber),
-		"--repo", owner + "/" + repo,
-		"--json", "files",
-	}
-	out, err := runJSON(ctx, args)
-	if err != nil {
-		return nil, fmt.Errorf("list files for #%d: %w", prNumber, err)
-	}
-	var raw struct {
-		Files []PRFile `json:"files"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parse files for #%d: %w", prNumber, err)
-	}
-	return raw.Files, nil
+	return prFilesGraphQL(ctx, owner, repo, prNumber)
 }
 
 // PRFile is one entry from `gh pr view --json files`.
@@ -131,10 +80,12 @@ type PRFile struct {
 // filter); callers use this to evidence repo-wide habits at agent-generation
 // time when there is no PR diff to anchor against.
 //
-// The implementation pulls a wider candidate window (3x the limit, capped at
-// 60) of recent merged PRs, then loops PR-by-PR fetching file lists. That is
-// O(candidate) gh calls; callers should cache aggressively (the review
-// pipeline wraps this with the repo-profile cache).
+// R6.4: this previously pulled a candidate window of merged PRs (1 `gh pr
+// list`) and then looped PR-by-PR fetching file lists (up to ~60 sequential
+// `gh pr view --json files` execs). It now fetches the candidate PRs AND their
+// changed files in ONE batched GraphQL query, doing the classification
+// client-side — O(1) round trips instead of O(candidate). Callers still cache
+// aggressively (the review pipeline wraps this with the repo-profile cache).
 func RecentPRsTouchingPaths(ctx context.Context, owner, repo string, paths []string, limit int) ([]PRFileTouches, error) {
 	if limit < 1 {
 		limit = 8
@@ -147,19 +98,33 @@ func RecentPRsTouchingPaths(ctx context.Context, owner, repo string, paths []str
 	if matchAll {
 		candidate = limit
 	}
-	merged, err := ListMergedPRs(ctx, owner, repo, candidate)
+	data, err := graphQLQuery[mergedPRFilesData](ctx, graphqlMergedPRFilesQuery, map[string]any{
+		"owner": owner,
+		"name":  repo,
+		"first": candidate,
+	})
 	if err != nil {
 		return nil, err
 	}
 	dirs := pathParentDirs(paths)
 	var out []PRFileTouches
-	for _, m := range merged {
+	for _, n := range data.Repository.PullRequests.Nodes {
 		if ctx.Err() != nil {
 			return out, ctx.Err()
 		}
-		files, err := PRFiles(ctx, owner, repo, m.Number)
-		if err != nil {
-			continue
+		m := MergedPRDigestRow{
+			Number: n.Number,
+			Title:  strings.TrimSpace(n.Title),
+			URL:    strings.TrimSpace(n.URL),
+		}
+		m.UpdatedAt, _ = time.Parse(time.RFC3339, n.UpdatedAt)
+		files := make([]PRFile, 0, len(n.Files.Nodes))
+		for _, f := range n.Files.Nodes {
+			files = append(files, PRFile{Path: f.Path, Additions: f.Additions, Deletions: f.Deletions})
+		}
+		if n.Files.PageInfo.HasNextPage {
+			applog.Warn("merged PR files truncated (classification uses first 100)",
+				"repo", owner+"/"+repo, "pr", n.Number, "total", n.Files.TotalCount)
 		}
 		row, ok := classifyPRTouches(m, files, dirs)
 		if !ok && !matchAll {
@@ -175,6 +140,52 @@ func RecentPRsTouchingPaths(ctx context.Context, owner, repo string, paths []str
 	}
 	return out, nil
 }
+
+// mergedPRFilesData mirrors the `data` object of graphqlMergedPRFilesQuery: a
+// window of recently-updated merged PRs, each with its changed-file list.
+type mergedPRFilesData struct {
+	Repository struct {
+		PullRequests struct {
+			Nodes []struct {
+				Number    int    `json:"number"`
+				Title     string `json:"title"`
+				URL       string `json:"url"`
+				UpdatedAt string `json:"updatedAt"`
+				Files     struct {
+					PageInfo   pageInfo `json:"pageInfo"`
+					TotalCount int      `json:"totalCount"`
+					Nodes      []struct {
+						Path      string `json:"path"`
+						Additions int    `json:"additions"`
+						Deletions int    `json:"deletions"`
+					} `json:"nodes"`
+				} `json:"files"`
+			} `json:"nodes"`
+		} `json:"pullRequests"`
+	} `json:"repository"`
+}
+
+const graphqlMergedPRFilesQuery = `query($owner: String!, $name: String!, $first: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(states: [MERGED], first: $first, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes {
+        number
+        title
+        url
+        updatedAt
+        files(first: 100) {
+          pageInfo { hasNextPage }
+          totalCount
+          nodes {
+            path
+            additions
+            deletions
+          }
+        }
+      }
+    }
+  }
+}`
 
 // forceClassify builds a PRFileTouches that includes counts for every file in
 // the PR (no path filter). Used by the matchAll branch of

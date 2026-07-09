@@ -1,0 +1,14 @@
+{
+  "must_appear": [
+    {
+      "specialist": "discussion",
+      "path": "",
+      "pattern": "(?i)changelog|conversation|not been addressed",
+      "note": "PR-wide conversation ask survives the thread-anchored scope guard"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": {
+    "discussion": true
+  }
+}

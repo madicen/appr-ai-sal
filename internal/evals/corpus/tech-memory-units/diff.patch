@@ -1,0 +1,15 @@
+diff --git a/deploy/api.yaml b/deploy/api.yaml
+new file mode 100644
+--- /dev/null
++++ b/deploy/api.yaml
+@@ -0,0 +1,10 @@
++apiVersion: apps/v1
++kind: Deployment
++spec:
++  template:
++    spec:
++      containers:
++        - name: api
++          resources:
++            limits:
++              memory: 717M

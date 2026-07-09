@@ -26,6 +26,15 @@ import (
 // and never advancing — the cmd that would have kicked off the LLM
 // goroutine was dropped on the floor by the root forwarder. These tests
 // pin the routing so neither cmd is lost again.
+//
+// The structural fix is the data.ForwardToOverlay marker interface: the
+// root no longer carries a bespoke case for each of these messages, it
+// forwards ANY message implementing the marker to the active overlay
+// generically. So these tests double as the regression guard for that
+// mechanism — if the generic forwarder is removed (and no explicit case
+// re-added), StagedFindingPostedMsg falls through to the list widget
+// instead of the overlay and TestRootRoutesStagedFindingPostedMarksCardPosted
+// fails.
 
 // rootRoutingTestDiff is a one-file unified diff with two added lines so
 // the overlay can anchor a finding at line 1. Inlined here (rather than
@@ -68,6 +77,50 @@ func newRootRoutingTestModel(t *testing.T) (*Model, *reviewtab.Model) {
 	m.overlayStack.Push(ro, overlay.DefaultOverlayConfig())
 	m.currentReviewOverlay = ro
 	return m, ro
+}
+
+// TestForwardToOverlayContract pins the marker interface: every pipeline
+// message the review overlay depends on must implement
+// data.ForwardToOverlay so the root's generic forwarder routes it. If a
+// future refactor drops the marker from one of these, this fails at
+// compile/vet time instead of the overlay silently deadlocking.
+func TestForwardToOverlayContract(t *testing.T) {
+	var (
+		_ data.ForwardToOverlay = data.StagedFindingPostedMsg{}
+		_ data.ForwardToOverlay = data.ExistingPRCommentsMsg{}
+		_ data.ForwardToOverlay = reviewtab.VibeCoachDoneMsg{}
+	)
+}
+
+// TestRootForwardsMarkerMessageGenerically exercises the ForwardToOverlay
+// branch itself: a message that implements the marker is delivered to the
+// active overlay through the root's real Update path (not by calling the
+// overlay directly), and is a harmless no-op — never a panic or a stray
+// state change — when no overlay is on top.
+func TestRootForwardsMarkerMessageGenerically(t *testing.T) {
+	// With the review overlay on top, the marker message reaches the
+	// overlay handler: posting the single card marks it CardPosted.
+	m, ro := newRootRoutingTestModel(t)
+	ro.SelectAgentTab(review.SpecDocs)
+	if _, ok := interface{}(data.StagedFindingPostedMsg{}).(data.ForwardToOverlay); !ok {
+		t.Fatal("precondition: StagedFindingPostedMsg must implement data.ForwardToOverlay")
+	}
+	_, _ = m.Update(data.StagedFindingPostedMsg{})
+	if ro.CardStateAt(0) != reviewtab.CardPosted {
+		t.Errorf("marker message routed through root did not reach the overlay; card state %v", ro.CardStateAt(0))
+	}
+
+	// With no overlay on top, the same marker message is a safe no-op:
+	// mode is unchanged and no command is returned.
+	bare := New(Options{AIConfig: aiconfig.DefaultConfig()})
+	bare.width, bare.height = 120, 44
+	out, cmd := bare.Update(data.StagedFindingPostedMsg{})
+	if out.(*Model).mode != modeList {
+		t.Errorf("marker message with no overlay changed mode to %v", out.(*Model).mode)
+	}
+	if cmd != nil {
+		t.Errorf("marker message with no overlay should return a nil cmd, got %T", cmd)
+	}
 }
 
 // data.StagedFindingPostedMsg routed through the root Update must reach

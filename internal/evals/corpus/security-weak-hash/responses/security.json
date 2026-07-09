@@ -1,0 +1,14 @@
+{
+  "summary": "MD5 is used for content integrity, which is not collision-resistant.",
+  "findings": [
+    {
+      "path": "blob/checksum.go",
+      "line": 9,
+      "side": "RIGHT",
+      "severity": "error",
+      "comment": "MD5 is cryptographically broken; use crypto/sha256 for content integrity so attackers cannot forge a collision.",
+      "suggestion": "\th := sha256.New()",
+      "anchor_excerpt": "\th := md5.New()"
+    }
+  ]
+}

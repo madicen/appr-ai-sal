@@ -19,6 +19,7 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/theme"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
 )
 
 // StartSection selects which group is focused when the pane opens.
@@ -37,9 +38,11 @@ const (
 	fieldStrictness = iota
 	fieldProfilePicker
 	fieldProfileName
+	fieldPreset
 	fieldProvider
 	fieldBaseURL
 	fieldModel
+	fieldModelList
 	fieldAPIKey
 	fieldTimeout
 	fieldAICount
@@ -82,12 +85,24 @@ type Model struct {
 	draft *aiconfig.Config
 	focus int
 
-	// Review & AI tab dropdowns (bubble-dropdown). strictnessDD and
-	// providerDD have static options; profileDD is recreated when the
-	// profile list changes (the component has no runtime SetOptions).
-	strictnessDD *bubbledropdown.Dropdown
-	profileDD    *bubbledropdown.Dropdown
-	providerDD   *bubbledropdown.Dropdown
+	// Review & AI tab dropdowns, each via the shared dropdown.Host.
+	// strictnessDD and providerDD have static options; profileDD is
+	// recreated when the profile list changes (the component has no runtime
+	// SetOptions).
+	strictnessDD *dropdown.Host
+	profileDD    *dropdown.Host
+	providerDD   *dropdown.Host
+	// presetDD fills provider + base URL from a built-in preset; modelDD is a
+	// picker built after a successful ListModels fetch (Phase 6 items 2 & 3).
+	presetDD *dropdown.Host
+	modelDD  *dropdown.Host
+
+	// modelOptions holds the model ids parallel to modelDD's labels so a
+	// selection can fill the model input. modelsLoading / modelsErr drive the
+	// fetch button's status line (fail-open to manual entry).
+	modelOptions  []string
+	modelsLoading bool
+	modelsErr     string
 
 	// Recorded content-line indices of each dropdown trigger, populated
 	// while buildForm assembles the body so SetBounds can be applied after
@@ -96,6 +111,8 @@ type Model struct {
 	ddStrictRow   int
 	ddProfileRow  int
 	ddProviderRow int
+	ddPresetRow   int
+	ddModelRow    int
 
 	// contentTop is the absolute terminal row where the settings body
 	// begins (the chrome header height). Mouse events are translated by
@@ -192,9 +209,7 @@ func New(o Opts) *Model {
 	if m.selectedProfileIdx >= 0 && m.selectedProfileIdx < len(draft.Profiles) {
 		selProv = draft.Profiles[m.selectedProfileIdx].Provider
 	}
-	m.strictnessDD = newSettingsDropdown(strictnessDDLabels, strictnessIndex(draft.ReviewStrictness), "strictness")
-	m.providerDD = newSettingsDropdown(providerDDLabels, providerDDIndex(selProv), "provider")
-	m.profileDD = m.newProfileDropdown()
+	m.initDropdowns(selProv)
 
 	m.loadEditorFromSelectedProfile()
 
@@ -266,6 +281,9 @@ func (m *Model) loadEditorFromSelectedProfile() {
 	if m == nil || m.draft == nil {
 		return
 	}
+	// A fetched model list belongs to the previously edited profile's
+	// provider/base URL; drop it when the editor loads a different profile.
+	m.clearModelList()
 	if m.selectedProfileIdx < 0 || m.selectedProfileIdx >= len(m.draft.Profiles) {
 		m.selectedProfileIdx = 0
 	}
@@ -422,6 +440,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// and surface here on a later tick. They must be handled before normal
 	// key/mouse routing so the active swatch can close cleanly.
 	switch typed := msg.(type) {
+	case modelsListedMsg:
+		m.handleModelsListed(typed)
+		return m, nil
 	case bubblepicker.ColorChangedMsg:
 		if m.theme != nil {
 			m.theme.applyChosenColor(typed.Color)
@@ -560,6 +581,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				case "d":
 					return m, m.deleteSelectedProfile()
 				}
+			}
+			// The model-list field doubles as a fetch trigger until a list has
+			// been fetched: enter/space starts the async ListModels call.
+			if dk == ddModel && !m.modelDD.Built() {
+				switch msg.String() {
+				case "enter", " ":
+					return m, m.fetchModelsCmd()
+				}
+				return m, nil
 			}
 			return m, m.forwardToDropdown(dk, msg)
 		}
@@ -870,6 +900,11 @@ func (m *Model) deleteSelectedProfile() tea.Cmd {
 func (m *Model) submitSave() tea.Cmd {
 	return func() tea.Msg {
 		m.commitEditorToSelectedProfile()
+		// Mirror the active profile onto top-level fields before Save.
+		// normalize() calls syncActiveProfileFromFlat(), which snapshots
+		// top-level fields back into Profiles[active] — without this mirror,
+		// edits to the currently active profile in the editor are reverted.
+		m.draft.ApplyActiveProfile()
 		// Validate every profile (provider + timeout) before persisting so
 		// the on-disk file isn't left half-valid on a typo.
 		for i, p := range m.draft.Profiles {
@@ -890,6 +925,14 @@ func (m *Model) submitSave() tea.Cmd {
 			rs = strictnessAt(m.strictnessDD.SelectedIndex())
 		}
 		m.draft.ReviewStrictness = rs
+		// R8: surface provider-specific configuration problems here — on
+		// save — instead of at first inference. Validate the active profile
+		// (the one a review will actually use) and block the save with a
+		// clear message when it is not runnable (missing base URL / key, or
+		// the claude CLI not on PATH).
+		if err := m.draft.Active().ValidateForProvider(); err != nil {
+			return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: err}}
+		}
 		if err := aiconfig.Save(m.draft, ""); err != nil {
 			return state.NavigateMsg{Target: state.NavigateTarget{Kind: state.NavBack, Err: err}}
 		}
@@ -1021,6 +1064,12 @@ func (m *Model) buildForm() string {
 		b.WriteString(dimStyle.Render("changes apply to the selected profile; click 'Set active' to use it for reviews") + "\n\n")
 		b.WriteString(zone.Mark(ZoneAIFieldName, m.fieldLabel("name", fieldProfileName)+"\n"+m.profileName.View()) + "\n\n")
 
+		// Provider preset picker (fills provider + base URL from a known endpoint).
+		b.WriteString(m.fieldLabel("preset (fills provider + base URL)", fieldPreset) + "\n")
+		m.ddPresetRow = strings.Count(b.String(), "\n")
+		b.WriteString(zone.Mark(ZonePresetDD, m.presetDD.TriggerView()) + "\n")
+		b.WriteString(dimStyle.Render(m.presetHint()) + "\n\n")
+
 		// Provider dropdown.
 		b.WriteString(m.fieldLabel("provider", fieldProvider) + "\n")
 		m.ddProviderRow = strings.Count(b.String(), "\n")
@@ -1028,6 +1077,11 @@ func (m *Model) buildForm() string {
 
 		b.WriteString(zone.Mark(ZoneAIFieldBaseURL, m.fieldLabel("base URL", fieldBaseURL)+"\n"+m.baseURL.View()) + "\n\n")
 		b.WriteString(zone.Mark(ZoneAIFieldModel, m.fieldLabel("model", fieldModel)+"\n"+m.model.View()) + "\n\n")
+
+		// Model picker (Phase 6 item 3): before a fetch, a button; after a
+		// successful fetch, a dropdown whose selection fills the model field.
+		m.buildModelPicker(&b)
+
 		b.WriteString(zone.Mark(ZoneAIFieldAPIKey, m.fieldLabel("API key (masked)", fieldAPIKey)+"\n"+m.apiKey.View()) + "\n\n")
 		b.WriteString(zone.Mark(ZoneAIFieldTimeout, m.fieldLabel("timeout (sec)", fieldTimeout)+"\n"+m.timeout.View()) + "\n\n")
 		b.WriteString(dimStyle.Render("Config file: "+aiconfig.DefaultPath()) + "\n\n")
@@ -1041,30 +1095,53 @@ func (m *Model) buildForm() string {
 	return b.String()
 }
 
-// applyDropdownBounds sets each Review & AI dropdown's trigger bounds in
-// settings-body-local coordinates, accounting for the viewport scroll offset
-// (the trigger's on-screen row = its content line index minus YOffset).
-func (m *Model) applyDropdownBounds() {
-	off := m.vp.YOffset
-	set := func(d *bubbledropdown.Dropdown, row int) {
-		if d == nil {
-			return
-		}
-		tw, th := d.TriggerSize()
-		d.SetBounds(row-off, 0, tw, th)
+// presetHint returns the one-line description of the currently selected preset
+// (blank for "(custom)"), shown under the preset trigger.
+func (m *Model) presetHint() string {
+	i := m.presetDD.SelectedIndex()
+	if i <= 0 {
+		return "keep the fields below as-is, or pick a known provider endpoint"
 	}
-	set(m.strictnessDD, m.ddStrictRow)
-	set(m.profileDD, m.ddProfileRow)
-	set(m.providerDD, m.ddProviderRow)
+	presets := aiconfig.ProviderPresets()
+	if i-1 < len(presets) {
+		return presets[i-1].Notes
+	}
+	return ""
 }
 
-// composeDropdownOverlays composites any open dropdown panel onto body.
-func (m *Model) composeDropdownOverlays(body string) string {
-	for _, d := range []*bubbledropdown.Dropdown{m.strictnessDD, m.profileDD, m.providerDD} {
-		if d != nil && d.Open() {
-			body = d.ViewWithOverlay(body, m.width, m.bodyH)
-		}
+// buildModelPicker writes the model-listing UI into b: a fetch button until a
+// list has been retrieved, then a picker dropdown. It records ddModelRow (the
+// trigger's content-line index in the whole form) so an open panel composites
+// at the right row.
+func (m *Model) buildModelPicker(b *strings.Builder) {
+	b.WriteString(m.fieldLabel("model list", fieldModelList) + "\n")
+	if m.modelDD.Built() {
+		m.ddModelRow = strings.Count(b.String(), "\n")
+		b.WriteString(zone.Mark(ZoneModelDD, m.modelDD.TriggerView()) + "\n")
+		b.WriteString(dimStyle.Render("pick to fill the model field above") + "\n\n")
+		return
 	}
+	status := "enter / click to fetch models for this provider"
+	if m.modelsLoading {
+		status = "fetching models…"
+	} else if m.modelsErr != "" {
+		status = "fetch failed: " + m.modelsErr + " — type the model above"
+	}
+	b.WriteString(zone.Mark(ZoneModelFetch, okStyle.Render(" ⟳ Fetch models ")) + "\n")
+	b.WriteString(dimStyle.Render(status) + "\n\n")
+}
+
+// composeDropdownOverlays composites any open dropdown panel onto body. Each
+// Host sizes/positions its own trigger bounds in settings-body-local
+// coordinates (the trigger's on-screen row = its recorded content line index
+// minus the viewport scroll offset).
+func (m *Model) composeDropdownOverlays(body string) string {
+	off := m.vp.YOffset
+	body = m.strictnessDD.Composite(body, m.ddStrictRow-off, 0, m.width, m.bodyH)
+	body = m.profileDD.Composite(body, m.ddProfileRow-off, 0, m.width, m.bodyH)
+	body = m.providerDD.Composite(body, m.ddProviderRow-off, 0, m.width, m.bodyH)
+	body = m.presetDD.Composite(body, m.ddPresetRow-off, 0, m.width, m.bodyH)
+	body = m.modelDD.Composite(body, m.ddModelRow-off, 0, m.width, m.bodyH)
 	return body
 }
 
@@ -1085,9 +1162,6 @@ func (m *Model) View() string {
 	}
 	// Rebuild each frame so textinput cursor blink and zones stay aligned with layout.
 	m.vp.SetContent(m.buildForm())
-	if m.panelTab == 0 {
-		m.applyDropdownBounds()
-	}
 	body := lipgloss.NewStyle().Width(m.width).MaxWidth(m.width).Height(m.bodyH).Render(m.vp.View())
 	if m.panelTab == 0 {
 		body = m.composeDropdownOverlays(body)
@@ -1103,6 +1177,13 @@ func (m *Model) SetContentOrigin(top int) {
 		top = 0
 	}
 	m.contentTop = top
+	m.strictnessDD.ContentTop = top
+	m.profileDD.ContentTop = top
+	m.providerDD.ContentTop = top
+	m.presetDD.ContentTop = top
+	if m.modelDD != nil {
+		m.modelDD.ContentTop = top
+	}
 }
 
 // buildThemeView assembles the Theme tab body (header + tab strip + panel).

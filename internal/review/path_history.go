@@ -22,21 +22,21 @@ import (
 // markdown bullet block via FormatPathHistoryAggregate so it can be
 // concatenated into the static evidence section.
 type PathHistoryAggregate struct {
-	MatchedPRs       int
-	WithTests        int
-	WithDocs         int
-	WithSourceOnly   int
-	SamplePRNumbers  []int
-	SampleTestPRs    []int
-	SampleDocsPRs    []int
+	MatchedPRs      int
+	WithTests       int
+	WithDocs        int
+	WithSourceOnly  int
+	SamplePRNumbers []int
+	SampleTestPRs   []int
+	SampleDocsPRs   []int
 }
 
 type pathHistoryCacheEntry struct {
-	V       int                  `json:"v"`
-	Updated time.Time            `json:"updated"`
-	Limit   int                  `json:"limit"`
-	PathKey string               `json:"path_key"`
-	Rows    []gh.PRFileTouches   `json:"rows"`
+	V       int                `json:"v"`
+	Updated time.Time          `json:"updated"`
+	Limit   int                `json:"limit"`
+	PathKey string             `json:"path_key"`
+	Rows    []gh.PRFileTouches `json:"rows"`
 }
 
 // LoadOrFetchPathHistory returns recent merged PRs that touched the same

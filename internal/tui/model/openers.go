@@ -8,30 +8,32 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/demo"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review"
 	langagentsstore "github.com/madicen/appr-ai-sal/internal/review/langagents"
 	repoagentsstore "github.com/madicen/appr-ai-sal/internal/review/repoagents"
-	langagentstui "github.com/madicen/appr-ai-sal/internal/tui/tabs/langagents"
-	repoagentstui "github.com/madicen/appr-ai-sal/internal/tui/tabs/repoagents"
+	"github.com/madicen/appr-ai-sal/internal/tui/tabs/langagents"
+	"github.com/madicen/appr-ai-sal/internal/tui/tabs/repoagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/tabs/settings"
 )
 
 func (m *Model) openSettings(start settings.StartSection) tea.Cmd {
-	m.settingsPrevMode = m.mode
+	m.tabPrevMode = m.mode
 	m.mode = modeSettings
-	m.settings = settings.New(settings.Opts{
+	tab := newTab(settings.New(settings.Opts{
 		Cfg:          m.opts.AIConfig,
 		Width:        m.width,
 		BodyHeight:   m.chromeBodyHeight(),
 		StartSection: start,
-	})
+	}))
 	// Tell settings where its body begins on screen (below the chrome
 	// header) so an open dropdown's geometric mouse hit-test lines up.
-	m.settings.SetContentOrigin(m.headerHeight())
-	return m.settings.Init()
+	tab.SetContentOrigin(m.headerHeight())
+	m.tabs[modeSettings] = tab
+	return tab.Init()
 }
 
 // openRepoAgents seeds the repo-agents tab with repos derived from the
@@ -48,7 +50,7 @@ func (m *Model) openSettings(start settings.StartSection) tea.Cmd {
 // immediately. That's the path bound to ctrl+b ("build agents") so the user
 // gets straight from key press to running LLM jobs.
 func (m *Model) openRepoAgents(focusRepo string, autoRegen bool) tea.Cmd {
-	m.repoAgentsPrevMode = m.mode
+	m.tabPrevMode = m.mode
 	m.mode = modeRepoAgents
 	// We're about to let the user edit / regenerate; invalidate eagerly so
 	// the freshness chip reflects the new state the moment they return.
@@ -76,16 +78,16 @@ func (m *Model) openRepoAgents(focusRepo string, autoRegen bool) tea.Cmd {
 	// so the recording doesn't shell out to gh / hit a real model. The
 	// fake Complete sleeps briefly so the regen flow's "in progress"
 	// chip is visible on the resulting GIF.
-	complete := repoagentsstore.CompleteFunc(review.Complete)
+	complete := ai.CompleteFunc(review.Complete)
 	history := repoagentsstore.HistoryFetcher(gh.BuildReviewHistoryDigest)
 	pathHistory := repoagentsstore.PathHistoryFetcher(pathHistoryFetcher)
 	if m.opts.Demo {
-		complete = repoagentsstore.CompleteFunc(demo.FakeComplete)
+		complete = ai.CompleteFunc(demo.FakeComplete)
 		history = repoagentsstore.HistoryFetcher(noopReviewHistory)
 		pathHistory = repoagentsstore.PathHistoryFetcher(noopPathHistory)
 	}
 
-	m.repoAgents = repoagentstui.New(repoagentstui.Opts{
+	tab := newTab(repoagents.New(repoagents.Opts{
 		AICfg:        m.opts.AIConfig,
 		RC:           rc,
 		Width:        m.width,
@@ -96,9 +98,10 @@ func (m *Model) openRepoAgents(focusRepo string, autoRegen bool) tea.Cmd {
 		InitialRepos: seeds,
 		FocusRepo:    strings.ToLower(strings.TrimSpace(focusRepo)),
 		AutoRegenAll: autoRegen,
-	})
-	m.repoAgents.SetContentOrigin(m.headerHeight())
-	return m.repoAgents.Init()
+	}))
+	tab.SetContentOrigin(m.headerHeight())
+	m.tabs[modeRepoAgents] = tab
+	return tab.Init()
 }
 
 // noopReviewHistory is the demo replacement for gh.BuildReviewHistoryDigest
@@ -125,19 +128,19 @@ func noopPathHistory(ctx context.Context, owner, repo string) (string, error) {
 // PR #1234 makes Swift available to every subsequent review across
 // every repo.
 func (m *Model) openLangAgents() tea.Cmd {
-	m.langAgentsPrevMode = m.mode
+	m.tabPrevMode = m.mode
 	m.mode = modeLangAgents
-	complete := langagentsstore.CompleteFunc(review.Complete)
+	complete := ai.CompleteFunc(review.Complete)
 	if m.opts.Demo {
-		complete = langagentsstore.CompleteFunc(demo.FakeComplete)
+		complete = ai.CompleteFunc(demo.FakeComplete)
 	}
-	opts := langagentstui.Opts{
+	opts := langagents.Opts{
 		AICfg:      m.opts.AIConfig,
 		Width:      m.width,
 		BodyHeight: m.chromeBodyHeight(),
 		Complete:   complete,
 	}
-	if m.langAgentsPrevMode == modeDetail && len(m.parsedDiff) > 0 {
+	if m.tabPrevMode == modeDetail && len(m.parsedDiff) > 0 {
 		// Use a non-nil slice (even when empty) to opt into scoped
 		// rendering — the tab's header tells the user we noticed the
 		// PR even when no rows match.
@@ -146,8 +149,9 @@ func (m *Model) openLangAgents() tea.Cmd {
 			opts.PRLabel = fmt.Sprintf("%s#%d", m.currentPR.Repository, m.currentPR.Number)
 		}
 	}
-	m.langAgents = langagentstui.New(opts).(*langagentstui.Model)
-	return m.langAgents.Init()
+	tab := newTab(langagents.New(opts).(teaTab))
+	m.tabs[modeLangAgents] = tab
+	return tab.Init()
 }
 
 // languagesForFileDiffs returns the canonical language names touched

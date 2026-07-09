@@ -1,0 +1,16 @@
+diff --git a/db/user.go b/db/user.go
+new file mode 100644
+--- /dev/null
++++ b/db/user.go
+@@ -0,0 +1,11 @@
++package db
++
++import (
++	"database/sql"
++	"fmt"
++)
++
++func LookupUser(db *sql.DB, name string) *sql.Row {
++	query := fmt.Sprintf("SELECT * FROM users WHERE name = '%s'", name)
++	return db.QueryRow(query)
++}

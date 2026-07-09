@@ -8,6 +8,24 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/gh"
 )
 
+// 0.4 fix #5: an unparseable arbiter response must surface a bounded raw
+// excerpt in the error so a retry/progress log names what the model returned,
+// and the error text must be classified as retryable so RunRepoArbiter's
+// stageWithRetry wrapper actually re-runs it.
+func TestParseRepoArbiterJSONRawExcerptAndRetryable(t *testing.T) {
+	raw := "sorry, I cannot comply and here is some prose instead of JSON"
+	_, err := parseRepoArbiterJSON(raw)
+	if err == nil {
+		t.Fatal("expected parse error on non-JSON arbiter output")
+	}
+	if !strings.Contains(err.Error(), "sorry, I cannot comply") {
+		t.Fatalf("error must embed a raw-output excerpt, got %q", err.Error())
+	}
+	if !isRetryableStageError(err) {
+		t.Fatalf("parse repo arbiter error must be retryable, got %q", err.Error())
+	}
+}
+
 func TestFinalizeRepoArbiterDropsSecuritySuppression(t *testing.T) {
 	d := &Draft{
 		Specialists: []SpecialistResult{
@@ -91,6 +109,43 @@ func TestParseRepoArbiterJSONMinimal(t *testing.T) {
 	p, err := parseRepoArbiterJSON(s)
 	if err != nil || p.UserSummary != "ok" {
 		t.Fatalf("%+v %v", p, err)
+	}
+}
+
+// F2: before consolidation, the arbiter parser only did a bare json.Unmarshal
+// plus extractJSONObject — it had NO fence-stripping and NO comment-removal, so
+// fenced or JSON5-commented arbiter output failed to parse (and, being on a
+// non-stage-retried path pre-0.4, silently degraded the run). Routing the
+// arbiter through llmjson.Parse gives it the same salvage ladder as the
+// specialists, so both of these fixtures now parse.
+func TestParseRepoArbiterJSONFencedAndCommented(t *testing.T) {
+	fenced := "```json\n" +
+		`{"user_summary":"looks fine","rationale_bullets":["a"],"verdict_override":"","summary_mode":"none","summary_text":"","suppress":[]}` +
+		"\n```"
+	p, err := parseRepoArbiterJSON(fenced)
+	if err != nil {
+		t.Fatalf("fenced arbiter JSON must now parse via the shared ladder: %v", err)
+	}
+	if p.UserSummary != "looks fine" {
+		t.Fatalf("user_summary = %q, want %q", p.UserSummary, "looks fine")
+	}
+
+	commented := "Here is my verdict:\n{\n" +
+		"  // overall this PR is safe\n" +
+		"  \"user_summary\": \"safe\",\n" +
+		"  /* no blockers found */\n" +
+		"  \"rationale_bullets\": [\"ok\"],\n" +
+		"  \"verdict_override\": \"approve\",\n" +
+		"  \"summary_mode\": \"append\",\n" +
+		"  \"summary_text\": \"low risk\",\n" +
+		"  \"suppress\": [],\n" +
+		"}"
+	p2, err := parseRepoArbiterJSON(commented)
+	if err != nil {
+		t.Fatalf("commented arbiter JSON must now parse via the shared ladder: %v", err)
+	}
+	if p2.UserSummary != "safe" || p2.VerdictOverride != "approve" {
+		t.Fatalf("commented arbiter parse mismatch: %+v", p2)
 	}
 }
 

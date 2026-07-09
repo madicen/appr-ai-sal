@@ -1,0 +1,11 @@
+{
+  "summary": "The PR has no description.",
+  "findings": [
+    {
+      "path": "",
+      "line": 0,
+      "severity": "warning",
+      "comment": "The PR description is empty; add a summary of what changed and why, and link the tracking issue so reviewers have context."
+    }
+  ]
+}

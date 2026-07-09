@@ -27,7 +27,7 @@ func newTallModel(t *testing.T, repos []string) *Model {
 func TestMouseClickSuggestMarksBusy(t *testing.T) {
 	m := newTallModel(t, []string{"a/b"})
 	renderAndScan(m)
-	_ = m.handleMouse(clickCenter(t, ZoneSuggestTech))
+	_ = m.handleMouse(clickCenter(t, m, ZoneSuggestTech))
 	if !m.suggestBusy {
 		t.Fatalf("clicking Suggest should set suggestBusy true")
 	}
@@ -38,7 +38,7 @@ func TestMouseApproveCandidateTogglesState(t *testing.T) {
 	seedCandidates(m)
 	renderAndScan(m)
 
-	_ = m.handleMouse(clickCenter(t, zoneCandApprove("kafka")))
+	_ = m.handleMouse(clickCenter(t, m, zoneCandApprove("kafka")))
 	if !m.candidateApproved["kafka"] {
 		t.Fatalf("approve click should mark kafka approved")
 	}
@@ -48,7 +48,7 @@ func TestMouseApproveCandidateTogglesState(t *testing.T) {
 
 	// Deny it again.
 	renderAndScan(m)
-	_ = m.handleMouse(clickCenter(t, zoneCandDeny("kafka")))
+	_ = m.handleMouse(clickCenter(t, m, zoneCandDeny("kafka")))
 	if m.candidateApproved["kafka"] {
 		t.Fatalf("deny click should clear kafka approval")
 	}
@@ -60,14 +60,14 @@ func TestMouseGenerateApprovedDispatchesAndClears(t *testing.T) {
 	m.candidateApproved["kafka"] = true
 	renderAndScan(m)
 
-	cmd := m.handleMouse(clickCenter(t, ZoneGenApproved))
+	cmd := m.handleMouse(clickCenter(t, m, ZoneGenApproved))
 	if cmd == nil {
 		t.Fatalf("Generate approved should return a command")
 	}
-	if !m.busy[techBusyKey("a", "b", "kafka")] {
+	if !m.busy.Running(techBusyKey("a", "b", "kafka")) {
 		t.Fatalf("approved candidate should be marked busy")
 	}
-	if m.busy[techBusyKey("a", "b", "terraform")] {
+	if m.busy.Running(techBusyKey("a", "b", "terraform")) {
 		t.Fatalf("non-approved candidate should not be generated")
 	}
 	if len(m.candidates) != 0 {
@@ -94,7 +94,7 @@ func TestMouseDismissClearsCandidates(t *testing.T) {
 	m := newTallModel(t, []string{"a/b"})
 	seedCandidates(m)
 	renderAndScan(m)
-	_ = m.handleMouse(clickCenter(t, ZoneDismissSuggest))
+	_ = m.handleMouse(clickCenter(t, m, ZoneDismissSuggest))
 	if len(m.candidates) != 0 {
 		t.Fatalf("dismiss should clear candidates")
 	}
@@ -105,9 +105,8 @@ func TestSuggestDoneIgnoredForStaleRepo(t *testing.T) {
 	m.suggestBusy = true
 	// Result for a repo that is not the current selection should be dropped.
 	_, _ = m.Update(techSuggestDoneMsg{
-		Owner:      "c",
-		Repo:       "d",
-		Candidates: []ta.Candidate{{Tech: "kafka", Label: "Kafka"}},
+		Key: repoKey{Owner: "c", Repo: "d"},
+		Val: []ta.Candidate{{Tech: "kafka", Label: "Kafka"}},
 	})
 	if len(m.candidates) != 0 {
 		t.Fatalf("stale suggestion result should be ignored")
@@ -121,9 +120,8 @@ func TestSuggestDoneStoresCandidates(t *testing.T) {
 	m := newTestModel(t, []string{"a/b"})
 	m.suggestBusy = true
 	_, _ = m.Update(techSuggestDoneMsg{
-		Owner:      "a",
-		Repo:       "b",
-		Candidates: []ta.Candidate{{Tech: "kafka", Label: "Kafka"}},
+		Key: repoKey{Owner: "a", Repo: "b"},
+		Val: []ta.Candidate{{Tech: "kafka", Label: "Kafka"}},
 	})
 	if len(m.candidates) != 1 {
 		t.Fatalf("expected 1 stored candidate, got %d", len(m.candidates))

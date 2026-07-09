@@ -394,13 +394,13 @@ func TestDemotedPRWideFindingSurfacesAsOptIn(t *testing.T) {
 		t.Fatalf("demoted PR-wide finding should not post until opted in:\n%s", d.RenderBody())
 	}
 
-	// Pressing y on the tab (no focused card) opts it in.
+	// Pressing y on the tab (no focused card) opts it in. It may schedule a
+	// debounced U2 session save, but must never post anything immediately —
+	// the opt-in only mutates the draft; posting happens at summary time.
 	if ro.idx >= 0 {
 		t.Fatalf("expected no focused card on a PR-wide-only tab; idx=%d", ro.idx)
 	}
-	if _, cmd := ro.actToggleDemotedPRWide(); cmd != nil {
-		t.Fatalf("toggling demoted PR-wide inclusion should not post immediately")
-	}
+	_, _ = ro.actToggleDemotedPRWide()
 	if !d.DemotedPostingEnabled(review.SpecDescription, demoted) {
 		t.Fatalf("after toggling, the demoted PR-wide finding should be opted in")
 	}

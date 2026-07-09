@@ -22,11 +22,14 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 	bubbledropdown "github.com/madicen/bubble-dropdown"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	ra "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	ta "github.com/madicen/appr-ai-sal/internal/review/techagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/async"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
 )
 
 // Opts configures a fresh Model.
@@ -35,7 +38,7 @@ type Opts struct {
 	RC           *repoconfig.Config
 	Width        int
 	BodyHeight   int
-	Complete     ra.CompleteFunc       // required: typically review.Complete
+	Complete     ai.CompleteFunc       // required: typically review.Complete
 	History      ra.HistoryFetcher     // optional: typically gh.BuildReviewHistoryDigest
 	PathHistory  ra.PathHistoryFetcher // optional: feeds the testing/docs generator with path-history evidence
 	InitialRepos []string              // owner/repo discovered from the loaded PR list (lowercased)
@@ -69,16 +72,17 @@ type Model struct {
 
 	aiCfg       *aiconfig.Config
 	rc          *repoconfig.Config
-	complete    ra.CompleteFunc
+	complete    ai.CompleteFunc
 	history     ra.HistoryFetcher
 	pathHistory ra.PathHistoryFetcher
 
 	repos   []string // lowercased owner/repo
 	repoIdx int
 
-	// Active-repository dropdown (bubble-dropdown). Recreated when the repo
-	// list or selection changes (the component has no runtime SetOptions).
-	repoDD *bubbledropdown.Dropdown
+	// Active-repository dropdown, via the shared dropdown.Host (recreated
+	// when the repo list or selection changes; the component has no runtime
+	// SetOptions).
+	repoDD *dropdown.Host
 	// ddRepoRow is the content-line index of the dropdown trigger, recorded
 	// while buildContent runs so View can apply scroll-adjusted bounds.
 	ddRepoRow int
@@ -98,11 +102,11 @@ type Model struct {
 	// briefs). Lazy-loaded the first time a repo is selected.
 	techs map[string]*ta.TechAgents
 
-	// busy["owner/repo|specialist"] true while a Regenerate command is in
-	// flight; disables the row's chips and shows a spinner-style label.
-	// Tech regenerations reuse the same map keyed by "tech:" prefix to keep
-	// busy gating uniform across both kinds of agent.
-	busy map[string]bool
+	// busy tracks the "owner/repo|specialist" (and "tech:"-prefixed) keys
+	// whose Regenerate command is in flight; a running key disables the
+	// row's chips and shows a spinner-style label. The shared async.Tracker
+	// keeps the gating uniform across both kinds of agent.
+	busy async.Tracker[string]
 
 	// editing state. When true, the right pane swaps to a textarea for the
 	// selected brief. editKind discriminates between repo-agent specialist
@@ -219,7 +223,6 @@ func New(o Opts) *Model {
 		editArea:          taArea,
 		agents:            map[string]*ra.RepoAgents{},
 		techs:             map[string]*ta.TechAgents{},
-		busy:              map[string]bool{},
 		candidateApproved: map[string]bool{},
 		repos:             sanitizeRepos(o.InitialRepos),
 		vp:                vp,
@@ -378,16 +381,11 @@ func (m *Model) View() string {
 	// Keep the repo dropdown's options/selection fresh (no-op while open).
 	m.refreshRepoDropdown()
 	m.vp.SetContent(m.buildContent())
-	if m.repoDD != nil {
-		tw, th := m.repoDD.TriggerSize()
-		m.repoDD.SetBounds(m.ddRepoRow-m.vp.YOffset, 0, tw, th)
-	}
 	body := m.vp.View()
-	if m.repoDropdownOpen() {
-		// Composite the panel onto the scrollable body only; clamping to the
-		// viewport height keeps it from bleeding into the sticky footer.
-		body = m.repoDD.ViewWithOverlay(body, m.width, vpH)
-	}
+	// Composite the panel onto the scrollable body only; clamping to the
+	// viewport height keeps it from bleeding into the sticky footer. The
+	// trigger row is scroll-adjusted (content line index minus YOffset).
+	body = m.repoDD.Composite(body, m.ddRepoRow-m.vp.YOffset, 0, m.width, vpH)
 	return lipgloss.NewStyle().
 		Width(m.width).
 		MaxWidth(m.width).
@@ -434,10 +432,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.Err
 			return m, nil
 		}
-		merged := append([]string{}, m.repos...)
-		for _, r := range msg.Repos {
-			merged = append(merged, r)
-		}
+		merged := append(append([]string{}, m.repos...), msg.Repos...)
 		m.repos = sanitizeRepos(merged)
 		// Re-apply the initial focus, if any. sanitizeRepos re-sorts the
 		// merged list alphabetically, so the numeric repoIdx that was
@@ -470,27 +465,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case regenStartedMsg:
-		m.busy[busyKey(msg.Owner, msg.Repo, msg.Specialist)] = true
-		m.statusMsg = fmt.Sprintf("regenerating %s/%s · %s …", msg.Owner, msg.Repo, msg.Specialist)
+		m.busy.Start(busyKey(msg.Key.Owner, msg.Key.Repo, msg.Key.Specialist))
+		m.statusMsg = fmt.Sprintf("regenerating %s/%s · %s …", msg.Key.Owner, msg.Key.Repo, msg.Key.Specialist)
 		return m, nil
 
 	case regenDoneMsg:
-		delete(m.busy, busyKey(msg.Owner, msg.Repo, msg.Specialist))
-		key := msg.Owner + "/" + msg.Repo
+		m.busy.Clear(busyKey(msg.Key.Owner, msg.Key.Repo, msg.Key.Specialist))
+		key := msg.Key.Owner + "/" + msg.Key.Repo
 		if msg.Err != nil {
-			m.err = fmt.Errorf("%s · %s: %w", key, msg.Specialist, msg.Err)
+			m.err = fmt.Errorf("%s · %s: %w", key, msg.Key.Specialist, msg.Err)
 			m.statusMsg = ""
 			return m, nil
 		}
-		if msg.Agent != nil {
+		if msg.Val != nil {
 			cur, ok := m.agents[key]
 			if !ok || cur == nil {
-				cur = &ra.RepoAgents{Owner: msg.Owner, Repo: msg.Repo, Agents: map[string]ra.Agent{}}
+				cur = &ra.RepoAgents{Owner: msg.Key.Owner, Repo: msg.Key.Repo, Agents: map[string]ra.Agent{}}
 			}
-			cur.Set(msg.Specialist, *msg.Agent)
+			cur.Set(msg.Key.Specialist, *msg.Val)
 			m.agents[key] = cur
 		}
-		m.statusMsg = fmt.Sprintf("saved %s/%s · %s (%s)", msg.Owner, msg.Repo, msg.Specialist, time.Now().Format("15:04:05"))
+		m.statusMsg = fmt.Sprintf("saved %s/%s · %s (%s)", msg.Key.Owner, msg.Key.Repo, msg.Key.Specialist, time.Now().Format("15:04:05"))
 		return m, nil
 
 	case deletedMsg:
@@ -498,11 +493,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.Err
 			return m, nil
 		}
-		key := msg.Owner + "/" + msg.Repo
+		key := msg.Key.Owner + "/" + msg.Key.Repo
 		if cur, ok := m.agents[key]; ok && cur != nil && cur.Agents != nil {
-			delete(cur.Agents, strings.ToLower(strings.TrimSpace(msg.Specialist)))
+			delete(cur.Agents, strings.ToLower(strings.TrimSpace(msg.Key.Specialist)))
 		}
-		m.statusMsg = fmt.Sprintf("deleted %s/%s · %s", msg.Owner, msg.Repo, msg.Specialist)
+		m.statusMsg = fmt.Sprintf("deleted %s/%s · %s", msg.Key.Owner, msg.Key.Repo, msg.Key.Specialist)
 		return m, nil
 
 	case savedMsg:
@@ -513,17 +508,16 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.editing = false
 		m.editKind = editKindNone
 		m.editArea.Blur()
-		m.statusMsg = fmt.Sprintf("saved %s/%s · %s (manual)", msg.Owner, msg.Repo, msg.Specialist)
+		m.statusMsg = fmt.Sprintf("saved %s/%s · %s (manual)", msg.Key.Owner, msg.Key.Repo, msg.Key.Specialist)
 		// Re-load agents from disk so we see the persisted entry.
-		owner, repo := splitRepoKey(msg.Owner + "/" + msg.Repo)
-		return m, loadAgentsCmd(owner, repo)
+		return m, loadAgentsCmd(msg.Key.Owner, msg.Key.Repo)
 
 	case repoRemovedMsg:
 		if msg.Err != nil {
 			m.err = msg.Err
 			return m, nil
 		}
-		key := msg.Owner + "/" + msg.Repo
+		key := msg.Key.Owner + "/" + msg.Key.Repo
 		delete(m.agents, key)
 		delete(m.techs, key)
 		out := make([]string, 0, len(m.repos))
@@ -548,27 +542,27 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case techRegenStartedMsg:
-		m.busy[techBusyKey(msg.Owner, msg.Repo, msg.Tech)] = true
-		m.statusMsg = fmt.Sprintf("regenerating %s/%s · tech %s …", msg.Owner, msg.Repo, msg.Tech)
+		m.busy.Start(techBusyKey(msg.Key.Owner, msg.Key.Repo, msg.Key.Tech))
+		m.statusMsg = fmt.Sprintf("regenerating %s/%s · tech %s …", msg.Key.Owner, msg.Key.Repo, msg.Key.Tech)
 		return m, nil
 
 	case techRegenDoneMsg:
-		delete(m.busy, techBusyKey(msg.Owner, msg.Repo, msg.Tech))
-		key := msg.Owner + "/" + msg.Repo
+		m.busy.Clear(techBusyKey(msg.Key.Owner, msg.Key.Repo, msg.Key.Tech))
+		key := msg.Key.Owner + "/" + msg.Key.Repo
 		if msg.Err != nil {
-			m.err = fmt.Errorf("%s · tech %s: %w", key, msg.Tech, msg.Err)
+			m.err = fmt.Errorf("%s · tech %s: %w", key, msg.Key.Tech, msg.Err)
 			m.statusMsg = ""
 			return m, nil
 		}
-		if msg.Agent != nil {
+		if msg.Val != nil {
 			cur, ok := m.techs[key]
 			if !ok || cur == nil {
-				cur = &ta.TechAgents{Owner: msg.Owner, Repo: msg.Repo, Agents: map[string]ta.Agent{}}
+				cur = &ta.TechAgents{Owner: msg.Key.Owner, Repo: msg.Key.Repo, Agents: map[string]ta.Agent{}}
 			}
-			cur.Set(msg.Agent.Tech, *msg.Agent)
+			cur.Set(msg.Val.Tech, *msg.Val)
 			m.techs[key] = cur
 		}
-		m.statusMsg = fmt.Sprintf("saved %s/%s · tech %s (%s)", msg.Owner, msg.Repo, msg.Tech, time.Now().Format("15:04:05"))
+		m.statusMsg = fmt.Sprintf("saved %s/%s · tech %s (%s)", msg.Key.Owner, msg.Key.Repo, msg.Key.Tech, time.Now().Format("15:04:05"))
 		return m, nil
 
 	case techDeletedMsg:
@@ -576,11 +570,11 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.Err
 			return m, nil
 		}
-		key := msg.Owner + "/" + msg.Repo
+		key := msg.Key.Owner + "/" + msg.Key.Repo
 		if cur, ok := m.techs[key]; ok && cur != nil {
-			cur.Delete(msg.Tech)
+			cur.Delete(msg.Key.Tech)
 		}
-		m.statusMsg = fmt.Sprintf("deleted %s/%s · tech %s", msg.Owner, msg.Repo, msg.Tech)
+		m.statusMsg = fmt.Sprintf("deleted %s/%s · tech %s", msg.Key.Owner, msg.Key.Repo, msg.Key.Tech)
 		return m, nil
 
 	case techSavedMsg:
@@ -591,19 +585,18 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.editing = false
 		m.editKind = editKindNone
 		m.editArea.Blur()
-		m.statusMsg = fmt.Sprintf("saved %s/%s · tech %s (manual)", msg.Owner, msg.Repo, msg.Tech)
-		owner, repo := splitRepoKey(msg.Owner + "/" + msg.Repo)
-		return m, loadTechsCmd(owner, repo)
+		m.statusMsg = fmt.Sprintf("saved %s/%s · tech %s (manual)", msg.Key.Owner, msg.Key.Repo, msg.Key.Tech)
+		return m, loadTechsCmd(msg.Key.Owner, msg.Key.Repo)
 
 	case techSuggestStartedMsg:
 		m.suggestBusy = true
-		m.statusMsg = fmt.Sprintf("analyzing %s/%s for technologies …", msg.Owner, msg.Repo)
+		m.statusMsg = fmt.Sprintf("analyzing %s/%s for technologies …", msg.Key.Owner, msg.Key.Repo)
 		return m, nil
 
 	case techSuggestDoneMsg:
 		m.suggestBusy = false
 		// Ignore results that arrived after the user moved to another repo.
-		if msg.Owner+"/"+msg.Repo != m.currentRepoKey() {
+		if msg.Key.Owner+"/"+msg.Key.Repo != m.currentRepoKey() {
 			return m, nil
 		}
 		if msg.Err != nil {
@@ -611,12 +604,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.statusMsg = ""
 			return m, nil
 		}
-		m.candidates = msg.Candidates
+		m.candidates = msg.Val
 		m.candidateApproved = map[string]bool{}
-		if len(msg.Candidates) == 0 {
-			m.statusMsg = fmt.Sprintf("no new technologies suggested for %s/%s", msg.Owner, msg.Repo)
+		if len(msg.Val) == 0 {
+			m.statusMsg = fmt.Sprintf("no new technologies suggested for %s/%s", msg.Key.Owner, msg.Key.Repo)
 		} else {
-			m.statusMsg = fmt.Sprintf("suggested %d technologies for %s/%s — approve the ones to generate", len(msg.Candidates), msg.Owner, msg.Repo)
+			m.statusMsg = fmt.Sprintf("suggested %d technologies for %s/%s — approve the ones to generate", len(msg.Val), msg.Key.Owner, msg.Key.Repo)
 		}
 		return m, nil
 	}
@@ -785,12 +778,12 @@ func (m *Model) commitAddTech() tea.Cmd {
 		return nil
 	}
 	m.cancelAddTech()
-	m.busy[techBusyKey(owner, repo, canonical)] = true
+	m.busy.Start(techBusyKey(owner, repo, canonical))
 	m.err = nil
 	m.statusMsg = fmt.Sprintf("generating %s/%s · tech %s …", owner, repo, canonical)
 	return tea.Batch(
-		func() tea.Msg { return techRegenStartedMsg{Owner: owner, Repo: repo, Tech: canonical} },
-		regenerateTechCmd(ta.CompleteFunc(m.complete), nil, m.aiCfg, m.rc, owner, repo, canonical, rawName, seed),
+		func() tea.Msg { return techRegenStartedMsg{Key: techKey{owner, repo, canonical}} },
+		regenerateTechCmd(m.complete, nil, m.aiCfg, m.rc, owner, repo, canonical, rawName, seed),
 	)
 }
 
@@ -907,10 +900,10 @@ func (m *Model) startRegenerate(specialist string) tea.Cmd {
 		m.err = fmt.Errorf("LLM completion is not configured")
 		return nil
 	}
-	m.busy[busyKey(owner, repo, specialist)] = true
+	m.busy.Start(busyKey(owner, repo, specialist))
 	m.err = nil
 	return tea.Batch(
-		func() tea.Msg { return regenStartedMsg{Owner: owner, Repo: repo, Specialist: specialist} },
+		func() tea.Msg { return regenStartedMsg{Key: specKey{owner, repo, specialist}} },
 		regenerateCmd(m.complete, m.history, m.pathHistory, m.aiCfg, m.rc, owner, repo, specialist),
 	)
 }
@@ -927,9 +920,9 @@ func (m *Model) regenerateAllForCurrentRepo() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(ra.Specialists)*2)
 	for _, s := range ra.Specialists {
 		spec := s
-		m.busy[busyKey(owner, repo, spec)] = true
+		m.busy.Start(busyKey(owner, repo, spec))
 		cmds = append(cmds,
-			func() tea.Msg { return regenStartedMsg{Owner: owner, Repo: repo, Specialist: spec} },
+			func() tea.Msg { return regenStartedMsg{Key: specKey{owner, repo, spec}} },
 			regenerateCmd(m.complete, m.history, m.pathHistory, m.aiCfg, m.rc, owner, repo, spec),
 		)
 	}
@@ -1010,7 +1003,7 @@ func loadAgentsCmd(owner, repo string) tea.Cmd {
 	}
 }
 
-func regenerateCmd(complete ra.CompleteFunc, history ra.HistoryFetcher, pathHistory ra.PathHistoryFetcher, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo, specialist string) tea.Cmd {
+func regenerateCmd(complete ai.CompleteFunc, history ra.HistoryFetcher, pathHistory ra.PathHistoryFetcher, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo, specialist string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -1025,19 +1018,19 @@ func regenerateCmd(complete ra.CompleteFunc, history ra.HistoryFetcher, pathHist
 			PathHistory: pathHistory,
 		})
 		if err != nil {
-			return regenDoneMsg{Owner: owner, Repo: repo, Specialist: specialist, Err: err}
+			return regenDoneMsg{Key: specKey{owner, repo, specialist}, Err: err}
 		}
 		if err := ra.SaveAgent(owner, repo, *agent); err != nil {
-			return regenDoneMsg{Owner: owner, Repo: repo, Specialist: specialist, Err: fmt.Errorf("save: %w", err)}
+			return regenDoneMsg{Key: specKey{owner, repo, specialist}, Err: fmt.Errorf("save: %w", err)}
 		}
-		return regenDoneMsg{Owner: owner, Repo: repo, Specialist: specialist, Agent: agent}
+		return regenDoneMsg{Key: specKey{owner, repo, specialist}, Val: agent}
 	}
 }
 
 func deleteAgentCmd(owner, repo, specialist string) tea.Cmd {
 	return func() tea.Msg {
 		err := ra.Delete(owner, repo, specialist)
-		return deletedMsg{Owner: owner, Repo: repo, Specialist: specialist, Err: err}
+		return deletedMsg{Key: specKey{owner, repo, specialist}, Err: err}
 	}
 }
 
@@ -1050,9 +1043,9 @@ func saveManualCmd(owner, repo, specialist, body string) tea.Cmd {
 			Manual:      true,
 		}
 		if err := ra.SaveAgent(owner, repo, agent); err != nil {
-			return savedMsg{Owner: owner, Repo: repo, Specialist: specialist, Err: err}
+			return savedMsg{Key: specKey{owner, repo, specialist}, Err: err}
 		}
-		return savedMsg{Owner: owner, Repo: repo, Specialist: specialist}
+		return savedMsg{Key: specKey{owner, repo, specialist}}
 	}
 }
 
@@ -1069,7 +1062,7 @@ func techBusyKey(owner, repo, tech string) string {
 	return owner + "/" + repo + "|tech:" + ta.CanonicalTech(tech)
 }
 
-func regenerateTechCmd(complete ta.CompleteFunc, history ta.HistoryFetcher, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo, tech, label, seed string) tea.Cmd {
+func regenerateTechCmd(complete ai.CompleteFunc, history ta.HistoryFetcher, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo, tech, label, seed string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -1085,19 +1078,19 @@ func regenerateTechCmd(complete ta.CompleteFunc, history ta.HistoryFetcher, aiCf
 			History:  history,
 		})
 		if err != nil {
-			return techRegenDoneMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Err: err}
+			return techRegenDoneMsg{Key: techKey{owner, repo, ta.CanonicalTech(tech)}, Err: err}
 		}
 		if err := ta.SaveAgent(owner, repo, *agent); err != nil {
-			return techRegenDoneMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Err: fmt.Errorf("save: %w", err)}
+			return techRegenDoneMsg{Key: techKey{owner, repo, ta.CanonicalTech(tech)}, Err: fmt.Errorf("save: %w", err)}
 		}
-		return techRegenDoneMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Agent: agent}
+		return techRegenDoneMsg{Key: techKey{owner, repo, ta.CanonicalTech(tech)}, Val: agent}
 	}
 }
 
 func deleteTechCmd(owner, repo, tech string) tea.Cmd {
 	return func() tea.Msg {
 		err := ta.Delete(owner, repo, tech)
-		return techDeletedMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Err: err}
+		return techDeletedMsg{Key: techKey{owner, repo, ta.CanonicalTech(tech)}, Err: err}
 	}
 }
 
@@ -1125,9 +1118,9 @@ func saveManualTechCmd(owner, repo, tech, body string) tea.Cmd {
 			Manual:      true,
 		}
 		if err := ta.SaveAgent(owner, repo, agent); err != nil {
-			return techSavedMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech), Err: err}
+			return techSavedMsg{Key: techKey{owner, repo, ta.CanonicalTech(tech)}, Err: err}
 		}
-		return techSavedMsg{Owner: owner, Repo: repo, Tech: ta.CanonicalTech(tech)}
+		return techSavedMsg{Key: techKey{owner, repo, ta.CanonicalTech(tech)}}
 	}
 }
 
@@ -1157,11 +1150,11 @@ func (m *Model) startRegenerateTech(tech string) tea.Cmd {
 			seed = a.Seed
 		}
 	}
-	m.busy[techBusyKey(owner, repo, canonical)] = true
+	m.busy.Start(techBusyKey(owner, repo, canonical))
 	m.err = nil
 	return tea.Batch(
-		func() tea.Msg { return techRegenStartedMsg{Owner: owner, Repo: repo, Tech: canonical} },
-		regenerateTechCmd(ta.CompleteFunc(m.complete), nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
+		func() tea.Msg { return techRegenStartedMsg{Key: techKey{owner, repo, canonical}} },
+		regenerateTechCmd(m.complete, nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
 	)
 }
 
@@ -1201,12 +1194,12 @@ func (m *Model) startSuggestTechs() tea.Cmd {
 	m.suggestBusy = true
 	m.statusMsg = fmt.Sprintf("analyzing %s/%s for technologies …", owner, repo)
 	return tea.Batch(
-		func() tea.Msg { return techSuggestStartedMsg{Owner: owner, Repo: repo} },
-		suggestTechsCmd(ta.CompleteFunc(m.complete), m.aiCfg, m.rc, owner, repo, existing),
+		func() tea.Msg { return techSuggestStartedMsg{Key: repoKey{owner, repo}} },
+		suggestTechsCmd(m.complete, m.aiCfg, m.rc, owner, repo, existing),
 	)
 }
 
-func suggestTechsCmd(complete ta.CompleteFunc, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo string, existing []string) tea.Cmd {
+func suggestTechsCmd(complete ai.CompleteFunc, aiCfg *aiconfig.Config, rc *repoconfig.Config, owner, repo string, existing []string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
@@ -1218,7 +1211,7 @@ func suggestTechsCmd(complete ta.CompleteFunc, aiCfg *aiconfig.Config, rc *repoc
 			Complete: complete,
 			Existing: existing,
 		})
-		return techSuggestDoneMsg{Owner: owner, Repo: repo, Candidates: cands, Err: err}
+		return techSuggestDoneMsg{Key: repoKey{owner, repo}, Val: cands, Err: err}
 	}
 }
 
@@ -1283,10 +1276,10 @@ func (m *Model) generateApprovedCmd() tea.Cmd {
 			label = canonical
 		}
 		seed := c.Seed
-		m.busy[techBusyKey(owner, repo, canonical)] = true
+		m.busy.Start(techBusyKey(owner, repo, canonical))
 		cmds = append(cmds,
-			func() tea.Msg { return techRegenStartedMsg{Owner: owner, Repo: repo, Tech: canonical} },
-			regenerateTechCmd(ta.CompleteFunc(m.complete), nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
+			func() tea.Msg { return techRegenStartedMsg{Key: techKey{owner, repo, canonical}} },
+			regenerateTechCmd(m.complete, nil, m.aiCfg, m.rc, owner, repo, canonical, label, seed),
 		)
 	}
 	m.err = nil
@@ -1420,7 +1413,7 @@ func (m *Model) renderAgentRow(specialist string, cur *ra.RepoAgents) string {
 			preview = trimPreview(a.Context, 320)
 		}
 	}
-	if m.busy[bk] {
+	if m.busy.Running(bk) {
 		status = chipBusy.Render(" regenerating … ")
 	}
 
@@ -1432,7 +1425,7 @@ func (m *Model) renderAgentRow(specialist string, cur *ra.RepoAgents) string {
 	}
 	chips := []string{}
 	regenLabel := " Regenerate "
-	if m.busy[bk] {
+	if m.busy.Running(bk) {
 		regenLabel = " (running) "
 		chips = append(chips, chipBusy.Render(regenLabel))
 	} else {
@@ -1609,7 +1602,7 @@ func (m *Model) renderTechRow(tech string, cur *ta.TechAgents) string {
 			seed = strings.TrimSpace(a.Seed)
 		}
 	}
-	if m.busy[bk] {
+	if m.busy.Running(bk) {
 		status = chipBusy.Render(" regenerating … ")
 	}
 
@@ -1625,7 +1618,7 @@ func (m *Model) renderTechRow(tech string, cur *ta.TechAgents) string {
 	}
 	chips := []string{}
 	regenLabel := " Regenerate "
-	if m.busy[bk] {
+	if m.busy.Running(bk) {
 		regenLabel = " (running) "
 		chips = append(chips, chipBusy.Render(regenLabel))
 	} else {

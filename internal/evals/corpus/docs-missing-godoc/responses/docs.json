@@ -1,0 +1,14 @@
+{
+  "summary": "The new exported function is undocumented.",
+  "findings": [
+    {
+      "path": "config/load.go",
+      "line": 3,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Exported function Load has no doc comment; document what it loads and the error it returns.",
+      "suggestion": "// Load reads configuration from the given path and returns any parse error.\nfunc Load(path string) error {",
+      "anchor_excerpt": "func Load(path string) error {"
+    }
+  ]
+}

@@ -1,9 +1,10 @@
 package review
 
 import (
-	"strconv"
 	"strings"
 	"unicode"
+
+	"github.com/madicen/appr-ai-sal/internal/review/findingkey"
 )
 
 // dedupeRef points at one finding inside a []SpecialistResult.
@@ -12,72 +13,41 @@ type dedupeRef struct {
 	findIdx int
 }
 
-// dedupeInlineFindingsAcrossSpecialists collapses the same inline finding when
-// several specialists independently file it on the same diff line. Without this
-// a glaring issue (e.g. a wrong unit suffix) posts once per specialist that
-// noticed it, spamming the PR with near-identical comments.
+// adjacentDedupeWindow is the ±line window (Q6.4) within which two
+// near-duplicate inline findings on the SAME (path, side) collapse. Models
+// routinely anchor the same concern one or two lines apart (the top of a
+// block vs. the offending statement inside it); an exact-line-only match let
+// those double-post. Two lines is tight enough that genuinely distinct issues
+// a few lines apart still survive (the Jaccard test must ALSO agree).
+const adjacentDedupeWindow = 2
+
+// dedupeInlineFindingsAcrossSpecialists collapses the same finding when
+// several specialists independently file it. Without this a glaring issue
+// (e.g. a wrong unit suffix) posts once per specialist that noticed it,
+// spamming the PR with near-identical comments.
 //
-// It is conservative: findings are grouped by (path, line, side) and, within a
-// group, only NEAR-DUPLICATES of the chosen keeper are dropped — a genuinely
-// different concern that happens to share a line (formatting nit vs. a security
-// issue) survives. PR-wide findings (path "", line 0) are never touched.
+// It handles two classes:
+//
+//   - Inline findings are grouped by (path, side) and, within a group, only
+//     NEAR-DUPLICATES within ±adjacentDedupeWindow lines of the chosen keeper
+//     are dropped (Q6.4 widened the window from an exact-line match). A
+//     genuinely different concern that happens to share (or sit near) a line —
+//     a formatting nit vs. a security issue — survives because the Jaccard
+//     duplicate test must also agree.
+//   - PR-wide findings (path "", line 0) are deduped across specialists too
+//     (Q6.4): description and scope routinely file the same "this PR does two
+//     things" note, which previously double-posted because PR-wide findings
+//     were never touched.
 //
 // The keeper is chosen by lane ownership: a fixed specialist priority
-// (formatting, design, security, testing, docs, then the PR agents), tie-broken
-// by carrying a one-click suggestion, then by higher severity, then by stable
-// order. Runs before the arbiter/vibe-coach so every surface and the GitHub
-// post see the de-duplicated set.
+// (security first, formatting, design, testing, docs, tech, then the PR
+// agents), tie-broken by carrying a one-click suggestion, then by higher
+// severity, then by stable order. Runs before the arbiter/vibe-coach so every
+// surface and the GitHub post see the de-duplicated set.
 func dedupeInlineFindingsAcrossSpecialists(specs []SpecialistResult) []SpecialistResult {
-	groups := map[string][]dedupeRef{}
-	var order []string
-	for si := range specs {
-		if specs[si].Err != nil {
-			continue
-		}
-		for fi := range specs[si].Findings {
-			f := specs[si].Findings[fi]
-			if !findingIsInlinePostable(f) {
-				continue
-			}
-			key := dedupeKey(f)
-			if _, ok := groups[key]; !ok {
-				order = append(order, key)
-			}
-			groups[key] = append(groups[key], dedupeRef{specIdx: si, findIdx: fi})
-		}
-	}
-
 	drop := map[dedupeRef]bool{}
-	for _, key := range order {
-		refs := groups[key]
-		if len(refs) < 2 {
-			continue
-		}
-		remaining := append([]dedupeRef(nil), refs...)
-		for len(remaining) > 0 {
-			best := 0
-			for i := 1; i < len(remaining); i++ {
-				if dedupeRefBetterKeeper(specs, remaining[i], remaining[best]) {
-					best = i
-				}
-			}
-			keeper := remaining[best]
-			kf := specs[keeper.specIdx].Findings[keeper.findIdx]
-			var next []dedupeRef
-			for i, r := range remaining {
-				if i == best {
-					continue
-				}
-				rf := specs[r.specIdx].Findings[r.findIdx]
-				if findingsLikelyDuplicate(kf, rf) {
-					drop[r] = true
-				} else {
-					next = append(next, r)
-				}
-			}
-			remaining = next
-		}
-	}
+	collectDedupeGroups(specs, findingIsInlinePostable, dedupeColumnKey, true, drop)
+	collectDedupeGroups(specs, findingIsPRWide, dedupePRWideKey, false, drop)
 	if len(drop) == 0 {
 		return specs
 	}
@@ -97,12 +67,97 @@ func dedupeInlineFindingsAcrossSpecialists(specs []SpecialistResult) []Specialis
 	return specs
 }
 
-func dedupeKey(f Finding) string {
-	side := f.Side
-	if side == "" {
-		side = "RIGHT"
+// collectDedupeGroups groups the findings selected by include under key and,
+// within each group, marks near-duplicates of the chosen keeper for dropping.
+// When lineWindowed is true (inline findings) two findings only merge if their
+// lines are within adjacentDedupeWindow; PR-wide findings (line 0) ignore the
+// window. The highest severity of any merged near-duplicate is carried onto
+// the keeper so a merge never silently downgrades a more-severe report.
+func collectDedupeGroups(specs []SpecialistResult, include func(Finding) bool, key func(Finding) string, lineWindowed bool, drop map[dedupeRef]bool) {
+	groups := map[string][]dedupeRef{}
+	var order []string
+	for si := range specs {
+		if specs[si].Err != nil {
+			continue
+		}
+		for fi := range specs[si].Findings {
+			f := specs[si].Findings[fi]
+			if !include(f) {
+				continue
+			}
+			k := key(f)
+			if _, ok := groups[k]; !ok {
+				order = append(order, k)
+			}
+			groups[k] = append(groups[k], dedupeRef{specIdx: si, findIdx: fi})
+		}
 	}
-	return f.Path + "\x00" + strconv.Itoa(f.Line) + "\x00" + side
+	for _, k := range order {
+		refs := groups[k]
+		if len(refs) < 2 {
+			continue
+		}
+		remaining := append([]dedupeRef(nil), refs...)
+		for len(remaining) > 0 {
+			best := 0
+			for i := 1; i < len(remaining); i++ {
+				if dedupeRefBetterKeeper(specs, remaining[i], remaining[best]) {
+					best = i
+				}
+			}
+			keeper := remaining[best]
+			kf := &specs[keeper.specIdx].Findings[keeper.findIdx]
+			var next []dedupeRef
+			for i, r := range remaining {
+				if i == best {
+					continue
+				}
+				rf := specs[r.specIdx].Findings[r.findIdx]
+				if lineWindowed && abs(kf.Line-rf.Line) > adjacentDedupeWindow {
+					next = append(next, r)
+					continue
+				}
+				if findingsLikelyDuplicate(*kf, rf) {
+					if severityRank(rf.Severity) > severityRank(kf.Severity) {
+						kf.Severity = rf.Severity
+					}
+					drop[r] = true
+				} else {
+					next = append(next, r)
+				}
+			}
+			remaining = next
+		}
+	}
+}
+
+// findingIsPRWide reports whether f is a PR-wide / general finding (no inline
+// anchor) that still carries actionable prose.
+func findingIsPRWide(f Finding) bool {
+	if findingIsInlinePostable(f) {
+		return false
+	}
+	return strings.TrimSpace(f.Comment) != ""
+}
+
+// dedupeColumnKey groups inline findings by (path, side) — independent of
+// line, so the ±adjacentDedupeWindow merge can span nearby lines — and
+// independent of specialist, so cross-specialist near-duplicates collapse.
+func dedupeColumnKey(f Finding) string {
+	return findingkey.New("", f.Path, 0, f.Side).Location()
+}
+
+// dedupePRWideKey groups PR-wide findings by side only (path is empty, line 0)
+// so the same whole-PR note filed by different agents lands in one group.
+func dedupePRWideKey(f Finding) string {
+	return findingkey.New("", "", 0, f.Side).Location()
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 // dedupeRefBetterKeeper reports whether a is a better finding to keep than b:
@@ -128,39 +183,6 @@ func dedupeRefBetterKeeper(specs []SpecialistResult, a, b dedupeRef) bool {
 		return a.specIdx < b.specIdx
 	}
 	return a.findIdx < b.findIdx
-}
-
-// specialistLanePriority orders agents by whose specialty owns code-level
-// findings, so when a line is flagged by several agents the keeper comes from
-// the most-relevant lane. Lower is higher priority; unknown agents sort last.
-func specialistLanePriority(name string) int {
-	switch name {
-	case SpecTech:
-		// The tech specialist owns value-correctness on config/IaC lines
-		// (e.g. a Kubernetes memory unit). When it collides with a stylistic
-		// flag on the same line it should keep the domain-correct finding, so
-		// it ranks ahead of the generalist lanes.
-		return 0
-	case SpecFormatting:
-		return 1
-	case SpecDesign:
-		return 2
-	case SpecSecurity:
-		return 3
-	case SpecTesting:
-		return 4
-	case SpecDocs:
-		return 5
-	case SpecChecks:
-		return 6
-	case SpecDescription:
-		return 7
-	case SpecDiscussion:
-		return 8
-	case SpecScope:
-		return 9
-	}
-	return 99
 }
 
 // findingsLikelyDuplicate decides whether two same-line findings are the same

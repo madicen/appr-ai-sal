@@ -2,69 +2,42 @@ package repoagents
 
 import (
 	tea "github.com/charmbracelet/bubbletea"
-	zone "github.com/lrstanley/bubblezone"
-	bubbledropdown "github.com/madicen/bubble-dropdown"
+
+	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
 )
 
-// newRepoDropdown builds the active-repository dropdown from the current repo
-// list. The component has no runtime SetOptions, so it is recreated whenever
-// the list or selection changes (see refreshRepoDropdown).
-func (m *Model) newRepoDropdown() *bubbledropdown.Dropdown {
+// refreshRepoDropdown keeps the dropdown's options/selection in sync with the
+// repo list while the panel is closed (an open panel implies no change). The
+// shared dropdown.Host owns creation, zone binding, and recreate-on-change.
+func (m *Model) refreshRepoDropdown() {
+	if len(m.repos) == 0 {
+		m.repoDD.Clear()
+		return
+	}
+	if m.repoDD == nil {
+		m.repoDD = dropdown.New("select repo")
+		m.repoDD.ContentTop = m.contentTop
+		m.repoDD.OnSelect = m.selectRepoByIndex
+	}
 	idx := m.repoIdx
 	if idx < 0 || idx >= len(m.repos) {
 		idx = 0
 	}
 	opts := make([]string, len(m.repos))
 	copy(opts, m.repos)
-	d := bubbledropdown.New(
-		bubbledropdown.WithOptions(opts),
-		bubbledropdown.WithInitialIndex(idx),
-		bubbledropdown.WithPlaceholder("select repo"),
-	)
-	// Match the existing bubblezone integration: trigger hit-testing runs
-	// through the global manager scanned at the root.
-	d.SetZoneManager(zone.DefaultManager)
-	return d
-}
-
-// refreshRepoDropdown keeps the dropdown's options/selection in sync with the
-// repo list while the panel is closed (an open panel implies no change).
-func (m *Model) refreshRepoDropdown() {
-	if len(m.repos) == 0 {
-		m.repoDD = nil
-		return
-	}
-	if m.repoDD != nil && m.repoDD.Open() {
-		return
-	}
-	m.repoDD = m.newRepoDropdown()
+	m.repoDD.Rebuild(opts, idx)
 }
 
 // repoDropdownOpen reports whether the repo dropdown panel is open.
 func (m *Model) repoDropdownOpen() bool {
-	return m.repoDD != nil && m.repoDD.Open()
+	return m.repoDD.Open()
 }
 
-// forwardToRepoDropdown routes msg to the dropdown, translating mouse
-// coordinates into body-local space, and applies any resulting selection
-// change by switching the active repo.
+// forwardToRepoDropdown routes msg to the dropdown; the Host translates mouse
+// coordinates into body-local space and applies a selection change via its
+// OnSelect callback (selectRepoByIndex).
 func (m *Model) forwardToRepoDropdown(msg tea.Msg) tea.Cmd {
-	if m.repoDD == nil {
-		return nil
-	}
-	if mm, ok := msg.(tea.MouseMsg); ok {
-		mm.Y -= m.contentTop
-		msg = mm
-	}
-	prev := m.repoDD.SelectedIndex()
-	updated, cmd := m.repoDD.Update(msg)
-	m.repoDD = updated
-	if sel := m.repoDD.SelectedIndex(); sel != prev {
-		if applyCmd := m.selectRepoByIndex(sel); applyCmd != nil {
-			cmd = tea.Batch(cmd, applyCmd)
-		}
-	}
-	return cmd
+	return m.repoDD.Forward(msg)
 }
 
 // selectRepoByIndex switches the active repo to idx and loads its agents.
@@ -85,4 +58,7 @@ func (m *Model) SetContentOrigin(top int) {
 		top = 0
 	}
 	m.contentTop = top
+	if m.repoDD != nil {
+		m.repoDD.ContentTop = top
+	}
 }

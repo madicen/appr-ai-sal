@@ -2,12 +2,14 @@ package review
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/applog"
 	"github.com/madicen/appr-ai-sal/internal/gh"
+	"github.com/madicen/appr-ai-sal/internal/llmjson"
 )
 
 const nonClaudeToolingHint = "You do not have access to repository tools or the local filesystem. Base your answer on the PR metadata, the unified diff, and the \"Repository context\" section in the user message below. Treat that section as the authoritative summary of repo conventions for this review (the diff remains the authority for what changed).\n\n"
@@ -33,10 +35,12 @@ func rewriteReviewIntroForDiffOnly(userPrompt string) string {
 	return s
 }
 
-// augmentPromptsForProvider prepends guidance for backends that cannot use Claude's repo tools.
+// augmentPromptsForProvider prepends guidance for backends that cannot use
+// repository tools. It branches on the provider's capability (repoTools), not
+// on the provider enum, so a new tool-capable backend needs no change here.
 // hasRepoContext should be true when the user message includes a repository-context section (specialists omit it today).
-func augmentPromptsForProvider(p aiconfig.Provider, systemPrompt, userPrompt string, hasRepoContext bool) (string, string) {
-	if p == aiconfig.ProviderClaude {
+func augmentPromptsForProvider(repoTools bool, systemPrompt, userPrompt string, hasRepoContext bool) (string, string) {
+	if repoTools {
 		return systemPrompt, userPrompt
 	}
 	userPrompt = rewriteReviewIntroForDiffOnly(userPrompt)
@@ -59,7 +63,22 @@ func augmentPromptsForProvider(p aiconfig.Provider, systemPrompt, userPrompt str
 // techSection is the rendered technology-experts section (one labelled
 // block per configured tech for this repo); shared across every specialist
 // and computed once per review.
-func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, langSection string, techSection string) SpecialistResult {
+// staticSection is the pre-rendered static-analysis pre-pass block (Q5): what
+// the deterministic tools already flag, injected into EVERY code specialist so
+// they don't re-report tool findings. staticCleanFiles is the set of files a
+// formatter passed clean, driving the Q5.d "linter is silent" downgrade.
+// intentSection is the pre-rendered Q8 `## PR author intent` block. It is
+// non-empty only for intent-aware specs (testing, scope) AND only when the
+// intent pre-pass extracted something; it is "" for every other specialist and
+// whenever the pre-pass was a no-op, so those prompts are byte-for-byte
+// unchanged from before Q8.
+// expandedSection is the pre-rendered B5 "expanded code context" block: for
+// backends without repo tools (RepoTools == false), a deterministic gather of
+// the enclosing function bodies, referenced type definitions, and
+// callers/callees the diff touches, so an HTTP provider isn't reviewing blind.
+// It is "" for the Claude subprocess (which reads the worktree live) and
+// whenever the expander gathered nothing, keeping those prompts byte-identical.
+func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, repoContext string, evidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, intentSection string, expandedSection string) SpecialistResult {
 	res := SpecialistResult{Specialist: name, Findings: []Finding{}}
 
 	systemPrompt, err := SpecialistPrompt(name)
@@ -68,11 +87,14 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		return res
 	}
 
-	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, langSection, techSection)
+	userPrompt := buildReviewUserPrompt(pr, diff, cfg.ReviewStrictness, repoContext, evidence, staticSection, langSection, techSection, intentSection, expandedSection)
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
-	systemPrompt, userPrompt = augmentPromptsForProvider(cfg.Provider, systemPrompt, userPrompt, hasContext)
+	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, hasContext)
 
-	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
+	// R5: constrain the output shape on schema-capable providers with the
+	// registry-derived code-specialist schema (user-defined code specialists
+	// share it). Schema-less JSON providers ignore it and use json_object.
+	out, err := completeJSONWithSchema(ctx, cfg, systemPrompt, userPrompt, worktree, schemaForAgent(name))
 	if err != nil {
 		res.Err = err
 		return res
@@ -93,6 +115,10 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// hard.
 		floor := MinSeverityForStrictness(cfg.ReviewStrictness)
 		res.Findings = FilterFindingsBySeverity(parsed.Findings, floor)
+		// Capture the model's raw inline-suggestion count before any gate
+		// runs so the evals harness can measure suggestion survival. No-op
+		// for the normal path (the field is unread there).
+		res.RawSuggestionAttempts = countInlineSuggestionAttempts(res.Findings)
 		// Parse the diff once and share the result across every gate
 		// below — diffs can be megabytes for large PRs and re-parsing
 		// per validator adds up.
@@ -114,6 +140,12 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// stripping the suggestion when no/ambiguous match. See
 		// anchor_excerpt.go for the full posture.
 		res.Findings = validateAnchorExcerpt(res.Findings, parsedFiles)
+		// Q6.1: verify any multi-line suggestion's StartLine..Line range is a
+		// contiguous, anchorable post-image run in one hunk; clear the range
+		// (and strip the suggestion) when it is not, so a malformed multi-line
+		// replacement can never post. Runs after the anchor-excerpt gate so it
+		// sees the finding's final Line.
+		res.Findings = validateMultiLineSuggestionRange(res.Findings, parsedFiles)
 		// Demote bare "X lacks a comment / lacks tests" findings to info
 		// when no proposed wording or suggestion is present. Docs/testing
 		// only — see actionability.go for the rationale.
@@ -127,6 +159,12 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// (e.g. `tags = var.common_tags` on `aws_s3_bucket_policy`), which
 		// would fail terraform validate. See iac_schema_gate.go.
 		res.Findings = validateTechResourceArguments(res.Findings, parsedFiles, worktree)
+		// Q5.d: "linter is silent" false-positive filter. When the static
+		// pre-pass ran a formatter clean over a file, demote mechanical
+		// formatting findings there (formatting specialist only). Runs before
+		// synthesis/repair so we never build a one-click fix for a nit a
+		// formatter already deemed unnecessary. See static_silence.go.
+		res.Findings = downgradeFormatterSilencedFindings(name, res.Findings, staticCleanFiles)
 		// Last chance: synthesize a one-click suggestion from the comment
 		// for any inline finding the model left suggestion-less but whose
 		// comment unambiguously names the corrected token. Runs after the
@@ -139,7 +177,7 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 		// and writes the replacement, re-validated by the same safety gates.
 		// Fail-open and only fires when there is at least one candidate. See
 		// suggestion_repair.go.
-		res.Findings = repairMissingSuggestions(ctx, cfg, worktree, name, res.Findings, parsedFiles)
+		res.Findings, res.RepairFired, res.RepairSucceeded = repairMissingSuggestions(ctx, cfg, worktree, name, res.Findings, parsedFiles)
 		// Re-apply the floor: a finding demoted to info above must obey
 		// the same strictness gate the model originally got.
 		res.Findings = FilterFindingsBySeverity(res.Findings, floor)
@@ -171,12 +209,21 @@ func RunVibeCoachForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, n
 	if notify == nil {
 		notify = func(int, error) {}
 	}
+	// Q7: route the vibe-coach to its configured model (stage_models
+	// ["vibe-coach"] / "default"); a no-op clone when unrouted. Applied here so
+	// both the streaming pipeline and the TUI's lazy re-run pick up routing.
+	cfg = cfg.ForStage(StageVibeCoach)
 	vibeInput := SpecialistsForVibeCoach(d, d.Specialists)
+	// Q8: ground the vibe-coach's verdict / "done-when" prompts in the
+	// extracted author intent (empty section when the pre-pass was a no-op →
+	// unchanged behaviour). Threaded via the Draft so the TUI's lazy re-run
+	// picks it up too.
+	intentSection := FormatIntentSection(d.PRIntent)
 	var res *VibeCoachResult
 	_ = stageWithRetry(ctx, cfg, "vibe-coach", notify, func(sctx context.Context) error {
-		stCtx, cancel := context.WithTimeout(sctx, perStageBudget(cfg))
+		stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "vibe-coach"), perStageBudget(cfg))
 		defer cancel()
-		res = runVibeCoach(stCtx, cfg, d.Worktree, d.PR, vibeInput, "")
+		res = runVibeCoach(stCtx, cfg, d.Worktree, d.PR, vibeInput, "", intentSection)
 		if res != nil && res.Err != nil {
 			return res.Err
 		}
@@ -191,7 +238,7 @@ func RunVibeCoachForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, n
 // runVibeCoach runs the vibe-coach specialist over the collected findings of
 // the other specialists, producing a small set of high-leverage prompts the
 // PR author can paste back into their AI assistant.
-func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, repoContext string) *VibeCoachResult {
+func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, repoContext string, intentSection string) *VibeCoachResult {
 	res := &VibeCoachResult{Prompts: []AuthorPrompt{}}
 
 	systemPrompt, err := SpecialistPrompt(SpecVibeCoach)
@@ -201,10 +248,12 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	}
 	systemPrompt += vibeCoachSystemAddendum
 
-	userPrompt := buildVibeCoachUserPrompt(pr, specialists, cfg.ReviewStrictness, repoContext)
-	systemPrompt, userPrompt = augmentPromptsForProvider(cfg.Provider, systemPrompt, userPrompt, strings.TrimSpace(repoContext) != "")
+	userPrompt := buildVibeCoachUserPrompt(pr, specialists, cfg.ReviewStrictness, repoContext, intentSection)
+	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, strings.TrimSpace(repoContext) != "")
 
-	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
+	// R5: hand the vibe-coach's registry-derived schema to schema-capable
+	// providers.
+	out, err := completeJSONWithSchema(ctx, cfg, systemPrompt, userPrompt, worktree, vibeCoachSchema())
 	if err != nil {
 		res.Err = err
 		return res
@@ -226,7 +275,7 @@ func runVibeCoach(ctx context.Context, cfg *aiconfig.Config, worktree string, pr
 	return res
 }
 
-func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, langSection string, techSection string) string {
+func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictness, repoContext string, evidence string, staticSection string, langSection string, techSection string, intentSection string, expandedSection string) string {
 	var b strings.Builder
 	hasContext := strings.TrimSpace(repoContext) != "" || strings.TrimSpace(evidence) != "" || strings.TrimSpace(langSection) != "" || strings.TrimSpace(techSection) != ""
 	if hasContext {
@@ -242,6 +291,13 @@ func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictn
 	if strings.TrimSpace(pr.Body) != "" {
 		b.WriteString("PR description:\n")
 		b.WriteString(pr.Body)
+		b.WriteString("\n\n")
+	}
+	// Q8: the extracted author-intent section (empty for non-intent-aware
+	// specialists and whenever the pre-pass was a no-op → byte-identical to
+	// pre-Q8 output).
+	if s := strings.TrimSpace(intentSection); s != "" {
+		b.WriteString(s)
 		b.WriteString("\n\n")
 	}
 	b.WriteString(strictnessBlockForSpecialists(strict))
@@ -261,6 +317,22 @@ func buildReviewUserPrompt(pr *gh.PR, diff string, strict aiconfig.ReviewStrictn
 	}
 	b.WriteString(FormatRepoContextSection(repoContext))
 	b.WriteString(FormatPRReviewEvidenceSection(evidence))
+	// Static-analysis pre-pass (Q5): what the deterministic tools already
+	// flag, and which files a formatter passed clean. Pre-rendered (heading +
+	// body) by the runner via staticpass; empty when nothing ran.
+	if s := strings.TrimSpace(staticSection); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
+	// B5 expanded code context: for backends without live repo tools, the
+	// deterministically-gathered enclosing functions / referenced types /
+	// callers-callees the change touches, placed just before the diff and
+	// clearly framed as read-only. Empty (byte-identical to pre-B5) for the
+	// Claude subprocess and whenever the expander gathered nothing.
+	if s := strings.TrimSpace(expandedSection); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
 	b.WriteString("Unified diff (line numbers in `+` hunks are the lines you cite in findings, with side=\"RIGHT\"):\n\n")
 	b.WriteString("```diff\n")
 	b.WriteString(diff)
@@ -303,7 +375,7 @@ func briefsReReadReminder(repoContext, evidence, langSection, techSection string
 	return b.String()
 }
 
-func buildVibeCoachUserPrompt(pr *gh.PR, specialists []SpecialistResult, strict aiconfig.ReviewStrictness, repoContext string) string {
+func buildVibeCoachUserPrompt(pr *gh.PR, specialists []SpecialistResult, strict aiconfig.ReviewStrictness, repoContext string, intentSection string) string {
 	var b strings.Builder
 	b.WriteString("You are the vibe coach for an AI-assisted code review. Other specialists have already reviewed the PR. Your job is to read their combined output and produce a small set of high-leverage prompts the PR author can paste into their own AI assistant to fix the most important issues in one or two iterations.\n\n")
 	b.WriteString(strictnessBlockForVibeCoachUser(strict))
@@ -312,6 +384,12 @@ func buildVibeCoachUserPrompt(pr *gh.PR, specialists []SpecialistResult, strict 
 	b.WriteString("\nTitle: " + pr.Title + "\n\n")
 	if sec := strings.TrimSpace(FormatRepoContextSection(repoContext)); sec != "" {
 		b.WriteString(sec)
+		b.WriteString("\n\n")
+	}
+	// Q8: the extracted author-intent section grounds the verdict / done-when
+	// prompts. Empty when the pre-pass was a no-op → unchanged behaviour.
+	if s := strings.TrimSpace(intentSection); s != "" {
+		b.WriteString(s)
 		b.WriteString("\n\n")
 	}
 	b.WriteString("Specialist findings:\n\n")
@@ -333,260 +411,29 @@ func buildVibeCoachUserPrompt(pr *gh.PR, specialists []SpecialistResult, strict 
 	return b.String()
 }
 
-// reviewOutputContract is the strict-JSON instruction appended to every
-// code-reviewing specialist's user prompt. Don't mince words here; if the
-// model returns prose around the JSON, parsing fails.
-const reviewOutputContract = `Return your review as a single JSON object and nothing else — no prose before, no prose after, no markdown fencing. The object must conform to:
-
-{
-  "summary": "<1–3 sentences. STAY STRICTLY IN YOUR LANE — your summary must speak ONLY to your specialty as defined in the system prompt above (e.g. a security specialist's summary covers security and only security; a docs specialist's covers documentation and only documentation). DO NOT describe the PR's overall scope, recap unrelated concerns, or comment on areas owned by other specialists (test coverage, design, documentation, formatting, etc. unless that IS your specialty). If you have no findings in your specialty, say exactly that ('No <specialty> concerns in this diff' or similar) and nothing else. Do NOT repeat or list findings that appear in \"findings\"; if you filed inline findings, the summary should be a single aggregate sentence or \"See inline comments on the diff.\" Avoid duplicating bullet points from findings.>",
-  "findings": [
-    {
-      "path": "<file path relative to the repo root, or empty string for PR-wide / general feedback>",
-      "line": <integer: RIGHT-side line number in the unified diff for inline comments; use 0 with empty path for general feedback only>,
-      "side": "RIGHT",
-      "severity": "info" | "warning" | "error" | "critical",
-      "comment": "<the full human-readable review text: finding, rationale, and what to do. Use plain text or simple markdown. Put ALL narrative, questions, and explanations here.>",
-      "suggestion": "<EXACT literal replacement text GitHub will apply at path/line — see the suggestion contract below. Required for any local fix; empty string for findings whose fix is non-local or non-mechanical.>",
-      "anchor_excerpt": "<VERBATIM copy of the post-image line at path:line, including leading whitespace exactly as it appears in the diff. REQUIRED whenever you fill in 'suggestion' on an inline finding — the review tool deterministically compares this against the actual line and STRIPS your suggestion on mismatch (or auto-relocates the finding when the excerpt uniquely matches a different line in the same hunk), so getting this wrong is worse than leaving suggestion empty. Use empty string for general findings (path '', line 0) and for inline findings whose 'suggestion' is empty.>"
-    }
-  ]
-}
-
-SPECIALTY SCOPE (HARD — this gates EVERY finding, not just the summary):
-
-You own exactly one lens, defined in the system prompt above. Every finding you file MUST be an issue *in that specialty*. This is not a duplicate tie-breaker — it decides whether you file at all:
-   - Do NOT file a finding that belongs to another specialist's lane, even when it is real, obvious, and nobody else has flagged it. Another specialist owns it and will catch it. Concretely: a wrong Kubernetes memory unit suffix ("memory: 717M" → "717Mi"), a misconfigured value, a logic bug in application code, or a missing doc are NOT testing findings, NOT formatting findings, NOT security findings unless that specific lens is yours. Raising someone else's issue makes the panel noisier and the review worse.
-   - A change can fall entirely outside your lens. A pure config / YAML / infra / data PR often contains nothing in your specialty at all. When that is the case, return an EMPTY "findings" array and say so in one sentence in "summary". An empty result from the right specialist is the correct, useful answer.
-   - If the only issue you can find is one you'd have to reach outside your lane to file, file NOTHING. The absence of in-lane issues is itself a valid finding-free result — do not manufacture coverage by grabbing another lane's problem.
-
-ANCHOR PROOF (anchor_excerpt — DETERMINISTICALLY ENFORCED):
-
-Whenever "suggestion" is non-empty, "anchor_excerpt" MUST be the exact post-image text of the diff line at "line" (the line that will be DELETED when the author clicks Apply). Copy it character-for-character from the unified diff including its leading whitespace; do not strip leading "+", "-", or " " from the diff prefix (the diff shows them; the line itself does not have them). The tool normalises whitespace before comparing.
-
-Mismatch handling (so you know what's at stake):
-   - If your excerpt does not match the line at "line" but UNIQUELY matches a different line in the same hunk, we auto-relocate the finding to that line and surface a banner to the reviewer. Quote the line correctly and this is invisible.
-   - If your excerpt does not match anywhere in the hunk, or matches multiple lines, your suggestion is stripped (the prose comment survives). A short excerpt (under 20 characters) is treated the same way — short lines like "}" or "return nil" match all over the file and can't be safely relocated.
-
-If you are not certain which line you are anchoring at, leave BOTH "anchor_excerpt" and "suggestion" empty and let the prose in "comment" carry the load.
-
-ACTIONABILITY BAR (HARD REQUIREMENT — applies to EVERY finding, inline or general):
-
-Every finding's "comment" MUST be concrete enough that a reviewer reading it can act without a follow-up question:
-   - It names the file/symbol/identifier to change.
-   - It states what the new shape, signature, value, or behaviour should be — not just what's wrong.
-   - It avoids hedging ("consider", "you might", "perhaps", "this could be cleaner"). Hedged feedback is a non-finding.
-   - For PR-wide entries (path "", line 0), the same bar applies: spell out the rule being violated and what should change.
-   - VERIFY BEFORE YOU FILE: if a finding depends on how a symbol is defined, called, or set elsewhere, confirm it with Read/Grep before filing. If the tools are unavailable (you were told you have no repo access) or you cannot confirm it from the diff and context provided, either drop the finding or file it at reduced severity with "comment" stating it is unverified and what would confirm it. A confidently-wrong finding costs the panel more trust than a missed nit.
-   - STATE THE IMPACT, not just the rule: every "comment" must name the consequence if the code ships as-is (what breaks, regresses, misleads a reader, or risks at runtime). One clause suffices (e.g. "...which silently drops the context-cancellation error"). A finding asserting a rule with no stated consequence is "info" at most.
-
-If you cannot meet that bar, do not file the finding.
-
-WRITING LANGUAGE (the natural language your prose is written in — NOT to be confused with the programming-language guidance further below):
-
-All natural-language prose you emit — "summary", every finding's "comment", and any English wording inside "suggestion" — MUST be written in English. The only non-English text permitted anywhere in your output is verbatim source code, identifiers, or string literals that already appear in another script in the diff (preserve those exactly when you reproduce them inside "suggestion"). NEVER mix scripts within a single sentence; an English sentence with a Chinese, Japanese, Korean, Cyrillic, Arabic, or any other non-Latin word substituted for an English word ("Consider using 加密方法 to secure the token") is a bug, not a stylistic choice. When you reach for a foreign-language term mid-sentence, replace it with its English equivalent ("an encryption method", "the algorithm", etc.).
-
-SUGGESTION CONTRACT (default to filling this — it's the most valuable part of the review):
-
-The "suggestion" field is the literal text GitHub will apply as a one-click "Apply suggestion" block at the commented line. When the author clicks Apply:
-
-   1. The single line at "line" is DELETED.
-   2. Your "suggestion" lines are inserted in its place.
-   3. Every other line in the file is left exactly as-is.
-
-REPLACEMENT, NOT INSERTION (read this twice):
-
-There is no such thing as "insert before" or "insert after" in this contract. Your suggestion ALWAYS replaces the anchor line. If you want the anchor line to survive, you MUST include it (verbatim, with the exact indentation) in your "suggestion" in the right position. If you do not include it, it is GONE.
-
-Concrete consequences:
-   - Adding a doc comment ABOVE a declaration: anchor at the declaration line; "suggestion" = "<doc line(s)>\n<exact text of the declaration line>".
-   - Inserting a new clause INSIDE an existing block: anchor at the line you want the new clause to sit next to; "suggestion" = the original anchor line + your new clause(s) in the desired final order.
-   - You may NOT anchor at one line in order to add content that belongs near a different line. Doing so deletes the anchor line, which is almost always wrong (the line you "comment on" silently disappears from the file).
-   - Never include lines that already exist in the diff above or below the anchor — they are NOT removed by your suggestion, so repeating them creates duplicates that break the build.
-
-LANGUAGE AWARENESS:
-
-Use the file's own language for everything in "suggestion": comment syntax, identifier conventions, indentation, and string-quoting rules. Infer the language from the file extension on the finding's "path":
-   - .go → "// " line comments, godoc-style sentences starting with the identifier name
-   - .py → "# " line comments or """docstrings""" inside the def/class body
-   - .ts / .js / .tsx / .jsx / .java / .c / .cpp / .rs / .swift / .kt → "// " line comments
-   - .tf / .hcl → "# " or "// " comments (HCL accepts both); HCL is NOT Go — do not use godoc framing
-   - .yml / .yaml / .toml → "# " comments
-   - .sh / .bash / .zsh / .rb → "# " comments
-   - .sql → "-- " comments
-   - Markdown / plain text → no comment syntax; just write the prose
-Never apply Go's godoc framing to a non-Go file just because a Go example appears in your specialist prompt.
-
-You MUST emit a non-empty "suggestion" whenever ALL of these hold:
-   1. The fix is a contiguous replacement of <= 10 lines at the finding's anchor line.
-   2. You can write the replacement so it compiles / parses / lints cleanly when substituted in (no placeholders, no TODOs, no "// FIXME").
-   3. The replacement does not require imports, declarations, or symbols that don't already exist in the file (or that you can also include in the suggestion).
-   4. The change is mechanical / non-controversial — fixing a typo, swapping an unsafe call for a safe equivalent, adding an obvious nil check, supplying a missing doc comment, renaming a single identifier within its scope, etc.
-
-Examples that MUST have a suggestion (non-exhaustive):
-   - Spelling/grammar fix in a comment, log line, error message, or doc string.
-   - Correcting a wrong literal, constant, enum value, or unit suffix on the anchor line WHEN that correction is in your specialty (e.g. "memory: 717M" → "memory: 717Mi", a flipped boolean default, an off-by-one bound). If the fix is in your lane and your "comment" names the exact corrected value, you can — and MUST — put it in "suggestion"; do not let "this is a bigger note" talk you out of an obvious one-token fix. (If the issue is NOT in your specialty, do not file it at all — see SPECIALTY SCOPE above. This rule is about completeness of an in-lane finding, never a licence to reach into another lane.)
-   - Replacing md5/sha1 with sha256 for a security finding when the call site is local.
-   - Adding a missing doc comment on an exported identifier (in any language) — see "Adding a doc comment ABOVE a declaration" above for the anchor + replay rule.
-   - Replacing string concatenation with a parameterised query when the params are already in scope.
-   - Adding an early-return nil check at the top of a function.
-   - Inserting a missing default case in a switch.
-
-You MUST leave "suggestion" empty when ANY of these hold:
-   - The fix requires changes across multiple files or non-contiguous lines.
-   - The fix needs new imports, helpers, or types you cannot include in the same suggestion block.
-   - The fix is a refactor with multiple acceptable shapes (let the human decide; explain in "comment").
-   - You are unsure the replacement compiles / parses cleanly. A wrong suggestion is worse than none.
-   - You cannot anchor at the line that should be replaced (e.g. the change wants to live between two lines and neither of them should be deleted, and you cannot reproduce both verbatim).
-
-Suggestion formatting rules (silently dropped if violated):
-   - Code (or prose, for doc comments) only — NO prose around the code, NO markdown fences (no leading "` + "```" + `"), NO "// fix:" placeholders, NO "Here is the fix" preambles.
-   - The replacement must be drop-in valid at path/line. Match the existing indentation level. Preserve language syntax (semicolons, braces, etc.).
-   - Multiple replacement lines are fine and replace the single anchor line; just do not include the original line in the suggestion unless your fix keeps it.
-   - If you find yourself wanting to include English explanation, that text belongs in "comment", not "suggestion".
-
-Worked example (Go, formatting specialist, finding anchored at "name := strings.toLower(s)"):
-
-  "comment": "Go's strings package uses ToLower (capitalised). The current call won't compile.",
-  "suggestion": "name := strings.ToLower(s)"
-
-Worked example (security specialist, finding anchored at "h := md5.New()"):
-
-  "comment": "MD5 is not collision-resistant; use SHA-256 for content hashing here. The sha256 package is already imported elsewhere in this file.",
-  "suggestion": "h := sha256.New()"
-
-Worked example (docs specialist, Terraform/HCL, anchored at the resource declaration line ` + "`resource \"aws_security_group\" \"web\" {`" + `):
-
-  "comment": "The new aws_security_group resource lacks a leading comment explaining what it allows.",
-  "suggestion": "# web is the security group attached to the public ALB; rules below open 80/443 to the world.\nresource \"aws_security_group\" \"web\" {"
-
-Note how the original ` + "`resource \"aws_security_group\" \"web\" {`" + ` line is REPLAYED verbatim at the end of the suggestion — without that, applying the suggestion would delete the resource declaration. Note also that the comment uses HCL syntax (` + "`#`" + `) and not Go's godoc framing.
-
-Inline vs general: prefer a non-empty path and line > 0 whenever the issue ties to a changed line in the diff (those become GitHub inline review comments). Use path "" and line 0 only for repo-wide or cross-cutting notes that truly cannot be anchored to one line; suggestion must be empty for general findings.
-
-If you have nothing to say, return an empty findings array. Stay strictly in your specialty — do not report findings that another specialist would handle.
-
-String values must be valid JSON only: use one pair of double quotes per string and escape internal newlines as \n and quotes as \". Never use Python-style """ triple-quoted strings inside the JSON. Do not use // or /* */ comments, JSON5/JSONC extensions, or trailing commas — the tool parses strict JSON.`
-
-// vibeCoachOutputContract is the strict-JSON instruction for the vibe coach.
-const vibeCoachOutputContract = `Return your output as a single JSON object and nothing else — no prose before, no prose after, no markdown fencing. The object must conform to:
-
-{
-  "verdict": "approve" | "request_changes" | "comment",
-  "summary": "<One short paragraph only: max 3 sentences. State verdict rationale and what blocks merge — do NOT restate each specialist or list findings (those are inline or in prompts).>",
-  "prompts": [
-    {
-      "title": "<short imperative label the human reviewer reads first>",
-      "rationale": "<1–2 sentences for the HUMAN reader: which specialist findings this bundles and what category of problem they amount to. Do NOT include any instructions for the AI assistant here.>",
-      "agent_prompt": "<the verbatim block the author will paste into their AI coding assistant. Self-contained, second-person, references concrete paths/symbols. NOT a meta-summary; an actionable instruction. NEVER refer to the rationale or to other prompts; the AI receives only this string.>",
-      "finding_refs": [
-        { "specialist": "<formatting | design | testing | docs | security>",
-          "path":       "<exact path from the bundled specialist finding>",
-          "line":       <integer line number from that finding>,
-          "side":       "RIGHT" | "LEFT" }
-      ]
-    }
-  ]
-}
-
-Finding refs (REQUIRED for prompts that bundle specialist findings):
-
-- Each entry in "prompts" MUST list every specialist finding it bundles in "finding_refs", using the exact specialist name, path, and line number from the input you received. Side defaults to "RIGHT" — only set it explicitly when the finding's side is LEFT.
-- Without these refs the rendered review cannot tell when a referenced finding was suppressed by the repo arbiter or skipped by the reviewer; prompts whose every referenced finding is suppressed/skipped will be silently dropped at render time, so the listed refs are how you guarantee a prompt survives.
-- "finding_refs" may be empty only for prompts that don't tie to any specific specialist finding (general process advice). Such prompts are kept unconditionally, but use this case sparingly — most useful prompts bundle concrete findings.
-
-Verdict (required — human reviewer-facing merge recommendation, analogous to GitHub review states):
-
-- "approve" — You would be comfortable merging if the specialists found nothing blocking; remaining notes are minor or optional.
-- "request_changes" — At least one substantive issue (severity, design, security, tests, or docs) should be addressed before merge, or follow-up prompts are needed for non-trivial fixes.
-- "comment" — Feedback is informational only; no strong merge gate from this pass (use sparingly).
-
-The published review body leads with **Merge recommendation** (verdict heading + short summary) then **one combined suggested prompt** for the author's AI (if any). The "summary" must stay executive — no specialist-by-specialist recap.
-
-Verdict vs prompts (critical):
-
-- If "verdict" is **request_changes**, you MUST return at least one entry in "prompts" with a non-empty "agent_prompt" that tells the author exactly what to change (files, symbols, acceptance criteria), unless the ONLY blocking work is already covered by GitHub-ready code suggestion blocks on the diff with nothing left to instruct an AI — in that rare case, state that explicitly in "summary" and return an empty "prompts" array.
-- If "verdict" is **approve** or **comment**, "prompts" may be empty.
-
-Hard rules:
-
-- **One prompts entry per distinct topic** the author would naturally hand to their AI in one go. A refactor is one topic; a README update is a separate topic; a CHANGELOG entry is a separate topic. The posted review concatenates all agent_prompt strings into a single paste block, separated by ` + "`---`" + ` between entries — that separator is how the human sees that there are multiple topics to address. Cramming unrelated work ("refactor X. Then update the README. Then add a CHANGELOG entry.") into a single agent_prompt hides everything but the first topic.
-- **PR-wide findings get their own dedicated prompts.** Any specialist finding with empty path and line 0 MUST be the sole subject of its own prompts entry, with finding_refs listing exactly that one finding. Bundling a PR-wide finding alongside inline findings in the same prompt risks losing it: if any of the inline siblings is suppressed by the repo arbiter or skipped during review, the whole prompt can be filtered out and the PR-wide work silently disappears from the rendered review. A dedicated entry guarantees the PR-wide finding's prompt survives independently.
-- **Coverage requirement.** Every error / critical-severity finding (inline OR PR-wide) that does NOT carry an inline one-click ` + "`" + `suggestion` + "`" + ` block MUST appear in some prompt's finding_refs, and that prompt's agent_prompt MUST give the author's AI a concrete instruction for fixing it. The renderer will auto-generate fallback prompts for any uncovered blocker, but a fallback is a safety net (it can only quote the specialist comment verbatim) and not a substitute for you writing a real instruction.
-- Bundle related specialist findings inside a single prompt when they're on the same topic AND none of them is a PR-wide finding (e.g. four inline security findings about input validation in one handler family) — that reduces iteration count without hiding anything.
-- Cap: at most 4 prompts entries. If you need more, consolidate within a topic, never across topics.
-- Within a single agent_prompt, separate distinct steps with a blank line (\n\n in JSON) so the pasted block is scannable; don't return a wall-of-text paragraph.
-- "rationale" is for the human reading the review; agent_prompt is for the AI; do not mix them.
-- Every non-empty agent_prompt must specify the change concretely (paths, identifiers, acceptance criteria) so the author's AI can act on it without further context.
-- Do not include literal fenced code blocks inside agent_prompt unless they are a patch the AI should apply verbatim.
-
-Writing language:
-
-All natural-language prose you emit — "summary", "title", "rationale", and "agent_prompt" — MUST be written in English. The only non-English text permitted is verbatim source code, identifiers, or string literals that already appear in another script in the specialist input you are summarising (preserve those exactly when you reproduce them). NEVER mix scripts within a single sentence; an English sentence with a Chinese, Japanese, Korean, Cyrillic, Arabic, or any other non-Latin word substituted for an English word is a bug, not a stylistic choice. When you reach for a foreign-language term mid-sentence, replace it with its English equivalent.
-
-If a clean PR doesn't warrant any follow-up prompts and verdict is approve, return an empty "prompts" array. Don't manufacture work.
-
-String values must be valid JSON only (escape newlines as \n); never use Python """ triple-quoted strings inside the JSON.`
-
-// parseSpecialistJSON parses claude's textual output for a code specialist.
-// It tries strict parse first; on failure, it extracts the first JSON object
-// it finds in the text (handles cases where the model wraps JSON in fencing
-// despite instructions).
+// parseSpecialistJSON parses a code specialist's textual output via the shared
+// llmjson salvage ladder (fence/extract/comment/triple-quote/trailing-comma),
+// then applies domain normalization (severity canonicalisation) to the typed
+// result. The salvage is generic; only the severity fixup is review-specific.
 func parseSpecialistJSON(s string) (*specialistJSON, error) {
-	s = strings.TrimSpace(s)
-	o, err := tryParseSpecialistJSON(s)
-	if err == nil {
-		return o, nil
-	}
-	if extractJSONObject(s) == "" {
-		return nil, fmt.Errorf("no JSON object found")
-	}
-	return nil, err
-}
-
-func tryParseSpecialistJSON(s string) (*specialistJSON, error) {
-	var lastErr error
-	try := func(raw string) (*specialistJSON, error) { return parseStrict(raw) }
-
-	for _, c := range specialistJSONVariants(s) {
-		if o, err := try(c); err == nil {
-			return o, nil
-		} else {
-			lastErr = err
-		}
-		if obj := extractJSONObject(c); obj != "" {
-			if o, err := try(obj); err == nil {
-				return o, nil
-			} else {
-				lastErr = err
-			}
-			fixed := sanitizeTripleQuotedStringValues(obj)
-			if fixed != obj {
-				if o, err := try(fixed); err == nil {
-					return o, nil
-				} else {
-					lastErr = err
-				}
-			}
-			com := stripJSONCStyleComments(obj)
-			if com != obj {
-				if o, err := try(com); err == nil {
-					return o, nil
-				} else {
-					lastErr = err
-				}
-			}
-		}
-	}
-	return nil, lastErr
-}
-
-func parseStrict(s string) (*specialistJSON, error) {
-	var v specialistJSON
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
+	o, err := llmjson.Parse[specialistJSON](s)
+	if err != nil {
 		return nil, err
 	}
-	return &v, nil
+	normalizeSpecialistSeverities(&o)
+	return &o, nil
+}
+
+// normalizeSpecialistSeverities canonicalises each finding's severity at parse
+// time so unknown / synonym strings (e.g. "high", "nit") don't render verbatim
+// in the body. See normalizeSeverity.
+func normalizeSpecialistSeverities(o *specialistJSON) {
+	if o == nil {
+		return
+	}
+	for i := range o.Findings {
+		o.Findings[i].Severity = normalizeSeverity(o.Findings[i].Severity)
+	}
 }
 
 type specialistJSON struct {
@@ -595,90 +442,17 @@ type specialistJSON struct {
 }
 
 func parseVibeCoachJSON(s string) (*vibeCoachJSON, error) {
-	var lastErr error
-	for _, c := range specialistJSONVariants(strings.TrimSpace(s)) {
-		var v vibeCoachJSON
-		if err := json.Unmarshal([]byte(c), &v); err != nil {
-			lastErr = err
-		} else {
-			return &v, nil
-		}
-		if obj := extractJSONObject(c); obj != "" {
-			var v2 vibeCoachJSON
-			if err := json.Unmarshal([]byte(obj), &v2); err != nil {
-				lastErr = err
-			} else {
-				return &v2, nil
-			}
-			fixed := sanitizeTripleQuotedStringValues(obj)
-			if fixed != obj {
-				if err := json.Unmarshal([]byte(fixed), &v2); err != nil {
-					lastErr = err
-				} else {
-					return &v2, nil
-				}
-			}
-			com := stripJSONCStyleComments(obj)
-			if com != obj {
-				if err := json.Unmarshal([]byte(com), &v2); err != nil {
-					lastErr = err
-				} else {
-					return &v2, nil
-				}
-			}
-		}
+	v, err := llmjson.Parse[vibeCoachJSON](s)
+	if err != nil {
+		return nil, err
 	}
-	if lastErr != nil {
-		return nil, lastErr
-	}
-	return nil, fmt.Errorf("no JSON object found")
+	return &v, nil
 }
 
 type vibeCoachJSON struct {
 	Verdict string         `json:"verdict"`
 	Summary string         `json:"summary"`
 	Prompts []AuthorPrompt `json:"prompts"`
-}
-
-// extractJSONObject finds the first top-level {...} block in s. Naive but
-// good enough — counts braces, ignoring those inside strings.
-func extractJSONObject(s string) string {
-	start := strings.Index(s, "{")
-	if start < 0 {
-		return ""
-	}
-	depth := 0
-	inStr := false
-	esc := false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		if inStr {
-			if esc {
-				esc = false
-				continue
-			}
-			if c == '\\' {
-				esc = true
-				continue
-			}
-			if c == '"' {
-				inStr = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inStr = true
-		case '{':
-			depth++
-		case '}':
-			depth--
-			if depth == 0 {
-				return s[start : i+1]
-			}
-		}
-	}
-	return ""
 }
 
 func truncate(s string, max int) string {

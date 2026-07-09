@@ -1,0 +1,8 @@
+diff --git a/limit/bucket.go b/limit/bucket.go
+new file mode 100644
+--- /dev/null
++++ b/limit/bucket.go
+@@ -0,0 +1,3 @@
++package limit
++
++func Allow() bool { return true }

@@ -1,11 +1,13 @@
 package settings
 
-import "github.com/charmbracelet/lipgloss"
+import "github.com/madicen/appr-ai-sal/internal/tui/styles"
 
-// Local styles mirror internal/tui/styles.go so this package does not import tui.
+// Styles route through internal/tui/styles so the palette lives in one
+// place (no per-tab hex copies). The local names are kept so the render
+// call sites read the same as before.
 var (
-	dimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
-	boldStyle = lipgloss.NewStyle().Bold(true)
-	errStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#F7768E")).Bold(true)
-	okStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#9ECE6A"))
+	dimStyle  = styles.DimStyle
+	boldStyle = styles.BoldStyle
+	errStyle  = styles.ErrStyle
+	okStyle   = styles.OkStyle
 )

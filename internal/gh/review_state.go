@@ -1,13 +1,12 @@
 package gh
 
 import (
-	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/madicen/appr-ai-sal/internal/applog"
 )
 
 // Review states GitHub assigns to a submitted review. We only branch on a
@@ -134,6 +133,7 @@ func (s ReviewState) NeedsViewerReview() bool {
 const graphqlReviewQuery = `query($q: String!) {
   viewer { login }
   search(query: $q, type: ISSUE, first: 50) {
+    pageInfo { hasNextPage }
     nodes {
       ... on PullRequest {
         number
@@ -176,17 +176,26 @@ const graphqlReviewQuery = `query($q: String!) {
   }
 }`
 
-// graphqlReviewResponse mirrors the JSON shape of graphqlReviewQuery's output.
-// Exported only inside the package; callers consume parseReviewSearchResponse.
+// graphqlReviewData mirrors the `data` object of graphqlReviewQuery's output.
+// This is the T fed to graphQLQuery[graphqlReviewData] by ListPRs (go-gh
+// unmarshals straight into it), and also the inner payload the raw-bytes
+// parseReviewSearchResponse test-helper unwraps.
+type graphqlReviewData struct {
+	Viewer struct {
+		Login string `json:"login"`
+	} `json:"viewer"`
+	Search struct {
+		PageInfo pageInfo        `json:"pageInfo"`
+		Nodes    []graphqlPRNode `json:"nodes"`
+	} `json:"search"`
+}
+
+// graphqlReviewResponse is the full `{data, errors}` envelope. Retained so the
+// pure-function parseReviewSearchResponse (exercised directly by tests with
+// canned bytes) keeps working; the live path goes through graphQLQuery which
+// lets go-gh handle the envelope.
 type graphqlReviewResponse struct {
-	Data struct {
-		Viewer struct {
-			Login string `json:"login"`
-		} `json:"viewer"`
-		Search struct {
-			Nodes []graphqlPRNode `json:"nodes"`
-		} `json:"search"`
-	} `json:"data"`
+	Data   graphqlReviewData `json:"data"`
 	Errors []struct {
 		Message string `json:"message"`
 	} `json:"errors"`
@@ -303,9 +312,25 @@ func parseReviewSearchResponse(raw []byte) ([]PR, string, error) {
 		}
 		return nil, "", fmt.Errorf("graphql search: %s", strings.Join(msgs, "; "))
 	}
-	viewer := strings.TrimSpace(resp.Data.Viewer.Login)
-	prs := make([]PR, 0, len(resp.Data.Search.Nodes))
-	for _, n := range resp.Data.Search.Nodes {
+	prs, viewer := reviewDataToPRs(resp.Data)
+	return prs, viewer, nil
+}
+
+// reviewDataToPRs converts the parsed `data` object into the flattened PR list
+// plus the viewer login. Shared by the live graphQLQuery path (ListPRs) and
+// the raw-bytes parseReviewSearchResponse test seam so the node→PR mapping is
+// defined exactly once.
+func reviewDataToPRs(data graphqlReviewData) ([]PR, string) {
+	viewer := strings.TrimSpace(data.Viewer.Login)
+	// R6.3: the review queue is intentionally capped at the first 50 matches
+	// (nobody reviews a 50+ PR backlog in one sitting); a full cursor loop is
+	// overkill here, so we log an explicit overflow warning rather than
+	// silently hiding that more PRs matched.
+	if data.Search.PageInfo.HasNextPage {
+		applog.Warn("review queue truncated at 50 PRs", "viewer", viewer)
+	}
+	prs := make([]PR, 0, len(data.Search.Nodes))
+	for _, n := range data.Search.Nodes {
 		owner, repoName := splitRepo(n.Repository.NameWithOwner)
 		createdAt, _ := time.Parse(time.RFC3339, n.CreatedAt)
 		updatedAt, _ := time.Parse(time.RFC3339, n.UpdatedAt)
@@ -352,25 +377,5 @@ func parseReviewSearchResponse(raw []byte) ([]PR, string, error) {
 		}
 		prs = append(prs, pr)
 	}
-	return prs, viewer, nil
-}
-
-// runGraphQL invokes `gh api graphql` with the supplied query and variable
-// pairs (each of form name=value, gh's -F syntax). It's a thin wrapper over
-// exec.Command so tests can swap the executor with a fake.
-//
-// Kept as a var so tests can override.
-var runGraphQL = func(ctx context.Context, query string, vars map[string]string) ([]byte, error) {
-	args := []string{"api", "graphql", "-f", "query=" + query}
-	for k, v := range vars {
-		args = append(args, "-F", k+"="+v)
-	}
-	cmd := exec.CommandContext(ctx, "gh", args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("gh api graphql: %s", strings.TrimSpace(stderr.String()))
-	}
-	return stdout.Bytes(), nil
+	return prs, viewer
 }

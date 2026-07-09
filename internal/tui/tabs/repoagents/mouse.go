@@ -3,149 +3,67 @@ package repoagents
 import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	zone "github.com/lrstanley/bubblezone"
 
 	ra "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	ta "github.com/madicen/appr-ai-sal/internal/review/techagents"
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
+	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
-// handleMouse processes a single mouse event. Returns a non-nil command when
-// a click maps to an action; nil for ignored events (so the parent can fall
-// through to wheel scrolling).
+// handleMouse maps a left-click to an action via an ordered click table (see
+// zones.DispatchClick). Modal edit state short-circuits everything else;
+// otherwise the table is flat — only one panel's zones are ever registered
+// at a time, so unrendered zones simply miss (matching the original
+// fall-through if-chain). Wheel / non-press events return nil.
 func (m *Model) handleMouse(msg tea.MouseMsg) tea.Cmd {
-	if tea.MouseEvent(msg).IsWheel() {
-		return nil
-	}
-	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
-		return nil
-	}
-
 	if m.editing {
-		if z := zone.Get(ZoneEditSave); z != nil && z.InBounds(msg) {
-			return m.commitEdit()
-		}
-		if z := zone.Get(ZoneEditCancel); z != nil && z.InBounds(msg) {
-			m.editing = false
-			m.editKind = editKindNone
-			m.editArea.Blur()
-			return nil
-		}
-		return nil
+		return zones.DispatchClick(msg, []zones.ClickHandler{
+			{Zone: ZoneEditSave, Do: m.commitEdit},
+			{Zone: ZoneEditCancel, Do: func() tea.Cmd { m.editing = false; m.editKind = editKindNone; m.editArea.Blur(); return nil }},
+		})
 	}
-
-	if z := zone.Get(ZoneClose); z != nil && z.InBounds(msg) {
-		return state.NavigateTarget{Kind: state.NavBack}.Cmd()
+	h := []zones.ClickHandler{
+		{Zone: ZoneClose, Do: func() tea.Cmd { return state.NavigateTarget{Kind: state.NavBack}.Cmd() }},
+		{Zone: ZoneRepoDD, Do: func() tea.Cmd { return m.forwardToRepoDropdown(msg) }},
+		{Zone: ZoneAddRepoSave, Do: m.commitAddRepo},
+		{Zone: ZoneAddRepoCancel, Do: func() tea.Cmd { m.addingRepo = false; m.addInput.Blur(); return nil }},
+		{Zone: ZoneAddRepoField, Do: func() tea.Cmd { m.addInput.Focus(); return textinput.Blink }},
+		{Zone: ZoneAddRepoOpen, Do: func() tea.Cmd { m.openAddRepo(); return nil }},
+		{Zone: ZoneRemoveRepo, Do: m.removeCurrentRepoCmd},
+		{Zone: ZoneAddTechSave, Do: m.commitAddTech},
+		{Zone: ZoneAddTechCancel, Do: func() tea.Cmd { m.cancelAddTech(); return nil }},
+		{Zone: ZoneAddTechName, Do: func() tea.Cmd { m.focusTechName(); return textinput.Blink }},
+		{Zone: ZoneAddTechSeed, Do: func() tea.Cmd { m.focusTechSeed(); return textinput.Blink }},
+		{Zone: ZoneAddTechOpen, Do: func() tea.Cmd { m.openAddTech(); return nil }},
+		{Zone: ZoneSuggestTech, Do: m.startSuggestTechs},
+		{Zone: ZoneGenApproved, Do: m.generateApprovedCmd},
+		{Zone: ZoneDismissSuggest, Do: func() tea.Cmd { m.dismissSuggestions(); return nil }},
+		{Zone: ZoneRegenAll, Do: m.regenerateAllForCurrentRepo},
 	}
-	// Repo dropdown trigger: open the panel (the dropdown trusts the zone
-	// hit, so forwarding the press opens it regardless of coordinates).
-	if z := zone.Get(ZoneRepoDD); z != nil && z.InBounds(msg) {
-		return m.forwardToRepoDropdown(msg)
-	}
-	if m.addingRepo {
-		if z := zone.Get(ZoneAddRepoSave); z != nil && z.InBounds(msg) {
-			return m.commitAddRepo()
+	h = append(h, zones.ForEachRowZone(m.candidates, func(c ta.Candidate) []zones.ClickHandler {
+		t := ta.CanonicalTech(c.Tech)
+		return []zones.ClickHandler{
+			{Zone: zoneCandApprove(t), Do: func() tea.Cmd { m.setCandidateApproval(t, true); return nil }},
+			{Zone: zoneCandDeny(t), Do: func() tea.Cmd { m.setCandidateApproval(t, false); return nil }},
 		}
-		if z := zone.Get(ZoneAddRepoCancel); z != nil && z.InBounds(msg) {
-			m.addingRepo = false
-			m.addInput.Blur()
-			return nil
+	})...)
+	h = append(h, zones.ForEachRowZone(ra.Specialists, func(name string) []zones.ClickHandler {
+		return []zones.ClickHandler{
+			{Zone: zoneAgentRegen(name), Do: func() tea.Cmd { return m.startRegenerate(name) }},
+			{Zone: zoneAgentEdit(name), Do: func() tea.Cmd { m.startEdit(name); return nil }},
+			{Zone: zoneAgentDelete(name), Do: func() tea.Cmd { return m.startDelete(name) }},
 		}
-		if z := zone.Get(ZoneAddRepoField); z != nil && z.InBounds(msg) {
-			m.addInput.Focus()
-			return textinput.Blink
-		}
-	} else {
-		if z := zone.Get(ZoneAddRepoOpen); z != nil && z.InBounds(msg) {
-			m.openAddRepo()
-			return nil
-		}
-		if z := zone.Get(ZoneRemoveRepo); z != nil && z.InBounds(msg) {
-			return m.removeCurrentRepoCmd()
-		}
-	}
-	if m.addingTech {
-		if z := zone.Get(ZoneAddTechSave); z != nil && z.InBounds(msg) {
-			return m.commitAddTech()
-		}
-		if z := zone.Get(ZoneAddTechCancel); z != nil && z.InBounds(msg) {
-			m.cancelAddTech()
-			return nil
-		}
-		if z := zone.Get(ZoneAddTechName); z != nil && z.InBounds(msg) {
-			m.focusTechName()
-			return textinput.Blink
-		}
-		if z := zone.Get(ZoneAddTechSeed); z != nil && z.InBounds(msg) {
-			m.focusTechSeed()
-			return textinput.Blink
-		}
-	} else {
-		if z := zone.Get(ZoneAddTechOpen); z != nil && z.InBounds(msg) {
-			m.openAddTech()
-			return nil
-		}
-		if z := zone.Get(ZoneSuggestTech); z != nil && z.InBounds(msg) {
-			return m.startSuggestTechs()
-		}
-	}
-
-	// Suggested-technology candidate panel.
-	if len(m.candidates) > 0 {
-		if z := zone.Get(ZoneGenApproved); z != nil && z.InBounds(msg) {
-			return m.generateApprovedCmd()
-		}
-		if z := zone.Get(ZoneDismissSuggest); z != nil && z.InBounds(msg) {
-			m.dismissSuggestions()
-			return nil
-		}
-		for _, c := range m.candidates {
-			canonical := ta.CanonicalTech(c.Tech)
-			if z := zone.Get(zoneCandApprove(canonical)); z != nil && z.InBounds(msg) {
-				m.setCandidateApproval(canonical, true)
-				return nil
-			}
-			if z := zone.Get(zoneCandDeny(canonical)); z != nil && z.InBounds(msg) {
-				m.setCandidateApproval(canonical, false)
-				return nil
-			}
-		}
-	}
-
-	if z := zone.Get(ZoneRegenAll); z != nil && z.InBounds(msg) {
-		return m.regenerateAllForCurrentRepo()
-	}
-
-	for _, name := range ra.Specialists {
-		if z := zone.Get(zoneAgentRegen(name)); z != nil && z.InBounds(msg) {
-			return m.startRegenerate(name)
-		}
-		if z := zone.Get(zoneAgentEdit(name)); z != nil && z.InBounds(msg) {
-			m.startEdit(name)
-			return nil
-		}
-		if z := zone.Get(zoneAgentDelete(name)); z != nil && z.InBounds(msg) {
-			return m.startDelete(name)
-		}
-	}
-
-	// Per-tech chips: the configured set is dynamic, so we iterate the
-	// current repo's loaded TechAgents rather than a fixed list.
+	})...)
 	if cur := m.currentTechs(); cur != nil {
-		for _, t := range cur.SortedTechs() {
-			if z := zone.Get(zoneTechRegen(t)); z != nil && z.InBounds(msg) {
-				return m.startRegenerateTech(t)
+		h = append(h, zones.ForEachRowZone(cur.SortedTechs(), func(t string) []zones.ClickHandler {
+			return []zones.ClickHandler{
+				{Zone: zoneTechRegen(t), Do: func() tea.Cmd { return m.startRegenerateTech(t) }},
+				{Zone: zoneTechEditBrief(t), Do: func() tea.Cmd { m.startEditTech(t); return nil }},
+				{Zone: zoneTechDelete(t), Do: func() tea.Cmd { return m.startDeleteTech(t) }},
 			}
-			if z := zone.Get(zoneTechEditBrief(t)); z != nil && z.InBounds(msg) {
-				m.startEditTech(t)
-				return nil
-			}
-			if z := zone.Get(zoneTechDelete(t)); z != nil && z.InBounds(msg) {
-				return m.startDeleteTech(t)
-			}
-		}
+		})...)
 	}
-	return nil
+	return zones.DispatchClick(msg, h)
 }
 
 func (m *Model) removeCurrentRepoCmd() tea.Cmd {
@@ -155,6 +73,6 @@ func (m *Model) removeCurrentRepoCmd() tea.Cmd {
 	}
 	return func() tea.Msg {
 		err := ra.DeleteRepo(owner, repo)
-		return repoRemovedMsg{Owner: owner, Repo: repo, Err: err}
+		return repoRemovedMsg{Key: repoKey{owner, repo}, Err: err}
 	}
 }

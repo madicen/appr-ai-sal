@@ -1,0 +1,40 @@
+ appr-ai-sal · review queue
+ ╭────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+ │  filter    teams+you      explicit only      my PRs                                                 refresh (R)    │
+ │                                                                                                                    │
+ │  search  ▎ filter by title, repo, or author                url     ▎ https://github.com/owner/repo/pull/123  or …  │
+ ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+    PRs · review requested (@me, incl. teams)
+
+   5 items
+
+ │ #318  Replace flat file list with hierarchical tree + line-number gutter
+ │ madicen/appr-ai-sal · @madicen · <time> · +68/-0 · 3 files · checks fail · no review · needs you
+
+   #56  [plumbing-svc] retry 429 with jittered backoff in publish path
+   madicen/plumbing-svc · @lin-q · <time> · +52/-14 · 4 files · checks pass · no review · needs you
+
+   #742  Stream review progress events through the persistent overlay
+   madicen/appr-ai-sal · @madicen · <time> · +142/-37 · 6 files · checks pending · no review · needs you
+
+   #109  Add convention-witness pass between specialists and the repo arbiter
+   madicen/appr-ai-sal · @alex-r · <time> · +412/-96 · 11 files · checks pass · changes requested · you reviewed
+
+   #22  [plumbing-svc] doc: clarify retention semantics for archived topics
+   madicen/plumbing-svc · @kim-d · <time> · +18/-7 · 2 files · checks pass · approved
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ↑/↓ · click · double-click open · enter · tab fields · / search · u URL · esc clear · f filter · O browser · o/,
+ settings · ctrl+g repo ctx · ctrl+r repo agents · ctrl+l lang experts · ctrl+b build agents (stale) · R refresh ·
+ ctrl+k commands · ? help · q quit · DRY-RUN

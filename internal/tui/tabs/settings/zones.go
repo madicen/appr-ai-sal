@@ -6,8 +6,14 @@ const (
 	ZoneStrictnessDD = "zone:settings:dd:strictness"
 	ZoneProfileDD    = "zone:settings:dd:profile"
 	ZoneProviderDD   = "zone:settings:dd:provider"
+	ZonePresetDD     = "zone:settings:dd:preset"
+	// Model listing (Phase 6 item 3): the fetch button (shown before a list
+	// is fetched) and the model picker dropdown (shown after a successful
+	// fetch). Fail-open: on error the button is kept so manual entry works.
+	ZoneModelFetch = "zone:settings:model:fetch"
+	ZoneModelDD    = "zone:settings:dd:model"
 
-	ZoneSettingsSave   = "zone:settings:save"
+	ZoneSettingsSave       = "zone:settings:save"
 	ZoneSettingsCancel     = "zone:settings:cancel"
 	ZoneSettingsTabReview  = "zone:settings:tab:review-ai"
 	ZoneSettingsTabRepoCtx = "zone:settings:tab:repo-context"

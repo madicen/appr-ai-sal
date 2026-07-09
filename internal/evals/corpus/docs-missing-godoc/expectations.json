@@ -1,0 +1,16 @@
+{
+  "must_appear": [
+    {
+      "specialist": "docs",
+      "path": "config/load.go",
+      "line": 3,
+      "line_tolerance": 1,
+      "pattern": "(?i)doc comment|document",
+      "note": "seeded missing-godoc (suggestion should survive + anchor-hit)"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": {
+    "docs": true
+  }
+}

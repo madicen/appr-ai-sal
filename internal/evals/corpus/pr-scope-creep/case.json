@@ -1,0 +1,15 @@
+{
+  "id": "pr-scope-creep",
+  "title": "Add cache plus dependency bump",
+  "target": "scope",
+  "repo": "acme/app",
+  "number": 112,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/cache",
+  "body": "Adds an in-memory cache and bumps the redis client.",
+  "strictness": "balanced",
+  "additions": 4,
+  "changed_files": 2,
+  "run_pr_agents": true
+}

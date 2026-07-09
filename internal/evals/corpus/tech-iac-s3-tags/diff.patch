@@ -1,0 +1,11 @@
+diff --git a/infra/main.tf b/infra/main.tf
+new file mode 100644
+--- /dev/null
++++ b/infra/main.tf
+@@ -0,0 +1,6 @@
++provider "aws" {}
++
++resource "aws_s3_bucket_policy" "b" {
++  bucket = aws_s3_bucket.b.id
++  policy = data.aws_iam_policy_document.b.json
++}

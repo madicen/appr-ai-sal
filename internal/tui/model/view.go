@@ -5,34 +5,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
 
+	"github.com/madicen/appr-ai-sal/internal/tui/keys"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
-	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
-
-// renderDescriptionPane renders the PR description as the centre pane's
-// full content. Body is treated as markdown — GitHub PR descriptions
-// always are — and run through glamour so headings, lists, code fences,
-// and links render with proper styling instead of as raw `# foo` text.
-// An empty body falls back to a dim hint so the user knows the PR has no
-// description rather than thinking the pane failed to load.
-func renderDescriptionPane(body string, width int) string {
-	width = max(8, width)
-	var b strings.Builder
-	b.WriteString(styles.BoldStyle.Render("Description") + "  " +
-		zone.Mark(zones.DescriptionToggle, styles.DimStyle.Render(" hide (g) ")) + "\n\n")
-	body = strings.TrimSpace(body)
-	if body == "" {
-		b.WriteString(styles.DimStyle.Render("(this PR has no description)"))
-		return b.String()
-	}
-	b.WriteString(util.RenderMarkdownIndented(body, width, 0))
-	return b.String()
-}
 
 func (m *Model) View() string {
 	if m.width == 0 || m.height == 0 {
@@ -43,10 +24,6 @@ func (m *Model) View() string {
 	body := m.renderBody()
 	status := m.renderStatus()
 	main := lipgloss.JoinVertical(lipgloss.Left, header, body, status)
-	// Composite the PR-detail controls profile dropdown (if open) onto the
-	// full-screen view before the overlay stack so it anchors to its
-	// trigger using absolute coordinates.
-	main = m.overlayControlsProfile(main)
 	out := m.overlayStack.View(main, m.width, m.height)
 	return zone.Scan(out)
 }
@@ -81,7 +58,6 @@ func (m *Model) renderHeader() string {
 // renderDetailMiniHeader is a one-line strip above the detail body that shows
 // PR meta, diff stats, and quick chips for description / approval reopen.
 func (m *Model) renderBody() string {
-	bodyH := m.chromeBodyHeight()
 	switch m.mode {
 	case modeList:
 		panel := renderListPanel(m)
@@ -93,22 +69,25 @@ func (m *Model) renderBody() string {
 		}
 		return lipgloss.JoinVertical(lipgloss.Left, panel, styles.AppPadding.Render(m.list.View()))
 	case modeDetail:
-		return m.renderPRDetailBody(bodyH)
+		if tab := m.tabs[modeDetail]; tab != nil {
+			return tab.View()
+		}
+		return styles.AppPadding.Render("detail unavailable")
 	case modeSettings:
-		if m.settings == nil {
-			return styles.AppPadding.Render("settings unavailable")
+		if tab := m.tabs[modeSettings]; tab != nil {
+			return tab.View()
 		}
-		return m.settings.View()
+		return styles.AppPadding.Render("settings unavailable")
 	case modeRepoAgents:
-		if m.repoAgents == nil {
-			return styles.AppPadding.Render("repo agents unavailable")
+		if tab := m.tabs[modeRepoAgents]; tab != nil {
+			return tab.View()
 		}
-		return m.repoAgents.View()
+		return styles.AppPadding.Render("repo agents unavailable")
 	case modeLangAgents:
-		if m.langAgents == nil {
-			return styles.AppPadding.Render("language experts unavailable")
+		if tab := m.tabs[modeLangAgents]; tab != nil {
+			return tab.View()
 		}
-		return m.langAgents.View()
+		return styles.AppPadding.Render("language experts unavailable")
 	}
 	return ""
 }
@@ -142,46 +121,62 @@ func joinStatusSegs(segs []statusSeg) string {
 }
 
 func (m *Model) statusSegs() []statusSeg {
+	km := m.keys
+	// seg builds a status segment whose label is derived from a keymap
+	// binding (keys.SegText) so the hint text can never drift from the key
+	// that triggers it. The zone (when set) makes the hint clickable.
+	seg := func(b key.Binding, z string) statusSeg {
+		return statusSeg{text: keys.SegText(b), zone: z}
+	}
 	var segs []statusSeg
 	switch m.mode {
 	case modeList:
 		owner, repo := m.repoAgentsFreshnessForListSelection()
 		lOwner, lRepo, lNum := m.listSelectionForLangFreshness()
 		segs = []statusSeg{
-			{text: "↑/↓"},
-			{text: "click"},
-			{text: "double-click open"},
-			{text: "enter"},
-			{text: "tab fields"},
-			{text: "/ search", zone: zones.StatusSearch},
-			{text: "u URL", zone: zones.StatusURL},
-			{text: "esc clear"},
-			{text: "f filter", zone: zones.StatusFilter},
-			{text: "O browser", zone: zones.StatusOpenBrowser},
-			{text: "o/, settings", zone: zones.StatusSettingsAI},
-			{text: "ctrl+g repo ctx", zone: zones.StatusRepoCtx},
-			{text: "ctrl+r repo agents", zone: zones.StatusRepoAgents},
+			seg(km.ListNav, ""),
+			seg(km.ListClick, ""),
+			seg(km.ListOpenClick, ""),
+			seg(km.ListOpen, ""),
+			seg(km.ListCycleFocus, ""),
+			seg(km.ListSearch, zones.StatusSearch),
+			seg(km.ListURL, zones.StatusURL),
+			seg(km.ListClearSearch, ""),
+			seg(km.ListFilter, zones.StatusFilter),
+			seg(km.Browser, zones.StatusOpenBrowser),
+			seg(km.SettingsAI, zones.StatusSettingsAI),
+			seg(km.RepoCtx, zones.StatusRepoCtx),
+			seg(km.RepoAgents, zones.StatusRepoAgents),
+			// The lang / build-agents hints carry a dynamic freshness
+			// suffix (missing / stale), so their text is rendered from the
+			// per-PR freshness state rather than the plain binding label;
+			// the base label ("ctrl+l lang experts" / "ctrl+b build
+			// agents") still matches the keymap keys.
 			{text: m.renderBuildLangAgentsHint(lOwner, lRepo, lNum), zone: zones.StatusLangAgents},
 			{text: m.renderBuildAgentsHint(owner, repo), zone: zones.StatusBuildAgents},
-			{text: "R refresh", zone: zones.StatusRefresh},
-			{text: "q quit", zone: zones.StatusQuit},
+			seg(km.ListRefresh, zones.StatusRefresh),
+			seg(km.Palette, zones.StatusPalette),
+			seg(km.Help, zones.StatusHelp),
+			seg(km.ListQuit, zones.StatusQuit),
 		}
 	case modeDetail:
 		// Per-agent state (repo / tech / lang) is owned by the right-hand
 		// "Review controls" pane now; the bottom status bar carries only
 		// the cross-cutting keybindings.
 		segs = []statusSeg{
-			{text: "tab pane", zone: zones.StatusCyclePane},
-			{text: "j/k nav"},
-			{text: "space fold"},
-			{text: "r review", zone: zones.StatusReview},
-			{text: "c toggle controls", zone: zones.StatusToggleControls},
-			{text: "a reopen approval", zone: zones.StatusReopenApproval},
-			{text: "O browser", zone: zones.StatusOpenBrowser},
-			{text: "g description", zone: zones.StatusDescription},
-			{text: "d diff-only", zone: zones.StatusDiffOnly},
-			{text: "P bulk", zone: zones.StatusBulk},
-			{text: "esc back", zone: zones.StatusBack},
+			seg(km.DetailCyclePane, zones.StatusCyclePane),
+			seg(km.DetailNav, ""),
+			seg(km.DetailFold, ""),
+			seg(km.DetailReview, zones.StatusReview),
+			seg(km.DetailToggleControls, zones.StatusToggleControls),
+			seg(km.DetailReopenApproval, zones.StatusReopenApproval),
+			seg(km.Browser, zones.StatusOpenBrowser),
+			seg(km.DetailDescription, zones.StatusDescription),
+			seg(km.DetailDiffOnly, zones.StatusDiffOnly),
+			seg(km.DetailBulk, zones.StatusBulk),
+			seg(km.Palette, zones.StatusPalette),
+			seg(km.Help, zones.StatusHelp),
+			seg(km.DetailBack, zones.StatusBack),
 		}
 	case modeSettings:
 		// The settings tab strip, Save/Cancel, strictness rows, and
@@ -260,21 +255,6 @@ func humanSince(t time.Time) string {
 	default:
 		return t.Format("2006-01-02")
 	}
-}
-
-// truncWidth truncates by byte length (not terminal cells). Safe only for plain
-// ASCII; strings with ANSI or wide runes need ansi.Truncate.
-func truncWidth(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	if len(s) <= w {
-		return s
-	}
-	if w <= 1 {
-		return "…"
-	}
-	return s[:w-1] + "…"
 }
 
 func max(a, b int) int {

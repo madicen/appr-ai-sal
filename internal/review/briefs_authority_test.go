@@ -174,7 +174,7 @@ func TestBuildReviewUserPromptEmitsBriefsReReadReminder(t *testing.T) {
 	pr := &gh.PR{Number: 1, Title: "x", Repository: "acme/widget", BaseRef: "main", HeadRef: "feat"}
 
 	t.Run("no briefs, no reminder", func(t *testing.T) {
-		got := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced, "", "", "", "")
+		got := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced, "", "", "", "", "", "", "")
 		if strings.Contains(got, "Before emitting findings") {
 			t.Errorf("reminder should be omitted when no briefs are present:\n%s", got)
 		}
@@ -184,8 +184,11 @@ func TestBuildReviewUserPromptEmitsBriefsReReadReminder(t *testing.T) {
 		got := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced,
 			"REPO_BRIEF",
 			"EVIDENCE_BRIEF",
+			"",
 			"## Language: Go\n\nLANG",
 			"## Technology context: Kestra\n\nTECH",
+			"",
+			"",
 		)
 		mustContain := []string{
 			"Before emitting findings",
@@ -224,8 +227,11 @@ func TestBuildReviewUserPromptEmitsBriefsReReadReminder(t *testing.T) {
 		got := buildReviewUserPrompt(pr, "diff", aiconfig.ReviewBalanced,
 			"",
 			"",
+			"",
 			"## Language: Go\n\nLANG",
 			"## Technology context: Kestra\n\nTECH",
+			"",
+			"",
 		)
 		if !strings.Contains(got, "Before emitting findings") {
 			t.Fatalf("reminder should appear when lang+tech are present:\n%s", got)

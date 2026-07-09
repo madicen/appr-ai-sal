@@ -1,0 +1,14 @@
+- **What this repo handles that's security-sensitive.** Auth, sessions,
+  cookies, JWTs, crypto routines, file uploads, shell exec, SQL queries,
+  template rendering, deserialization, request signing, rate limiting,
+  audit logs.
+- **Approved patterns and libraries.** Which crypto / auth / sanitization
+  libraries the repo standardises on; named middlewares; centralised request
+  validation.
+- **Anti-patterns the repo explicitly forbids.** From AGENTS.md / CONTRIBUTING
+  / past review bodies: hard rules ("never use `os/exec` with shell=true",
+  "secrets must come from `internal/secrets`", "no raw SQL outside `db/`").
+- **Defense-in-depth conventions.** Headers (HSTS, CSP), cookie flags,
+  CORS posture, logging redaction, error-message sanitization rules.
+- **Dependency / supply-chain norms.** Pinning policy, SBOM tooling, lockfile
+  rules, allowed registries.

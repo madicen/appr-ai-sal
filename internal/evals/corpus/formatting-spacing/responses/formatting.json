@@ -1,0 +1,23 @@
+{
+  "summary": "One gofmt spacing issue and a naming nit.",
+  "findings": [
+    {
+      "path": "calc/compute.go",
+      "line": 4,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Missing spaces around the := operator; gofmt formats this with spaces.",
+      "suggestion": "\ttotal := 0",
+      "anchor_excerpt": "\ttotal:=0"
+    },
+    {
+      "path": "calc/compute.go",
+      "line": 3,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Rename the Compute function to compute_total to follow snake_case naming.",
+      "suggestion": "func compute_total(items []int) int {",
+      "anchor_excerpt": "func Compute(items []int) int {"
+    }
+  ]
+}

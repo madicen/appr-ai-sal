@@ -2,16 +2,14 @@ package repoagents
 
 import (
 	"context"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review/repocontext"
@@ -19,11 +17,6 @@ import (
 
 //go:embed all:prompts
 var promptFS embed.FS
-
-// CompleteFunc runs LLM inference. Callers pass review.Complete here; the
-// indirection avoids an import cycle (review needs to import repoagents to
-// load briefs at review time).
-type CompleteFunc func(ctx context.Context, cfg *aiconfig.Config, system, user, worktree string) (string, error)
 
 // HistoryFetcher returns a markdown review-history digest for owner/repo
 // (capped to maxBytes). Pass gh.BuildReviewHistoryDigest. May be nil — in
@@ -38,14 +31,14 @@ type PathHistoryFetcher func(ctx context.Context, owner, repo string) (string, e
 
 // GenerateOpts collects inputs for a single agent regeneration.
 type GenerateOpts struct {
-	AICfg     *aiconfig.Config
-	RC        *repoconfig.Config
-	Owner     string
-	Repo      string
-	Worktree  string // optional; LocalRoot or temp dir is used when empty
+	AICfg      *aiconfig.Config
+	RC         *repoconfig.Config
+	Owner      string
+	Repo       string
+	Worktree   string // optional; LocalRoot or temp dir is used when empty
 	Specialist string
-	Complete  CompleteFunc
-	History   HistoryFetcher // optional
+	Complete   ai.CompleteFunc
+	History    HistoryFetcher // optional
 	// PathHistory returns repo-wide PR-touch evidence (testing and docs only).
 	// Skipped when nil or specialist is not "testing" / "docs".
 	PathHistory PathHistoryFetcher
@@ -159,64 +152,29 @@ func Generate(ctx context.Context, opts GenerateOpts) (*Agent, error) {
 		Manual:      false,
 		Provider:    string(opts.AICfg.Provider),
 		Model:       opts.AICfg.AIModelOrDefault(),
-		SourceHash:  sourceHash(bundle, historyDigest, repoEvidence, pathHistory),
+		SourceHash:  agentstore.SourceHash(bundle, historyDigest, repoEvidence, pathHistory),
 	}
 	return agent, nil
 }
 
-func sourceHash(parts ...string) string {
-	h := sha256.New()
-	for _, p := range parts {
-		_, _ = h.Write([]byte(p))
-		_, _ = h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil)[:8])
+func overrideName(specialist string) string {
+	return "repo-agent-" + strings.ToLower(strings.TrimSpace(specialist)) + ".md"
 }
 
 func loadGeneratorPrompt(specialist string) (string, error) {
-	if override, ok, err := readPromptOverride(specialist); err != nil {
+	// Q3.10: assemble from template + delta; user override wins when present.
+	if override, ok, err := agentstore.ReadPromptOverride(overrideName(specialist)); err != nil {
 		return "", err
 	} else if ok {
 		return override, nil
 	}
-	name := "prompts/repo-agent-" + specialist + ".md"
-	b, err := fs.ReadFile(promptFS, name)
-	if err != nil {
-		return "", fmt.Errorf("load repo-agent prompt %q: %w", specialist, err)
-	}
-	return string(b), nil
+	return RenderRepoAgentPrompt(specialist)
 }
 
 // PromptOverridePath is where users may write a custom generator prompt to
 // replace the embedded one for a specialist.
 func PromptOverridePath(specialist string) string {
-	return filepath.Join(configDir(), "prompts", "repo-agent-"+strings.ToLower(strings.TrimSpace(specialist))+".md")
-}
-
-func readPromptOverride(specialist string) (string, bool, error) {
-	p := PromptOverridePath(specialist)
-	b, err := os.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("read override %s: %w", p, err)
-	}
-	return string(b), true, nil
-}
-
-func configDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CONFIG_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".appr-ai-sal"
-	}
-	return filepath.Join(home, ".config", "appr-ai-sal")
+	return agentstore.PromptOverridePath(overrideName(specialist))
 }
 
 func buildGeneratorUserPrompt(specialist, owner, repo, bundle, history, repoEvidence, pathHistory string) string {

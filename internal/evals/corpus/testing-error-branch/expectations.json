@@ -1,0 +1,21 @@
+{
+  "must_appear": [
+    {
+      "specialist": "testing",
+      "path": "",
+      "pattern": "(?i)unit test.*divide|b == 0|errBadInput",
+      "note": "actionable test-gap (proposes what to add) should survive"
+    }
+  ],
+  "must_not_appear": [
+    {
+      "specialist": "testing",
+      "path": "svc/divide.go",
+      "pattern": "(?i)missing tests",
+      "note": "scar tissue: bare 'missing tests' deficiency — actionability gate must demote it below the balanced floor"
+    }
+  ],
+  "expect_json_first_try": {
+    "testing": true
+  }
+}

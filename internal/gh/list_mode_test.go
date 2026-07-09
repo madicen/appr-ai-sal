@@ -87,11 +87,7 @@ func TestListPRsExplicitNarrowsByViewerStillRequested(t *testing.T) {
       }
     }`
 
-	prev := runGraphQL
-	runGraphQL = func(_ context.Context, _ string, _ map[string]string) ([]byte, error) {
-		return []byte(payload), nil
-	}
-	defer func() { runGraphQL = prev }()
+	stubGraphQL(t, payload)
 
 	all, err := ListPRs(context.Background(), ListModeReviewTeams)
 	if err != nil {

@@ -3,57 +3,37 @@ package langagents
 import (
 	"strings"
 	"time"
+
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
 )
 
 // Freshness summarises the per-language brief cache state from a
-// reviewer's perspective. Mirrors repoagents.Freshness so the TUI can
-// reuse its semantics: missing / partial / stale / fresh, plus an
-// "unknown" zero value for "we don't know yet."
+// reviewer's perspective. The type and its states/labels are shared with
+// repoagents via internal/agentstore (their semantics coincide exactly):
+// missing / partial / stale / fresh, plus an "unknown" zero value for "we
+// don't know yet." The constants re-export the shared ones so existing
+// callers keep using langagents.FreshnessX unchanged.
 //
 // All language briefs are LLM-generated into the user cache; there is
 // no bundled "always fresh" tier. A missing language brief is therefore
 // reported as FreshnessMissing — the right state to nudge the user
 // toward the Generate action in the TUI.
-type Freshness int
+type Freshness = agentstore.Freshness
 
 const (
-	FreshnessUnknown Freshness = iota
-	FreshnessMissing
-	FreshnessIncomplete
-	FreshnessStale
-	FreshnessFresh
+	FreshnessUnknown    = agentstore.FreshnessUnknown
+	FreshnessMissing    = agentstore.FreshnessMissing
+	FreshnessIncomplete = agentstore.FreshnessIncomplete
+	FreshnessStale      = agentstore.FreshnessStale
+	FreshnessFresh      = agentstore.FreshnessFresh
 )
-
-// String returns a short human label for the state.
-func (f Freshness) String() string {
-	switch f {
-	case FreshnessMissing:
-		return "missing"
-	case FreshnessIncomplete:
-		return "partial"
-	case FreshnessStale:
-		return "stale"
-	case FreshnessFresh:
-		return "fresh"
-	default:
-		return "unknown"
-	}
-}
-
-// NeedsAttention is true when the reviewer should be warned visually.
-func (f Freshness) NeedsAttention() bool {
-	switch f {
-	case FreshnessMissing, FreshnessIncomplete, FreshnessStale:
-		return true
-	default:
-		return false
-	}
-}
 
 // DefaultStaleAfter is the age at which a cached language brief gets
 // flagged as stale. Long-ish since language conventions don't actually
 // shift week-to-week; short enough that a brief generated against an
-// old model gets re-run after a couple of months.
+// old model gets re-run after a couple of months. Note this is 60d
+// versus repoagents/techagents' 30d — the per-family window is passed
+// into agentstore.StaleScan.Stale rather than baked in.
 const DefaultStaleAfter = 60 * 24 * time.Hour
 
 // ComputeLanguage returns freshness for a single canonical language.
@@ -75,10 +55,9 @@ func ComputeLanguage(lang Language, cache *LangAgents, now time.Time, staleAfter
 	if !ok || strings.TrimSpace(a.Context) == "" {
 		return FreshnessMissing
 	}
-	if a.GeneratedAt.IsZero() {
-		return FreshnessStale
-	}
-	if staleAfter > 0 && now.Sub(a.GeneratedAt) > staleAfter {
+	var scan agentstore.StaleScan
+	scan.Observe(a.Context, a.GeneratedAt)
+	if scan.Stale(now, staleAfter) {
 		return FreshnessStale
 	}
 	return FreshnessFresh

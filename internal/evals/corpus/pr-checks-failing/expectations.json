@@ -1,0 +1,16 @@
+{
+  "must_appear": [
+    {
+      "specialist": "checks",
+      "path": "build/run.go",
+      "line": 3,
+      "line_tolerance": 1,
+      "pattern": "(?i)ci|lint|check",
+      "note": "checks agent anchors a failing-check note to the changed line"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": {
+    "checks": true
+  }
+}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 
+	detailtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/detail"
 	reviewtab "github.com/madicen/appr-ai-sal/internal/tui/tabs/review"
 )
 
@@ -34,10 +35,11 @@ func TestReviewOverlayMousePassThroughToDetailTree(t *testing.T) {
 	// Pin the tree pane narrow so it stays well to the left of the
 	// centered modal. Without this the layout sometimes hands the
 	// tree a wider slot and the row-end marker lands under the modal.
-	m.treePaneWidth = minTreePaneWidth
-	m.relayout()
-	m.treeIdx = len(m.treeRows) - 1
-	m.selectedFilePath = m.treeRows[m.treeIdx].Path
+	detailState(t, m).SetTreePaneWidth(detailtab.MinTreePaneWidth)
+	m.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+	rows := detailState(t, m).TreeRows()
+	detailState(t, m).SetTreeIdx(len(rows) - 1)
+	detailState(t, m).SetSelectedFilePath(rows[len(rows)-1].Path)
 	m.refreshDetailViews()
 	_ = m.View()
 	waitBubbleZone(t, zones.TreeFile(0))
@@ -59,16 +61,18 @@ func TestReviewOverlayMousePassThroughToDetailTree(t *testing.T) {
 
 	clickMsg := clickCenterOfZone(t, zones.TreeFile(0))
 	if m.overlayStack.MouseTargetsTop(clickMsg, m.width, m.height) {
-		t.Fatalf("test precondition: click at TreeFile(0) (%d, %d) should be outside the review modal — viewport=%dx%d, treePaneWidth=%d", clickMsg.X, clickMsg.Y, m.width, m.height, m.treePaneWidth)
+		t.Fatalf("test precondition: click at TreeFile(0) (%d, %d) should be outside the review modal — viewport=%dx%d, treePaneWidth=%d", clickMsg.X, clickMsg.Y, m.width, m.height, detailState(t, m).TreePaneWidth())
 	}
 
 	out, _ := m.Update(clickMsg)
 	m2 := out.(*Model)
-	if m2.treeIdx != 0 {
-		t.Fatalf("expected pass-through click to set treeIdx=0 (first file), got %d — the overlay stack is still swallowing background clicks", m2.treeIdx)
+	dt := detailState(t, m2)
+	if dt.TreeIdx() != 0 {
+		t.Fatalf("expected pass-through click to set treeIdx=0 (first file), got %d — the overlay stack is still swallowing background clicks", dt.TreeIdx())
 	}
-	if m2.selectedFilePath != m2.treeRows[0].Path {
-		t.Fatalf("selectedFilePath did not follow the click: got %q want %q", m2.selectedFilePath, m2.treeRows[0].Path)
+	rows2 := dt.TreeRows()
+	if dt.SelectedFilePath() != rows2[0].Path {
+		t.Fatalf("selectedFilePath did not follow the click: got %q want %q", dt.SelectedFilePath(), rows2[0].Path)
 	}
 }
 
@@ -187,7 +191,6 @@ func TestReviewOverlayBodyClickReachesReviewModelViaFullUpdate(t *testing.T) {
 	clickMsg := tea.MouseMsg{
 		X:      clickX,
 		Y:      clickY,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
@@ -234,7 +237,6 @@ func TestReviewOverlayBodyClickReachesReviewModelViaFullUpdate(t *testing.T) {
 	secondClick := tea.MouseMsg{
 		X:      (secondZone.StartX + secondZone.EndX) / 2,
 		Y:      (secondZone.StartY + secondZone.EndY) / 2,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
@@ -278,7 +280,6 @@ func TestReviewOverlayBodyClickAfterMinimizeRestore(t *testing.T) {
 	minimizeClick := tea.MouseMsg{
 		X:      leftPos + regs.MinimizeX + regs.MinimizeW/2,
 		Y:      topPos + regs.MinimizeY,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
@@ -300,7 +301,6 @@ func TestReviewOverlayBodyClickAfterMinimizeRestore(t *testing.T) {
 	restoreClick := tea.MouseMsg{
 		X:      leftPos + regs.MinimizeX + regs.MinimizeW/2,
 		Y:      topPos + regs.MinimizeY,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
@@ -321,7 +321,6 @@ func TestReviewOverlayBodyClickAfterMinimizeRestore(t *testing.T) {
 	bodyClick := tea.MouseMsg{
 		X:      (target.StartX + target.EndX) / 2,
 		Y:      (target.StartY + target.EndY) / 2,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}

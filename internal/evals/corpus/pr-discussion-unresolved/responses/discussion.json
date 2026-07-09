@@ -1,0 +1,11 @@
+{
+  "summary": "An open reviewer request has not been addressed.",
+  "findings": [
+    {
+      "path": "",
+      "line": 0,
+      "severity": "warning",
+      "comment": "A reviewer asked in the conversation to add a CHANGELOG entry for this change; that request has not been addressed in this PR."
+    }
+  ]
+}

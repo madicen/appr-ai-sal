@@ -8,11 +8,21 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/madicen/appr-ai-sal/internal/review"
+	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 )
 
 // CloseMsg is the signal the overlay sends to the root model when
 // the user is done (or chose to abort). Root then pops the stack.
 type CloseMsg struct{}
+
+// JumpToDiffMsg asks the root model to scroll the PR-detail diff pane to a
+// finding's anchor (Phase 5 item 4 "jump from an approval card to its diff
+// position"). The root minimizes the review overlay so the diff is visible and
+// calls JumpToFinding(Path, Line).
+type JumpToDiffMsg struct {
+	Path string
+	Line int
+}
 
 // ChromeTitleFallback is the static tab title the bubble-overlay stack
 // renders when our OverlayTitle() method returns "" (which it never does
@@ -30,7 +40,7 @@ const ChromeTitleFallback = "appr-ai-sal · review"
 // CloseMsg handler is a no-op on the empty stack — Pop is idempotent —
 // so we don't double-pop.
 func (m *Model) OnOverlayClose() tea.Cmd {
-	return func() tea.Msg { return CloseMsg{} }
+	return m.closeCmd()
 }
 
 // OverlayTitle satisfies bubble-overlay's OverlayTitler interface so the
@@ -116,6 +126,31 @@ func (m *Model) OnOverlayResize(contentW, contentH int) tea.Cmd {
 	return nil
 }
 
+// adoptUsage installs a usage snapshot, ignoring one that regresses the call
+// count. Running-total events come off the runner from parallel goroutines, so
+// they can arrive slightly out of order; guarding on call count keeps the
+// displayed total monotonic. The final "done" snapshot always has the highest
+// call count, so it wins.
+func (m *Model) adoptUsage(u *review.RunUsage) {
+	if u == nil {
+		return
+	}
+	if m.runUsage != nil && u.Calls < m.runUsage.Calls {
+		return
+	}
+	m.runUsage = u
+}
+
+// usageLine renders the compact usage/cost/time summary shown in the overview
+// done-state and the run summary, or "" when no metered inference happened
+// (demo/test runs, or before the first call reports).
+func (m *Model) usageLine() string {
+	if m.runUsage == nil || !m.runUsage.HasData() {
+		return ""
+	}
+	return styles.DimStyle.Render("Usage · ") + m.runUsage.Summary()
+}
+
 func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 	switch p.Stage {
 	case "checkout":
@@ -177,7 +212,27 @@ func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 		if p.Err != nil {
 			m.log = append(m.log, "fetch PR: "+p.Err.Error())
 		}
+	case "circuit-breaker":
+		// R4: the run's circuit breaker tripped; remaining stages are skipped.
+		m.log = append(m.log, "circuit breaker: "+p.Detail)
+	case "degraded":
+		// R4: partial-degradation summary (which stages failed vs were skipped).
+		m.log = append(m.log, "degraded run — "+p.Detail)
+	case "activity":
+		// P6 streaming token-liveness — bump the running agent row's streamed
+		// token count so a long streaming call visibly progresses.
+		if p.Activity != nil {
+			m.applyActivity(p.Activity)
+		}
+	case "usage":
+		// Running usage/cost total — store the latest snapshot so the overview
+		// and summary can show it climbing live. Totals only grow, so a later
+		// snapshot always supersedes an earlier one.
+		m.adoptUsage(p.Usage)
 	case "done":
+		// The final "done" event carries the run's total usage/cost alongside
+		// the draft.
+		m.adoptUsage(p.Usage)
 		// Root model receives the same progress message and sets m.draft. The
 		// overlay also adopts it directly so we can compute approval cards.
 		if p.Final != nil {
@@ -204,6 +259,9 @@ func (m *Model) applyAgentDetail(name, detail string, p review.Progress) {
 		row.startedAt = time.Now()
 		row.finishedAt = time.Time{}
 		row.err = nil
+		// Reset streaming liveness for the fresh attempt.
+		row.streamTokens = 0
+		row.lastActivity = time.Time{}
 		// Move keyboard focus to the most recently started agent so j/k
 		// hovering tracks "what just happened", but don't override the user's
 		// explicit selection if they've pressed j/k already.
@@ -251,6 +309,26 @@ func (m *Model) applyAgentDetail(name, detail string, p review.Progress) {
 		row.retries++
 		row.lastRetry = strings.TrimSpace(detail)
 	}
+}
+
+// applyActivity records a streaming-liveness heartbeat on the matching agent
+// row. The heartbeat's Stage is the applog label ("specialist security",
+// "pr-agent description", "repo-arbiter", "vibe-coach", …); stripping the
+// specialist/pr-agent prefix yields the row name. Heartbeats for stages with no
+// visible row (e.g. "context-summary", "convention-witness") are dropped.
+func (m *Model) applyActivity(a *review.StreamActivity) {
+	name := a.Stage
+	name = strings.TrimPrefix(name, "specialist ")
+	name = strings.TrimPrefix(name, "pr-agent ")
+	i := m.agentIndex(name)
+	if i < 0 {
+		return
+	}
+	row := &m.agents[i]
+	if a.Tokens > row.streamTokens {
+		row.streamTokens = a.Tokens
+	}
+	row.lastActivity = time.Now()
 }
 
 func (m *Model) agentIndex(name string) int {

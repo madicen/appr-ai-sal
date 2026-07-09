@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
 )
 
 //go:embed all:prompts
@@ -19,6 +21,13 @@ var promptFS embed.FS
 // embedded in the binary at internal/review/prompts/<name>.md. This lets
 // users tweak specialist behavior without rebuilding from source.
 func SpecialistPrompt(name string) (string, error) {
+	// User-defined specialists carry their prompt (loaded from
+	// <ConfigDir>/specialists/<name>.md, with any severity ladder appended) in
+	// the registry. They have no embedded default to fall back to.
+	if s, ok := lookupSpec(name); ok && s.userDefined {
+		return s.prompt, nil
+	}
+
 	if override, ok, err := readOverride(name); err != nil {
 		return "", err
 	} else if ok {
@@ -36,7 +45,7 @@ func SpecialistPrompt(name string) (string, error) {
 // OverridePath returns the path the user may write to in order to override the
 // embedded prompt for a named specialist.
 func OverridePath(name string) string {
-	return filepath.Join(configDir(), "prompts", name+".md")
+	return filepath.Join(appdirs.ConfigDir(), "prompts", name+".md")
 }
 
 func readOverride(name string) (string, bool, error) {
@@ -49,18 +58,4 @@ func readOverride(name string) (string, bool, error) {
 		return "", false, fmt.Errorf("read override %s: %w", p, err)
 	}
 	return string(b), true, nil
-}
-
-func configDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CONFIG_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".appr-ai-sal"
-	}
-	return filepath.Join(home, ".config", "appr-ai-sal")
 }

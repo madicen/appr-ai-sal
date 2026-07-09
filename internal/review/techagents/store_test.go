@@ -18,15 +18,15 @@ func setupTempCache(t *testing.T) string {
 
 func TestCanonicalTechNormalises(t *testing.T) {
 	cases := map[string]string{
-		"Kestra":     "kestra",
+		"Kestra":      "kestra",
 		" Terraform ": "terraform",
-		"kafka":      "kafka",
-		"AWS-CDK":    "aws-cdk",
-		"react/next": "react-next",
-		"":           "",
-		"   ":        "",
-		"!!!":        "",
-		"ci_cd":      "ci-cd",
+		"kafka":       "kafka",
+		"AWS-CDK":     "aws-cdk",
+		"react/next":  "react-next",
+		"":            "",
+		"   ":         "",
+		"!!!":         "",
+		"ci_cd":       "ci-cd",
 	}
 	for in, want := range cases {
 		if got := CanonicalTech(in); got != want {

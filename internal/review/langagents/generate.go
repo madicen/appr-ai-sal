@@ -2,17 +2,16 @@ package langagents
 
 import (
 	"context"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/llmjson"
 )
 
 // promptFS embeds the generator system prompt. Only the meta-prompt
@@ -22,16 +21,11 @@ import (
 //go:embed prompts/lang-generator.md
 var promptFS embed.FS
 
-// CompleteFunc runs LLM inference. Callers pass review.Complete here;
-// the indirection lets this package stay leaf-level in the import graph
-// (the runner imports us; we never import the runner).
-type CompleteFunc func(ctx context.Context, cfg *aiconfig.Config, system, user, worktree string) (string, error)
-
 // GenerateOpts collects inputs for a single language brief regeneration.
 type GenerateOpts struct {
 	AICfg    *aiconfig.Config
 	Language Language
-	Complete CompleteFunc
+	Complete ai.CompleteFunc
 	// Worktree is optional; some backends (Claude) want it set so the
 	// CLI runs in a writable directory. Empty is fine — a temp dir is
 	// created and cleaned up automatically.
@@ -94,8 +88,8 @@ func Generate(ctx context.Context, opts GenerateOpts) (*Agent, error) {
 	}
 	// Be tolerant of accidental markdown fencing — strip a single
 	// outer ```markdown or ``` wrapper if present, but never modify the
-	// inner content.
-	body = stripOuterMarkdownFence(body)
+	// inner content. Shared with the JSON parse paths via llmjson.
+	body = llmjson.StripCodeFence(body)
 
 	agent := &Agent{
 		Language:    lang,
@@ -104,63 +98,19 @@ func Generate(ctx context.Context, opts GenerateOpts) (*Agent, error) {
 		Manual:      false,
 		Provider:    string(opts.AICfg.Provider),
 		Model:       opts.AICfg.AIModelOrDefault(),
-		SourceHash:  sourceHash(srcHashInputs...),
+		SourceHash:  agentstore.SourceHash(srcHashInputs...),
 	}
 	return agent, nil
 }
 
-func sourceHash(parts ...string) string {
-	h := sha256.New()
-	for _, p := range parts {
-		_, _ = h.Write([]byte(p))
-		_, _ = h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil)[:8])
-}
-
 func loadGeneratorPrompt() (string, error) {
-	if override, ok, err := readPromptOverride(); err != nil {
-		return "", err
-	} else if ok {
-		return override, nil
-	}
-	b, err := fs.ReadFile(promptFS, "prompts/lang-generator.md")
-	if err != nil {
-		return "", fmt.Errorf("load lang-generator prompt: %w", err)
-	}
-	return string(b), nil
+	return agentstore.LoadPrompt(promptFS, "prompts/lang-generator.md", "lang-generator.md")
 }
 
 // PromptOverridePath is where users may write a custom generator prompt
 // to replace the embedded one.
 func PromptOverridePath() string {
-	return filepath.Join(configDir(), "prompts", "lang-generator.md")
-}
-
-func readPromptOverride() (string, bool, error) {
-	p := PromptOverridePath()
-	b, err := os.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("read override %s: %w", p, err)
-	}
-	return string(b), true, nil
-}
-
-func configDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CONFIG_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".appr-ai-sal"
-	}
-	return filepath.Join(home, ".config", "appr-ai-sal")
+	return agentstore.PromptOverridePath("lang-generator.md")
 }
 
 // buildGeneratorUserPrompt assembles the user message the generator
@@ -198,26 +148,4 @@ func buildGeneratorUserPrompt(lang, refLang Language, refBody string) (string, [
 	b.WriteString("## Output\n\n")
 	b.WriteString("Return markdown only. Start at the first `## Section` heading. Do not include a top-level `# ...` title or any prose preamble.\n")
 	return b.String(), hashInputs
-}
-
-// stripOuterMarkdownFence removes a single outer ```...``` wrapper if
-// the entire body is fenced. Idempotent for unfenced input.
-func stripOuterMarkdownFence(body string) string {
-	t := strings.TrimSpace(body)
-	if !strings.HasPrefix(t, "```") {
-		return body
-	}
-	// Skip the opening fence line (```markdown or ```).
-	nl := strings.Index(t, "\n")
-	if nl < 0 {
-		return body
-	}
-	inner := t[nl+1:]
-	// Walk back from the end and strip a trailing ``` line.
-	inner = strings.TrimRight(inner, "\n")
-	if !strings.HasSuffix(inner, "```") {
-		return body
-	}
-	inner = strings.TrimSuffix(inner, "```")
-	return strings.TrimSpace(inner)
 }

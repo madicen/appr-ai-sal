@@ -94,8 +94,14 @@ func Slots() []Slot {
 // Theme is a snapshot of every configurable colour. Values are hex strings
 // (e.g. "#7AA2F7"); empty strings fall back to the default for that key when
 // resolved via Color().
+//
+// Mode selects the appearance preset (dark|light|auto) applied at startup; it
+// is persisted alongside the colour overrides so a user who prefers the light
+// preset keeps it across sessions. Empty means "unset" — the default (dark)
+// applies unless the APPR_AI_SAL_THEME env var overrides it.
 type Theme struct {
 	Colors map[Key]string `json:"colors,omitempty"`
+	Mode   string         `json:"mode,omitempty"`
 }
 
 // Default returns the historical hardcoded palette. Mutating the returned
@@ -128,11 +134,14 @@ func defaultColors() map[Key]string {
 		KeyTagDiscussion:  "#C792EA", // violet
 		KeyTagScope:       "#FFC777", // gold
 
-		// Severities.
-		KeySevInfo:     "#7AA2F7",
-		KeySevWarning:  "#E0AF68",
-		KeySevError:    "#F7768E",
-		KeySevCritical: "#FF5555",
+		// Severities — derived from the semantic palette's status roles so
+		// the severity list and the rest of the chrome share one source. The
+		// dark-preset values equal the historical severity hexes, so a fresh
+		// install renders identically.
+		KeySevInfo:     darkPalette.Hex(RoleInfo),
+		KeySevWarning:  darkPalette.Hex(RoleWarning),
+		KeySevError:    darkPalette.Hex(RoleError),
+		KeySevCritical: darkPalette.Hex(RoleCritical),
 	}
 }
 
@@ -149,11 +158,20 @@ func (t *Theme) Clone() *Theme {
 	if t == nil {
 		return Default()
 	}
-	out := &Theme{Colors: make(map[Key]string, len(t.Colors))}
+	out := &Theme{Colors: make(map[Key]string, len(t.Colors)), Mode: t.Mode}
 	for k, v := range t.Colors {
 		out.Colors[k] = v
 	}
 	return out
+}
+
+// AppearanceMode returns the parsed appearance mode for this theme, defaulting
+// to dark when unset.
+func (t *Theme) AppearanceMode() Mode {
+	if t == nil {
+		return ModeDark
+	}
+	return ParseMode(t.Mode)
 }
 
 // Color resolves k against the theme, falling back to the built-in default

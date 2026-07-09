@@ -1,0 +1,16 @@
+{
+  "must_appear": [
+    {
+      "specialist": "design",
+      "path": "pipeline/process.go",
+      "line": 6,
+      "line_tolerance": 3,
+      "pattern": "(?i)nest|guard clause|flatten",
+      "note": "seeded deep-nesting design smell"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": {
+    "design": true
+  }
+}

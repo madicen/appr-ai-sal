@@ -2,16 +2,14 @@ package techagents
 
 import (
 	"context"
-	"crypto/sha256"
 	"embed"
-	"encoding/hex"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review/repocontext"
@@ -19,11 +17,6 @@ import (
 
 //go:embed all:prompts
 var promptFS embed.FS
-
-// CompleteFunc runs LLM inference. Callers pass review.Complete here; the
-// indirection avoids an import cycle (review needs to import techagents to
-// load briefs at review time).
-type CompleteFunc func(ctx context.Context, cfg *aiconfig.Config, system, user, worktree string) (string, error)
 
 // HistoryFetcher returns a markdown review-history digest for owner/repo
 // (capped to maxBytes). Pass gh.BuildReviewHistoryDigest. May be nil — in
@@ -43,7 +36,7 @@ type GenerateOpts struct {
 	Tech     string
 	Label    string
 	Seed     string
-	Complete CompleteFunc
+	Complete ai.CompleteFunc
 	History  HistoryFetcher // optional
 }
 
@@ -145,63 +138,19 @@ func Generate(ctx context.Context, opts GenerateOpts) (*Agent, error) {
 		Manual:      false,
 		Provider:    string(opts.AICfg.Provider),
 		Model:       opts.AICfg.AIModelOrDefault(),
-		SourceHash:  sourceHash(tech, seed, bundle, historyDigest),
+		SourceHash:  agentstore.SourceHash(tech, seed, bundle, historyDigest),
 	}, nil
 }
 
-func sourceHash(parts ...string) string {
-	h := sha256.New()
-	for _, p := range parts {
-		_, _ = h.Write([]byte(p))
-		_, _ = h.Write([]byte{0})
-	}
-	return hex.EncodeToString(h.Sum(nil)[:8])
-}
-
 func loadGeneratorPrompt() (string, error) {
-	if override, ok, err := readPromptOverride(); err != nil {
-		return "", err
-	} else if ok {
-		return override, nil
-	}
-	b, err := fs.ReadFile(promptFS, "prompts/tech-generator.md")
-	if err != nil {
-		return "", fmt.Errorf("load tech-generator prompt: %w", err)
-	}
-	return string(b), nil
+	return agentstore.LoadPrompt(promptFS, "prompts/tech-generator.md", "tech-generator.md")
 }
 
 // PromptOverridePath is where users may write a custom generator prompt
 // to replace the embedded one. Single override (not per-tech) since one
 // generator handles every technology.
 func PromptOverridePath() string {
-	return filepath.Join(configDir(), "prompts", "tech-generator.md")
-}
-
-func readPromptOverride() (string, bool, error) {
-	p := PromptOverridePath()
-	b, err := os.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("read override %s: %w", p, err)
-	}
-	return string(b), true, nil
-}
-
-func configDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CONFIG_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".appr-ai-sal"
-	}
-	return filepath.Join(home, ".config", "appr-ai-sal")
+	return agentstore.PromptOverridePath("tech-generator.md")
 }
 
 func buildGeneratorUserPrompt(tech, label, seed, owner, repo, bundle, history string) string {

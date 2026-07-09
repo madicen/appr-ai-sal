@@ -20,25 +20,78 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/applog"
+	"github.com/madicen/appr-ai-sal/internal/cli"
+	"github.com/madicen/appr-ai-sal/internal/evals"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
 	"github.com/madicen/appr-ai-sal/internal/theme"
 	"github.com/madicen/appr-ai-sal/internal/tui"
 )
 
+// version is the release identifier, overridden at build time by goreleaser
+// via -ldflags "-X main.version={{.Version}}". Defaults to "dev" for local
+// `go run` / `go build` invocations.
+var version = "dev"
+
 func main() {
-	if len(os.Args) >= 2 && os.Args[1] == "repo-context" {
-		ctx := context.Background()
-		if err := review.RunRepoContextCLI(ctx, os.Args[2:]); err != nil {
-			fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
-			os.Exit(1)
+	os.Exit(dispatch(os.Args[1:]))
+}
+
+// dispatch routes the first CLI argument to a subcommand, defaulting to the
+// interactive TUI when no (recognized) subcommand is given. It unifies what
+// used to be a stack of ad-hoc `os.Args[1] == "…"` sniffs into one table so
+// the entry points are enumerable in one place, and it is the single seam
+// where the headless `review` command (U1) hangs off. It returns the process
+// exit code.
+//
+// Backward compatibility: `appr-ai-sal` with no arguments — and any invocation
+// whose first argument is a flag (e.g. `-version`, `--demo`) rather than a
+// subcommand word — still launches the TUI exactly as before.
+func dispatch(args []string) int {
+	if len(args) >= 1 {
+		switch args[0] {
+		case "version":
+			// Bare `version` word (the -version flag is handled in run()).
+			fmt.Println(version)
+			return 0
+		case "review":
+			// Headless, CI-ready review (U1). Lives in internal/cli, which
+			// imports no bubbletea, and owns its own exit-code scheme.
+			return cli.RunReview(context.Background(), args[1:], os.Stdout, os.Stderr)
+		case "repo-context":
+			return runErrSubcommand(func(ctx context.Context) error {
+				return review.RunRepoContextCLI(ctx, args[1:])
+			})
+		case "memory":
+			// B1: inspect / clear the per-repo reviewer-memory store.
+			return runErrSubcommand(func(ctx context.Context) error {
+				return review.RunMemoryCLI(ctx, args[1:])
+			})
+		case "evals":
+			// Q4: prompt-quality regression harness (developer/CI subcommand).
+			return runErrSubcommand(func(ctx context.Context) error {
+				return evals.RunCLI(ctx, args[1:])
+			})
 		}
-		return
 	}
+	// Default: launch the interactive TUI (the historical no-subcommand path).
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+	return 0
+}
+
+// runErrSubcommand adapts the error-returning maintenance subcommands
+// (repo-context, memory, evals) to dispatch's exit-code contract: print the
+// error to stderr and exit 1 on failure, 0 on success.
+func runErrSubcommand(fn func(context.Context) error) int {
+	if err := fn(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "appr-ai-sal: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func run() error {
@@ -50,7 +103,21 @@ func run() error {
 	aiTimeout := flag.Int("ai-timeout-sec", -1, "Timeout in seconds for AI HTTP calls and overall review context (default 300)")
 	reviewStrictness := flag.String("review-strictness", "", "Review intensity: critical_only | lenient | balanced | strict (overrides env / config)")
 	demoMode := flag.Bool("demo", false, "run in self-contained demo mode with mock services (for VHS screenshots / GIFs)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(version)
+		return nil
+	}
+
+	// TUI apps cannot log to stderr (it corrupts the alt-screen), so route
+	// structured diagnostics to a file. Failure to open the log is
+	// non-fatal — the app still runs, just without a log.
+	if err := applog.Init(version); err != nil {
+		fmt.Fprintf(os.Stderr, "appr-ai-sal: logging disabled: %v\n", err)
+	}
+
 	dry := *dryRun
 	if os.Getenv("APPR_AI_SAL_DRY") == "1" {
 		dry = true
@@ -80,11 +147,30 @@ func run() error {
 		return err
 	}
 
+	// Record the resolved AI config for diagnosability (keys masked — the
+	// real key is only ever written by aiconfig.Save at 0600).
+	applog.Debug("ai config resolved", "config", aiCfg.RedactedJSON())
+
+	// R8: surface provider-specific misconfiguration early (base URL for
+	// openai_compatible, a key for gemini, the claude CLI on PATH, well-formed
+	// URLs) instead of failing at the first inference call. Non-fatal at
+	// startup — the user can fix it in the settings tab — so we log a warning
+	// rather than aborting; a review that truly cannot proceed still fails
+	// loudly at run time.
+	if err := aiCfg.ValidateForProvider(); err != nil {
+		applog.Warn("active AI profile is not fully configured", "err", err.Error())
+	}
+
 	// Apply any user-saved theme overrides before the TUI renders its first
-	// frame so colour-keyed rows match the user's palette from the start.
+	// frame so colour-keyed rows match the user's palette from the start, and
+	// resolve the appearance (light/dark/NO_COLOR) so the whole chrome adapts.
+	savedMode := theme.ModeDark
 	if t, err := theme.Load(); err == nil && t != nil {
 		theme.Apply(t)
+		savedMode = t.AppearanceMode()
 	}
+	appearance := theme.SetupRendering(savedMode)
+	applog.Debug("theme appearance resolved", "mode", appearance.Mode.String(), "no_color", appearance.NoColor)
 
 	// Quick auth sanity check before launching the UI so failures surface
 	// with a readable message rather than an empty list. Skipped in demo

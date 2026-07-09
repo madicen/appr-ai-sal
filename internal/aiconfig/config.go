@@ -7,13 +7,20 @@
 package aiconfig
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
+	"github.com/madicen/appr-ai-sal/internal/applog"
 )
 
 // Provider selects how appr-ai-sal runs specialist inference.
@@ -24,7 +31,21 @@ const (
 	ProviderGemini           Provider = "gemini"
 	ProviderOllama           Provider = "ollama"
 	ProviderOpenAICompatible Provider = "openai_compatible"
+	// ProviderAnthropic is the direct Anthropic HTTP API (/v1/messages with
+	// x-api-key + anthropic-version), distinct from the ProviderClaude
+	// subprocess that shells out to the `claude` CLI. It needs no local CLI,
+	// so it works headless / in CI.
+	ProviderAnthropic Provider = "anthropic"
+	// ProviderAzure is Azure OpenAI. It is OpenAI-compatible in body shape but
+	// a real transport variant: it authenticates with an `api-key` header
+	// (not Authorization: Bearer) and addresses a deployment-scoped URL
+	// ({endpoint}/openai/deployments/{deployment}/chat/completions?api-version=…).
+	ProviderAzure Provider = "azure"
 )
+
+// DefaultAzureAPIVersion is used when an Azure profile does not set one. It is
+// a stable, widely-supported GA api-version; users can override it per profile.
+const DefaultAzureAPIVersion = "2024-10-21"
 
 // ReviewStrictness controls how hard specialists should look for issues.
 type ReviewStrictness string
@@ -49,19 +70,63 @@ const DefaultProfileName = "default"
 // preset. The user can switch between profiles from the PR detail
 // controls panel without re-typing credentials.
 type Profile struct {
-	Name             string   `json:"name"`
-	Provider         Provider `json:"provider,omitempty"`
-	BaseURL          string   `json:"base_url,omitempty"`
-	Model            string   `json:"model,omitempty"`
-	APIKey           string   `json:"api_key,omitempty"`
-	TimeoutSec       int      `json:"timeout_sec,omitempty"`
-	RetryMaxAttempts int      `json:"retry_max_attempts,omitempty"`
-	RetryBaseMS      int      `json:"retry_base_ms,omitempty"`
-	RetryMaxMS       int      `json:"retry_max_ms,omitempty"`
+	Name     string   `json:"name"`
+	Provider Provider `json:"provider,omitempty"`
+	BaseURL  string   `json:"base_url,omitempty"`
+	Model    string   `json:"model,omitempty"`
+	APIKey   string   `json:"api_key,omitempty"`
+	// APIKeyEnv names an environment variable to read the API key from at
+	// resolution time (secret indirection). APIKeyCmd is a command whose
+	// stdout is used as the API key. Precedence when more than one is set:
+	// explicit api_key > api_key_env > api_key_cmd. See EffectiveAPIKey.
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+	APIKeyCmd string `json:"api_key_cmd,omitempty"`
+	// AzureAPIVersion is the Azure OpenAI api-version query parameter (only
+	// used when Provider == azure). Empty falls back to DefaultAzureAPIVersion.
+	// For Azure, Model is the deployment name (Azure addresses deployments,
+	// not model ids, in the URL path).
+	AzureAPIVersion  string `json:"azure_api_version,omitempty"`
+	TimeoutSec       int    `json:"timeout_sec,omitempty"`
+	RetryMaxAttempts int    `json:"retry_max_attempts,omitempty"`
+	RetryBaseMS      int    `json:"retry_base_ms,omitempty"`
+	RetryMaxMS       int    `json:"retry_max_ms,omitempty"`
+	// RetryStageAttemptBudget caps the TOTAL provider invocations for one
+	// pipeline stage, shared across the stage-level retry loop and the inner
+	// per-Complete retry loop so the two tiers can't multiply. 0 uses the
+	// default (5).
+	RetryStageAttemptBudget int `json:"retry_stage_attempt_budget,omitempty"`
+
+	// StageModels routes individual review stages to different models (Q7).
+	// A key is a stage name and the value is the model id to run that stage
+	// with; the special key "default" applies to any stage lacking an explicit
+	// entry. Precedence (highest first): explicit stage entry → "default" →
+	// the profile's Model. A stage model overrides ONLY the model id — the
+	// profile's provider, base URL, and key are reused — so every stage model
+	// must be servable by this profile's provider. Recognized stage names are
+	// the specialists (formatting, design, testing, docs, security, tech), the
+	// PR agents (description, checks, discussion, scope), and the synthesis
+	// stages (arbiter, witness, vibe-coach); any user-defined specialist name
+	// works too. Empty/absent leaves every stage on the profile Model, which
+	// is byte-for-byte identical to the pre-Q7 single-model behavior.
+	StageModels map[string]string `json:"stage_models,omitempty"`
+	// Ensemble opts specific stages into multi-model mode (Q7): a stage listed
+	// here runs once per model in the slice and its findings are unioned with
+	// the cross-specialist dedupe, so two models' findings merge cleanly (e.g.
+	// run security on two models for decorrelated coverage). Each list needs at
+	// least two distinct, non-empty model ids and, like StageModels, every
+	// model reuses this profile's provider. A stage in Ensemble ignores its
+	// StageModels entry (the ensemble list wins). Empty/absent means no stage
+	// runs an ensemble — the default single-model behavior.
+	Ensemble map[string][]string `json:"ensemble,omitempty"`
 }
 
-// Clone returns a deep copy.
-func (p Profile) Clone() Profile { return p }
+// Clone returns a deep copy. The stage-routing maps (Q7) are copied so a
+// mutation of the clone can never write through to the original's maps.
+func (p Profile) Clone() Profile {
+	p.StageModels = cloneStringMap(p.StageModels)
+	p.Ensemble = cloneStringSliceMap(p.Ensemble)
+	return p
+}
 
 // Summary returns a short "provider · model" label for UI rows.
 func (p Profile) Summary() string {
@@ -82,10 +147,18 @@ func (p Profile) Summary() string {
 // RetryMax*) are always a copy of the active profile so existing review
 // runner code can continue to read them directly.
 type Config struct {
-	Provider         Provider         `json:"provider,omitempty"`
-	BaseURL          string           `json:"base_url,omitempty"`
-	Model            string           `json:"model,omitempty"`
-	APIKey           string           `json:"api_key,omitempty"`
+	Provider Provider `json:"provider,omitempty"`
+	BaseURL  string   `json:"base_url,omitempty"`
+	Model    string   `json:"model,omitempty"`
+	APIKey   string   `json:"api_key,omitempty"`
+	// APIKeyEnv / APIKeyCmd mirror the active profile's secret-indirection
+	// fields onto the flat config so EffectiveAPIKey can resolve them. See
+	// Profile.APIKeyEnv / Profile.APIKeyCmd.
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+	APIKeyCmd string `json:"api_key_cmd,omitempty"`
+	// AzureAPIVersion mirrors the active profile's Azure OpenAI api-version
+	// onto the flat config (only meaningful when Provider == azure).
+	AzureAPIVersion  string           `json:"azure_api_version,omitempty"`
 	TimeoutSec       int              `json:"timeout_sec,omitempty"`
 	ReviewStrictness ReviewStrictness `json:"review_strictness,omitempty"`
 	// RetryMaxAttempts is total tries per inference call (including the first). 0 uses default (5); 1 disables retry.
@@ -94,12 +167,70 @@ type Config struct {
 	RetryBaseMS int `json:"retry_base_ms,omitempty"`
 	// RetryMaxMS caps exponential backoff growth per wait. 0 uses default (120000).
 	RetryMaxMS int `json:"retry_max_ms,omitempty"`
+	// RetryStageAttemptBudget bounds the TOTAL number of provider invocations
+	// for a single pipeline stage. It is shared between the stage-level retry
+	// (review.stageWithRetry) and the inner per-Complete retry
+	// (internal/ai backoff), so the worst case is this many calls per stage —
+	// not RetryMaxAttempts × stage-retry-attempts (~25 before). 0 uses the
+	// default (5); values are floored at 1 and capped at 30.
+	RetryStageAttemptBudget int `json:"retry_stage_attempt_budget,omitempty"`
+
+	// StageModels / Ensemble mirror the active profile's per-stage model
+	// routing (Q7) onto the flat config so the review runner — which reads the
+	// flat config — can resolve a stage's model without re-reading the profile.
+	// See Profile.StageModels / Profile.Ensemble and Config.ForStage /
+	// Config.EnsembleModels.
+	StageModels map[string]string   `json:"stage_models,omitempty"`
+	Ensemble    map[string][]string `json:"ensemble,omitempty"`
 
 	// Profiles is the on-disk list of named (provider, model, ...) presets.
 	// The active profile's fields are mirrored onto the top-level fields.
 	Profiles []Profile `json:"profiles,omitempty"`
 	// ActiveProfile names which entry of Profiles is currently in use.
 	ActiveProfile string `json:"active_profile,omitempty"`
+
+	// oneShot records flat fields whose current in-memory value came from a
+	// one-shot source (an APPR_AI_SAL_* env var or an --ai-* CLI flag) rather
+	// than the profile on disk. These values are applied to the running
+	// config but deliberately excluded when persisting, so a key/model/etc.
+	// passed for a single run is never written into the user's profile file
+	// (syncActiveProfileFromFlat leaves the profile slot untouched for them).
+	// It is unexported so it never appears in any (un)marshalled shape.
+	oneShot map[overrideField]bool
+}
+
+// overrideField identifies a profile-stored flat field for one-shot
+// provenance tracking (see Config.oneShot).
+type overrideField int
+
+const (
+	fldProvider overrideField = iota
+	fldBaseURL
+	fldModel
+	fldAPIKey
+	fldTimeout
+	fldRetryMaxAttempts
+	fldRetryBaseMS
+	fldRetryMaxMS
+	fldRetryStageBudget
+)
+
+// markOneShot records that field f's current flat value came from a one-shot
+// env/flag source and must not be persisted into the profile on Save.
+func (c *Config) markOneShot(f overrideField) {
+	if c == nil {
+		return
+	}
+	if c.oneShot == nil {
+		c.oneShot = make(map[overrideField]bool)
+	}
+	c.oneShot[f] = true
+}
+
+// isOneShot reports whether field f is currently shadowed by a one-shot
+// env/flag override.
+func (c *Config) isOneShot(f overrideField) bool {
+	return c != nil && c.oneShot != nil && c.oneShot[f]
 }
 
 // DefaultConfig returns built-in defaults (before file, env, or flags).
@@ -115,18 +246,9 @@ func DefaultConfig() *Config {
 }
 
 // ConfigDir is the app config directory (same rules as prompt overrides).
+// Delegates to internal/appdirs so path resolution lives in one place.
 func ConfigDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CONFIG_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal")
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ".appr-ai-sal"
-	}
-	return filepath.Join(home, ".config", "appr-ai-sal")
+	return appdirs.ConfigDir()
 }
 
 // DefaultPath returns the default path for persisted AI settings (JSON).
@@ -142,7 +264,17 @@ func (c *Config) Clone() *Config {
 	cp := *c
 	if c.Profiles != nil {
 		cp.Profiles = make([]Profile, len(c.Profiles))
-		copy(cp.Profiles, c.Profiles)
+		for i, p := range c.Profiles {
+			cp.Profiles[i] = p.Clone()
+		}
+	}
+	cp.StageModels = cloneStringMap(c.StageModels)
+	cp.Ensemble = cloneStringSliceMap(c.Ensemble)
+	if c.oneShot != nil {
+		cp.oneShot = make(map[overrideField]bool, len(c.oneShot))
+		for k, v := range c.oneShot {
+			cp.oneShot[k] = v
+		}
 	}
 	return &cp
 }
@@ -164,6 +296,15 @@ func (c *Config) Merge(o *Config) {
 	if o.APIKey != "" {
 		c.APIKey = o.APIKey
 	}
+	if o.APIKeyEnv != "" {
+		c.APIKeyEnv = o.APIKeyEnv
+	}
+	if o.APIKeyCmd != "" {
+		c.APIKeyCmd = o.APIKeyCmd
+	}
+	if o.AzureAPIVersion != "" {
+		c.AzureAPIVersion = o.AzureAPIVersion
+	}
 	if o.TimeoutSec != 0 {
 		c.TimeoutSec = o.TimeoutSec
 	}
@@ -179,6 +320,40 @@ func (c *Config) Merge(o *Config) {
 	if o.RetryMaxMS != 0 {
 		c.RetryMaxMS = o.RetryMaxMS
 	}
+	if o.RetryStageAttemptBudget != 0 {
+		c.RetryStageAttemptBudget = o.RetryStageAttemptBudget
+	}
+	if len(o.StageModels) > 0 {
+		c.StageModels = cloneStringMap(o.StageModels)
+	}
+	if len(o.Ensemble) > 0 {
+		c.Ensemble = cloneStringSliceMap(o.Ensemble)
+	}
+}
+
+// cloneStringMap returns a shallow copy of m (nil-safe).
+func cloneStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string]string, len(m))
+	for k, v := range m {
+		cp[k] = v
+	}
+	return cp
+}
+
+// cloneStringSliceMap returns a deep copy of m, copying each value slice
+// (nil-safe).
+func cloneStringSliceMap(m map[string][]string) map[string][]string {
+	if m == nil {
+		return nil
+	}
+	cp := make(map[string][]string, len(m))
+	for k, v := range m {
+		cp[k] = append([]string(nil), v...)
+	}
+	return cp
 }
 
 // ParseProvider normalizes a user string to a Provider.
@@ -194,8 +369,12 @@ func ParseProvider(s string) (Provider, error) {
 		return ProviderOllama, nil
 	case "openai_compatible":
 		return ProviderOpenAICompatible, nil
+	case "anthropic", "anthropic_api":
+		return ProviderAnthropic, nil
+	case "azure", "azure_openai":
+		return ProviderAzure, nil
 	default:
-		return "", fmt.Errorf("unknown AI provider %q (want claude, gemini, ollama, openai_compatible)", s)
+		return "", fmt.Errorf("unknown AI provider %q (want claude, anthropic, gemini, ollama, openai_compatible, azure)", s)
 	}
 }
 
@@ -254,44 +433,80 @@ func Load() (*Config, error) {
 	return c, nil
 }
 
+// warnInvalidEnv logs (via applog) that an env override was ignored because
+// its value was malformed, rather than silently dropping it. Valid overrides
+// are still applied; only the bad one is skipped.
+func warnInvalidEnv(name, value, want string) {
+	applog.Warn("ignoring invalid environment override",
+		"env", name, "value", value, "want", want)
+}
+
 func mergeEnv(c *Config) {
 	if v := strings.TrimSpace(os.Getenv("APPR_AI_SAL_AI_PROVIDER")); v != "" {
 		if p, err := ParseProvider(v); err == nil {
 			c.Provider = p
+			c.markOneShot(fldProvider)
+		} else {
+			warnInvalidEnv("APPR_AI_SAL_AI_PROVIDER", v, "claude, gemini, ollama, or openai_compatible")
 		}
 	}
 	if v := os.Getenv("APPR_AI_SAL_AI_BASE_URL"); v != "" {
 		c.BaseURL = strings.TrimSpace(v)
+		c.markOneShot(fldBaseURL)
 	}
 	if v := strings.TrimSpace(os.Getenv("APPR_AI_SAL_AI_MODEL")); v != "" {
 		c.Model = v
+		c.markOneShot(fldModel)
 	}
 	if v := os.Getenv("APPR_AI_SAL_AI_API_KEY"); v != "" {
 		c.APIKey = v
+		c.markOneShot(fldAPIKey)
 	}
 	if v := strings.TrimSpace(os.Getenv("APPR_AI_SAL_AI_TIMEOUT_SEC")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.TimeoutSec = n
+			c.markOneShot(fldTimeout)
+		} else {
+			warnInvalidEnv("APPR_AI_SAL_AI_TIMEOUT_SEC", v, "a positive integer (seconds)")
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("APPR_AI_SAL_REVIEW_STRICTNESS")); v != "" {
 		if rs, err := ParseReviewStrictness(v); err == nil {
 			c.ReviewStrictness = rs
+		} else {
+			warnInvalidEnv("APPR_AI_SAL_REVIEW_STRICTNESS", v, "critical_only, lenient, balanced, or strict")
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("APPR_AI_SAL_AI_RETRY_MAX_ATTEMPTS")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
 			c.RetryMaxAttempts = n
+			c.markOneShot(fldRetryMaxAttempts)
+		} else {
+			warnInvalidEnv("APPR_AI_SAL_AI_RETRY_MAX_ATTEMPTS", v, "an integer")
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("APPR_AI_SAL_AI_RETRY_BASE_MS")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.RetryBaseMS = n
+			c.markOneShot(fldRetryBaseMS)
+		} else {
+			warnInvalidEnv("APPR_AI_SAL_AI_RETRY_BASE_MS", v, "a positive integer (milliseconds)")
 		}
 	}
 	if v := strings.TrimSpace(os.Getenv("APPR_AI_SAL_AI_RETRY_MAX_MS")); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			c.RetryMaxMS = n
+			c.markOneShot(fldRetryMaxMS)
+		} else {
+			warnInvalidEnv("APPR_AI_SAL_AI_RETRY_MAX_MS", v, "a positive integer (milliseconds)")
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("APPR_AI_SAL_AI_RETRY_STAGE_BUDGET")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			c.RetryStageAttemptBudget = n
+			c.markOneShot(fldRetryStageBudget)
+		} else {
+			warnInvalidEnv("APPR_AI_SAL_AI_RETRY_STAGE_BUDGET", v, "a positive integer")
 		}
 	}
 }
@@ -328,6 +543,14 @@ func (c *Config) normalize() error {
 	if c.RetryBaseMS > c.RetryMaxMS {
 		c.RetryBaseMS = c.RetryMaxMS
 	}
+	if c.RetryStageAttemptBudget != 0 {
+		if c.RetryStageAttemptBudget < 1 {
+			c.RetryStageAttemptBudget = 1
+		}
+		if c.RetryStageAttemptBudget > 30 {
+			c.RetryStageAttemptBudget = 30
+		}
+	}
 	if len(c.Profiles) == 0 {
 		c.ActiveProfile = DefaultProfileName
 		c.Profiles = []Profile{c.snapshotProfile(DefaultProfileName)}
@@ -348,15 +571,21 @@ func (c *Config) normalize() error {
 // snapshotProfile builds a Profile from the current top-level fields.
 func (c *Config) snapshotProfile(name string) Profile {
 	return Profile{
-		Name:             strings.TrimSpace(name),
-		Provider:         c.Provider,
-		BaseURL:          c.BaseURL,
-		Model:            c.Model,
-		APIKey:           c.APIKey,
-		TimeoutSec:       c.TimeoutSec,
-		RetryMaxAttempts: c.RetryMaxAttempts,
-		RetryBaseMS:      c.RetryBaseMS,
-		RetryMaxMS:       c.RetryMaxMS,
+		Name:                    strings.TrimSpace(name),
+		Provider:                c.Provider,
+		BaseURL:                 c.BaseURL,
+		Model:                   c.Model,
+		APIKey:                  c.APIKey,
+		APIKeyEnv:               c.APIKeyEnv,
+		APIKeyCmd:               c.APIKeyCmd,
+		AzureAPIVersion:         c.AzureAPIVersion,
+		TimeoutSec:              c.TimeoutSec,
+		RetryMaxAttempts:        c.RetryMaxAttempts,
+		RetryBaseMS:             c.RetryBaseMS,
+		RetryMaxMS:              c.RetryMaxMS,
+		RetryStageAttemptBudget: c.RetryStageAttemptBudget,
+		StageModels:             cloneStringMap(c.StageModels),
+		Ensemble:                cloneStringSliceMap(c.Ensemble),
 	}
 }
 
@@ -373,6 +602,14 @@ func (c *Config) findProfileIndex(name string) (int, bool) {
 		}
 	}
 	return -1, false
+}
+
+// ApplyActiveProfile copies the active profile's fields onto the top-level
+// fields. Callers that mutate Profiles directly (e.g. the settings editor)
+// should invoke this before Save so normalize()'s syncActiveProfileFromFlat
+// snapshots the edited values rather than stale top-level mirrors.
+func (c *Config) ApplyActiveProfile() {
+	c.applyActiveProfile()
 }
 
 // applyActiveProfile copies the active profile's fields onto the top-level
@@ -392,21 +629,64 @@ func (c *Config) applyActiveProfile() {
 	c.BaseURL = p.BaseURL
 	c.Model = p.Model
 	c.APIKey = p.APIKey
+	c.APIKeyEnv = p.APIKeyEnv
+	c.APIKeyCmd = p.APIKeyCmd
+	c.AzureAPIVersion = p.AzureAPIVersion
 	c.TimeoutSec = p.TimeoutSec
 	c.RetryMaxAttempts = p.RetryMaxAttempts
 	c.RetryBaseMS = p.RetryBaseMS
 	c.RetryMaxMS = p.RetryMaxMS
+	c.RetryStageAttemptBudget = p.RetryStageAttemptBudget
+	c.StageModels = cloneStringMap(p.StageModels)
+	c.Ensemble = cloneStringSliceMap(p.Ensemble)
 }
 
 // syncActiveProfileFromFlat copies the top-level fields back into the
-// active profile slot. Called by normalize() so flag / env overrides that
-// adjusted the flat fields are reflected in Profiles for the next save.
+// active profile slot so ordinary (profile-sourced) flat edits are reflected
+// in Profiles for the next save.
+//
+// Fields shadowed by a one-shot env/flag override (see Config.oneShot) are
+// deliberately NOT copied: the existing profile value is kept instead. This
+// is what stops a one-shot --ai-api-key / APPR_AI_SAL_AI_API_KEY (or any
+// other single-run override) from being silently persisted into the user's
+// profile file on Save.
 func (c *Config) syncActiveProfileFromFlat() {
 	idx, ok := c.findProfileIndex(c.ActiveProfile)
 	if !ok {
 		return
 	}
-	c.Profiles[idx] = c.snapshotProfile(c.Profiles[idx].Name)
+	existing := c.Profiles[idx]
+	snap := c.snapshotProfile(existing.Name)
+	// For each one-shot field, restore the profile-sourced value so the
+	// transient override never reaches disk.
+	if c.isOneShot(fldProvider) {
+		snap.Provider = existing.Provider
+	}
+	if c.isOneShot(fldBaseURL) {
+		snap.BaseURL = existing.BaseURL
+	}
+	if c.isOneShot(fldModel) {
+		snap.Model = existing.Model
+	}
+	if c.isOneShot(fldAPIKey) {
+		snap.APIKey = existing.APIKey
+	}
+	if c.isOneShot(fldTimeout) {
+		snap.TimeoutSec = existing.TimeoutSec
+	}
+	if c.isOneShot(fldRetryMaxAttempts) {
+		snap.RetryMaxAttempts = existing.RetryMaxAttempts
+	}
+	if c.isOneShot(fldRetryBaseMS) {
+		snap.RetryBaseMS = existing.RetryBaseMS
+	}
+	if c.isOneShot(fldRetryMaxMS) {
+		snap.RetryMaxMS = existing.RetryMaxMS
+	}
+	if c.isOneShot(fldRetryStageBudget) {
+		snap.RetryStageAttemptBudget = existing.RetryStageAttemptBudget
+	}
+	c.Profiles[idx] = snap
 }
 
 // Active returns a copy of the active profile (synthesised from top-level
@@ -562,15 +842,19 @@ func (c *Config) MergeFlags(provider, baseURL, model, apiKey, reviewStrictness s
 			return err
 		}
 		c.Provider = p
+		c.markOneShot(fldProvider)
 	}
 	if baseURL != "" {
 		c.BaseURL = strings.TrimSpace(baseURL)
+		c.markOneShot(fldBaseURL)
 	}
 	if model != "" {
 		c.Model = strings.TrimSpace(model)
+		c.markOneShot(fldModel)
 	}
 	if apiKey != "" {
 		c.APIKey = apiKey
+		c.markOneShot(fldAPIKey)
 	}
 	if strings.TrimSpace(reviewStrictness) != "" {
 		rs, err := ParseReviewStrictness(reviewStrictness)
@@ -581,6 +865,7 @@ func (c *Config) MergeFlags(provider, baseURL, model, apiKey, reviewStrictness s
 	}
 	if timeoutSec >= 0 {
 		c.TimeoutSec = timeoutSec
+		c.markOneShot(fldTimeout)
 	}
 	return c.normalize()
 }
@@ -630,6 +915,31 @@ func (c *Config) EffectiveTimeoutSec() int {
 	return c.TimeoutSec
 }
 
+// StreamIdleTimeout is the idle timeout for a streaming inference call (P6
+// streaming): the stream is aborted only if NO bytes arrive for this long. A
+// slow-but-alive generation keeps trickling tokens, each of which resets the
+// timer, so it is never killed at exactly TimeoutSec the way the old
+// whole-response HTTP timeout was. TimeoutSec is reinterpreted as this idle
+// timeout for streaming calls (a live stream never idles that long, so existing
+// configs do not suddenly fail fast).
+func (c *Config) StreamIdleTimeout() time.Duration {
+	return time.Duration(c.EffectiveTimeoutSec()) * time.Second
+}
+
+// StreamFirstByteTimeout is how long a streaming call waits for the FIRST
+// response byte (connect / response-start) before aborting — it guards against
+// a connection that stalls before producing anything, without penalising a
+// stream that starts and then trickles. It is capped at the idle timeout so a
+// tiny TimeoutSec never makes the first-byte budget exceed the idle budget.
+func (c *Config) StreamFirstByteTimeout() time.Duration {
+	idle := c.StreamIdleTimeout()
+	fb := 60 * time.Second
+	if fb > idle {
+		fb = idle
+	}
+	return fb
+}
+
 // AIBaseURLResolved returns the HTTP base URL for OpenAI-compatible and Ollama,
 // or the Gemini API origin. Trailing slashes are stripped where relevant.
 func (c *Config) AIBaseURLResolved() string {
@@ -645,8 +955,24 @@ func (c *Config) AIBaseURLResolved() string {
 		if strings.TrimSpace(c.BaseURL) == "" {
 			return "https://generativelanguage.googleapis.com"
 		}
+	case ProviderAnthropic:
+		if strings.TrimSpace(c.BaseURL) == "" {
+			return "https://api.anthropic.com"
+		}
 	}
 	return strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+}
+
+// AzureAPIVersionOrDefault returns the Azure OpenAI api-version query value,
+// falling back to DefaultAzureAPIVersion when the profile leaves it empty.
+func (c *Config) AzureAPIVersionOrDefault() string {
+	if c == nil {
+		return DefaultAzureAPIVersion
+	}
+	if v := strings.TrimSpace(c.AzureAPIVersion); v != "" {
+		return v
+	}
+	return DefaultAzureAPIVersion
 }
 
 // AIModelOrDefault picks a model id, including Claude legacy env when applicable.
@@ -666,12 +992,407 @@ func (c *Config) AIModelOrDefault() string {
 	return ""
 }
 
-// EffectiveAPIKey returns the configured API key (may be empty for Ollama).
+// normalizeStageKey canonicalizes a stage name for case-insensitive,
+// whitespace-insensitive stage_models / ensemble lookups.
+func normalizeStageKey(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// lookupStageModel does a case-insensitive lookup of key in m, returning the
+// trimmed model id and true only when the entry exists and is non-empty.
+func lookupStageModel(m map[string]string, key string) (string, bool) {
+	for k, v := range m {
+		if normalizeStageKey(k) == key {
+			v = strings.TrimSpace(v)
+			return v, v != ""
+		}
+	}
+	return "", false
+}
+
+// stageModelOverride returns the routed model id for a stage per the Q7
+// precedence — explicit stage_models[stage] → stage_models["default"] — or ""
+// when no override applies (the caller then keeps the profile Model). It never
+// consults the profile Model itself; that fall-through is ForStage's job.
+func (c *Config) stageModelOverride(stage string) string {
+	if c == nil || len(c.StageModels) == 0 {
+		return ""
+	}
+	if m, ok := lookupStageModel(c.StageModels, normalizeStageKey(stage)); ok {
+		return m
+	}
+	if m, ok := lookupStageModel(c.StageModels, "default"); ok {
+		return m
+	}
+	return ""
+}
+
+// StageModel resolves the model id a stage should run with, applying the full
+// Q7 precedence: explicit stage_models[stage] → stage_models["default"] → the
+// profile Model. Returns "" only when no stage routing applies and the profile
+// itself has no explicit Model (the provider default then takes over, exactly
+// as before Q7).
+func (c *Config) StageModel(stage string) string {
+	if c == nil {
+		return ""
+	}
+	if m := c.stageModelOverride(stage); m != "" {
+		return m
+	}
+	return strings.TrimSpace(c.Model)
+}
+
+// ForStage returns the config a review stage should run with. When per-stage
+// routing selects a different model, it returns a clone with Model overridden;
+// when the stage keeps the profile Model (the common case, and ALWAYS the case
+// for a profile with no stage_models), it returns the receiver unchanged so
+// behavior is byte-for-byte identical to the pre-Q7 single-model path. The
+// provider, base URL, and key are never changed — a stage model is served by
+// the profile's own provider.
+func (c *Config) ForStage(stage string) *Config {
+	if c == nil {
+		return nil
+	}
+	m := c.stageModelOverride(stage)
+	if m == "" || m == strings.TrimSpace(c.Model) {
+		return c
+	}
+	cp := c.Clone()
+	cp.Model = m
+	return cp
+}
+
+// WithModel returns a clone of c whose Model is set to model, used to fan a
+// single stage out across an ensemble of models (Q7) without mutating the
+// shared run config. Returns the receiver unchanged when model is blank or
+// already the current Model (no allocation on the no-op path).
+func (c *Config) WithModel(model string) *Config {
+	if c == nil {
+		return nil
+	}
+	model = strings.TrimSpace(model)
+	if model == "" || model == strings.TrimSpace(c.Model) {
+		return c
+	}
+	cp := c.Clone()
+	cp.Model = model
+	return cp
+}
+
+// EnsembleModels returns the ordered, de-duplicated model ids the given stage
+// should run as an ensemble (Q7), or nil when the stage is not configured for
+// ensemble mode. Blank entries are dropped; a list that collapses to fewer
+// than two distinct models returns nil, because a single-model "ensemble" is
+// just the normal path.
+func (c *Config) EnsembleModels(stage string) []string {
+	if c == nil || len(c.Ensemble) == 0 {
+		return nil
+	}
+	key := normalizeStageKey(stage)
+	for k, v := range c.Ensemble {
+		if normalizeStageKey(k) != key {
+			continue
+		}
+		seen := make(map[string]bool, len(v))
+		out := make([]string, 0, len(v))
+		for _, m := range v {
+			m = strings.TrimSpace(m)
+			if m == "" || seen[m] {
+				continue
+			}
+			seen[m] = true
+			out = append(out, m)
+		}
+		if len(out) < 2 {
+			return nil
+		}
+		return out
+	}
+	return nil
+}
+
+// EffectiveAPIKey returns the API key to use for HTTP providers, resolving
+// secret indirection. It may be empty (typical for Ollama).
+//
+// Precedence (documented, highest wins):
+//  1. an explicit api_key (also how a one-shot --ai-api-key / env override
+//     arrives, since those land on the flat APIKey field);
+//  2. api_key_env — the value of the named environment variable, read live;
+//  3. api_key_cmd — the trimmed stdout of the named command, run once and
+//     cached for the process lifetime.
+//
+// Indirection keeps the secret out of the on-disk config file entirely: only
+// the reference (the env var name or the command) is persisted.
 func (c *Config) EffectiveAPIKey() string {
 	if c == nil {
 		return ""
 	}
-	return c.APIKey
+	if strings.TrimSpace(c.APIKey) != "" {
+		return c.APIKey
+	}
+	if env := strings.TrimSpace(c.APIKeyEnv); env != "" {
+		if v := strings.TrimSpace(os.Getenv(env)); v != "" {
+			return v
+		}
+	}
+	if cmd := strings.TrimSpace(c.APIKeyCmd); cmd != "" {
+		return resolveKeyCmd(cmd)
+	}
+	return ""
+}
+
+// keyCmdCache memoises api_key_cmd resolutions for the process lifetime so a
+// run with N parallel inference calls does not spawn the (possibly slow /
+// interactive, e.g. `op read` / `pass show`) key command N times.
+var (
+	keyCmdMu    sync.Mutex
+	keyCmdCache = map[string]string{}
+)
+
+// resolveKeyCmd runs cmd via the shell and returns its trimmed stdout as the
+// API key. Failures are logged (never fatal) and yield an empty key so the
+// provider layer surfaces a clear "missing key" error rather than a panic.
+// Results are cached (including across Config clones) keyed by the command
+// string.
+func resolveKeyCmd(cmd string) string {
+	keyCmdMu.Lock()
+	if v, ok := keyCmdCache[cmd]; ok {
+		keyCmdMu.Unlock()
+		return v
+	}
+	keyCmdMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, "sh", "-c", cmd).Output()
+	if err != nil {
+		applog.Warn("api_key_cmd failed; treating API key as empty",
+			"err", err.Error())
+		return ""
+	}
+	key := strings.TrimSpace(string(out))
+	if key == "" {
+		applog.Warn("api_key_cmd produced empty output; treating API key as empty")
+		return ""
+	}
+	keyCmdMu.Lock()
+	keyCmdCache[cmd] = key
+	keyCmdMu.Unlock()
+	return key
+}
+
+// hasAPIKeySource reports whether the profile has any configured way to
+// obtain an API key (explicit, env var currently set, or a command). It does
+// not run api_key_cmd — its mere presence counts as a source for validation.
+func (p Profile) hasAPIKeySource() bool {
+	if strings.TrimSpace(p.APIKey) != "" {
+		return true
+	}
+	if env := strings.TrimSpace(p.APIKeyEnv); env != "" {
+		if strings.TrimSpace(os.Getenv(env)) != "" {
+			return true
+		}
+	}
+	return strings.TrimSpace(p.APIKeyCmd) != ""
+}
+
+// validateBaseURL checks a base URL is a syntactically valid http(s) URL with
+// a host. It performs no network I/O.
+func validateBaseURL(raw string) error {
+	s := strings.TrimSpace(raw)
+	u, err := url.Parse(s)
+	if err != nil {
+		return fmt.Errorf("base URL %q is not a valid URL: %w", raw, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("base URL %q must start with http:// or https://", raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("base URL %q is missing a host", raw)
+	}
+	return nil
+}
+
+// ValidateForProvider checks that this profile has the settings its provider
+// needs to run, returning an actionable error when a required setting is
+// missing or malformed. It runs only structural / local checks (no network
+// calls), so it is safe to run at startup and on profile save — the point is
+// to surface a misconfiguration in the TUI up front rather than at the first
+// inference call.
+func (p Profile) ValidateForProvider() error {
+	label := strings.TrimSpace(p.Name)
+	if label == "" {
+		label = "(unnamed)"
+	}
+	if err := p.validateStageRouting(label); err != nil {
+		return err
+	}
+	prov := p.Provider
+	if strings.TrimSpace(string(prov)) == "" {
+		prov = ProviderClaude
+	}
+	switch prov {
+	case ProviderOpenAICompatible:
+		if strings.TrimSpace(p.BaseURL) == "" {
+			return fmt.Errorf("profile %q: openai_compatible requires a base URL (e.g. https://api.openai.com/v1)", label)
+		}
+		if err := validateBaseURL(p.BaseURL); err != nil {
+			return fmt.Errorf("profile %q: %w", label, err)
+		}
+	case ProviderGemini:
+		if !p.hasAPIKeySource() {
+			return fmt.Errorf("profile %q: gemini requires an API key — set it in the profile, reference one with api_key_env / api_key_cmd, or export APPR_AI_SAL_AI_API_KEY", label)
+		}
+		if strings.TrimSpace(p.BaseURL) != "" {
+			if err := validateBaseURL(p.BaseURL); err != nil {
+				return fmt.Errorf("profile %q: %w", label, err)
+			}
+		}
+	case ProviderClaude:
+		if _, err := exec.LookPath("claude"); err != nil {
+			return fmt.Errorf("profile %q: the `claude` CLI is not on your PATH — install it (see https://docs.claude.com/claude-code) or pick a different provider", label)
+		}
+	case ProviderAnthropic:
+		if !p.hasAPIKeySource() {
+			return fmt.Errorf("profile %q: anthropic requires an API key — set it in the profile, reference one with api_key_env / api_key_cmd, or export APPR_AI_SAL_AI_API_KEY", label)
+		}
+		if strings.TrimSpace(p.BaseURL) != "" {
+			if err := validateBaseURL(p.BaseURL); err != nil {
+				return fmt.Errorf("profile %q: %w", label, err)
+			}
+		}
+	case ProviderAzure:
+		if strings.TrimSpace(p.BaseURL) == "" {
+			return fmt.Errorf("profile %q: azure requires the resource endpoint as the base URL (e.g. https://my-resource.openai.azure.com)", label)
+		}
+		if err := validateBaseURL(p.BaseURL); err != nil {
+			return fmt.Errorf("profile %q: %w", label, err)
+		}
+		if !p.hasAPIKeySource() {
+			return fmt.Errorf("profile %q: azure requires an API key — set it in the profile, reference one with api_key_env / api_key_cmd, or export APPR_AI_SAL_AI_API_KEY", label)
+		}
+		if strings.TrimSpace(p.Model) == "" {
+			return fmt.Errorf("profile %q: azure requires a deployment name (set the model field to your Azure deployment)", label)
+		}
+	case ProviderOllama:
+		// Base URL is optional (defaults to http://127.0.0.1:11434/v1) and no
+		// API key is required; only validate a base URL's shape when set. A
+		// reachability check would require a network call, which this method
+		// deliberately avoids.
+		if strings.TrimSpace(p.BaseURL) != "" {
+			if err := validateBaseURL(p.BaseURL); err != nil {
+				return fmt.Errorf("profile %q: %w", label, err)
+			}
+		}
+	}
+	return nil
+}
+
+// validateStageRouting checks the Q7 per-stage routing maps (stage_models /
+// ensemble) are structurally well-formed, returning an actionable error for a
+// malformed entry (R8 style). It does not verify that a stage name is a real
+// review stage — user-defined specialists add new stage names — only that keys
+// and model ids are non-empty and that each ensemble names at least two
+// distinct models.
+func (p Profile) validateStageRouting(label string) error {
+	for k, v := range p.StageModels {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("profile %q: stage_models has an entry with an empty stage name", label)
+		}
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("profile %q: stage_models[%q] has an empty model id", label, k)
+		}
+	}
+	for k, models := range p.Ensemble {
+		if strings.TrimSpace(k) == "" {
+			return fmt.Errorf("profile %q: ensemble has an entry with an empty stage name", label)
+		}
+		seen := make(map[string]bool, len(models))
+		for _, m := range models {
+			m = strings.TrimSpace(m)
+			if m == "" {
+				return fmt.Errorf("profile %q: ensemble[%q] has an empty model id", label, k)
+			}
+			if seen[m] {
+				return fmt.Errorf("profile %q: ensemble[%q] lists model %q more than once", label, k, m)
+			}
+			seen[m] = true
+		}
+		if len(seen) < 2 {
+			return fmt.Errorf("profile %q: ensemble[%q] needs at least two distinct models (got %d)", label, k, len(seen))
+		}
+	}
+	return nil
+}
+
+// ValidateForProvider validates the effective (active) settings a review will
+// actually use — the flat fields, which include any one-shot env/flag
+// overrides and the resolved key indirection. Call it at startup and before a
+// run so provider misconfiguration surfaces early instead of at first
+// inference.
+func (c *Config) ValidateForProvider() error {
+	if c == nil {
+		return nil
+	}
+	eff := Profile{
+		Name:            c.ActiveProfile,
+		Provider:        c.Provider,
+		BaseURL:         c.BaseURL,
+		Model:           c.Model,
+		APIKey:          c.APIKey,
+		APIKeyEnv:       c.APIKeyEnv,
+		APIKeyCmd:       c.APIKeyCmd,
+		AzureAPIVersion: c.AzureAPIVersion,
+		TimeoutSec:      c.TimeoutSec,
+		StageModels:     c.StageModels,
+		Ensemble:        c.Ensemble,
+	}
+	if strings.TrimSpace(eff.Name) == "" {
+		eff.Name = DefaultProfileName
+	}
+	return eff.ValidateForProvider()
+}
+
+// maskKey masks secret key material for display. Empty stays empty; anything
+// else collapses to a fixed non-reversible marker that leaks no key bytes.
+func maskKey(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return ""
+	}
+	return "****"
+}
+
+// Redacted returns a deep copy of c with every API-key field masked, safe to
+// log, print, or include in telemetry. Only Save writes real key material to
+// disk (0600); every other place the config is stringified for a
+// non-persistence purpose must go through Redacted / RedactedJSON. The
+// indirection references (api_key_env / api_key_cmd) are kept — they are not
+// secrets, only pointers to where the secret lives.
+func (c *Config) Redacted() *Config {
+	if c == nil {
+		return nil
+	}
+	cp := c.Clone()
+	cp.APIKey = maskKey(cp.APIKey)
+	for i := range cp.Profiles {
+		cp.Profiles[i].APIKey = maskKey(cp.Profiles[i].APIKey)
+	}
+	cp.oneShot = nil
+	return cp
+}
+
+// RedactedJSON returns an indented JSON dump of the config with API keys
+// masked — the safe way to record the resolved config in a log line.
+func (c *Config) RedactedJSON() string {
+	r := c.Redacted()
+	if r == nil {
+		return "null"
+	}
+	b, err := json.MarshalIndent(r, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("<config marshal error: %v>", err)
+	}
+	return string(b)
 }
 
 // BearerForHTTP returns the Authorization bearer token for OpenAI-compatible APIs.
@@ -719,6 +1440,24 @@ func (c *Config) InferenceRetryBase() time.Duration {
 		ms = c.RetryBaseMS
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+// StageAttemptBudget returns the total number of provider invocations allowed
+// for one pipeline stage, shared between the stage-level retry and the inner
+// per-Complete retry so the two tiers cannot multiply. Defaults to 5; floored
+// at 1 and capped at 30.
+func (c *Config) StageAttemptBudget() int {
+	n := 5
+	if c != nil && c.RetryStageAttemptBudget > 0 {
+		n = c.RetryStageAttemptBudget
+	}
+	if n < 1 {
+		n = 1
+	}
+	if n > 30 {
+		n = 30
+	}
+	return n
 }
 
 // InferenceRetryMaxBackoff caps each backoff wait between retries.

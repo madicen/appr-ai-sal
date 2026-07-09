@@ -54,15 +54,9 @@ func runScript(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, out chan<-
 		}
 	}
 
-	// Resolve the canned PR/diff up front so the final Draft can be
-	// assembled without re-walking the canned data after each stage.
-	pr := LookupPR(ref)
-	if pr == nil {
-		// User pasted a ref that doesn't match a fixture; fall back so
-		// the overlay still gets a complete event stream to render.
-		fallback := DemoPullRequests()[0]
-		pr = &fallback
-	}
+	// Resolve the canned diff up front so the "diff" stage can report its
+	// size. The final Draft is assembled by FinalReviewDraft (shared with the
+	// hermetic tests) so we don't re-walk the PR fixture here.
 	diff := DemoDiff(ref)
 
 	// preStages walk the context-injection part of the pipeline —
@@ -141,18 +135,7 @@ func runScript(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, out chan<-
 	// Quick checks (formatting, design) finish first; security comes
 	// last, mirroring how a real panel typically races. Each "done"
 	// event paints a fresh chip transition the viewer can latch onto.
-	specs := []struct {
-		name      string
-		findings  []review.Finding
-		summary   string
-		finishAt  time.Duration // offset from specialist phase start
-	}{
-		{review.SpecFormatting, demoFormattingFindings, "no major formatting issues; one minor wrap", 2500 * time.Millisecond},
-		{review.SpecDesign, demoDesignFindings, "interface boundary noted; cohesion looks reasonable", 4500 * time.Millisecond},
-		{review.SpecTesting, demoTestingFindings, "added test covers the happy path; suggest one negative case", 6500 * time.Millisecond},
-		{review.SpecDocs, demoDocsFindings, "exported helper missing a usage doc", 8000 * time.Millisecond},
-		{review.SpecSecurity, demoSecurityFindings, "no high-severity issues; one input-validation hardening", 10000 * time.Millisecond},
-	}
+	specs := demoSpecs()
 	specialistResults := make([]review.SpecialistResult, len(specs))
 	// Emit every "start" event first so all five chips flip to
 	// "running" simultaneously — the visual signal that this stage
@@ -210,14 +193,7 @@ func runScript(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, out chan<-
 	if !wait(postStageDelay) {
 		return
 	}
-	arbiter := &review.RepoArbiterResult{
-		UserSummary: "Repo arbiter agrees with the specialist panel; one demote applied (testing/docs convention witness flagged a non-divergent claim).",
-		RationaleBullets: []string{
-			"Convention witness saw 'congruent' for the docs finding on api.md; demote one rank.",
-			"Security finding stands as-is; the input-validation hardening is consistent with sibling endpoints.",
-		},
-		EffectiveVerdict: review.VibeVerdictRequestChanges,
-	}
+	arbiter := demoArbiterResult()
 	if !send(review.Progress{Stage: "repo-arbiter", Detail: "done", Arbiter: arbiter}) {
 		return
 	}
@@ -232,10 +208,7 @@ func runScript(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, out chan<-
 	if !wait(postStageDelay) {
 		return
 	}
-	vibe := &review.VibeCoachResult{
-		Verdict: review.VibeVerdictRequestChanges,
-		Summary: demoVibeSummary,
-	}
+	vibe := demoVibeResult()
 	if !send(review.Progress{Stage: "vibe-coach", Detail: "done", Vibe: vibe}) {
 		return
 	}
@@ -243,21 +216,124 @@ func runScript(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, out chan<-
 		return
 	}
 
-	// Stage 13: done. Build the final Draft so the approve/post flow
-	// has cards to advance through.
-	final := &review.Draft{
+	// Stage 13: done. Build the final Draft (identical to the one
+	// FinalReviewDraft returns) so the approve/post flow has cards to
+	// advance through. The scripted specialistResults are the same data
+	// FinalReviewDraft assembles, so reuse the shared builder to keep the
+	// two paths from drifting.
+	final := FinalReviewDraft(ref, cfg)
+	// Canned usage/cost totals so the overlay's R1 summary line renders in
+	// recordings ("14 calls · 182k in / 21k out · ~$0.43 · …").
+	usage := demoRunUsage()
+	_ = send(review.Progress{Stage: "done", Final: final, Usage: &usage})
+}
+
+// demoSpec is one scripted specialist result plus the offset (from the
+// specialist phase start) at which SyntheticReviewProgress "finishes" it.
+type demoSpec struct {
+	name     string
+	findings []review.Finding
+	summary  string
+	finishAt time.Duration
+}
+
+// demoSpecs returns the scripted specialist panel: one specialist per
+// severity, each anchored to real lines in the canned diff. Shared by
+// SyntheticReviewProgress (which emits them with staggered delays) and
+// FinalReviewDraft (which assembles them into a completed Draft with no
+// delays for hermetic tests).
+func demoSpecs() []demoSpec {
+	return []demoSpec{
+		{review.SpecFormatting, demoFormattingFindings, "no major formatting issues; one minor wrap", 2500 * time.Millisecond},
+		{review.SpecDesign, demoDesignFindings, "interface boundary noted; cohesion looks reasonable", 4500 * time.Millisecond},
+		{review.SpecTesting, demoTestingFindings, "added test covers the happy path; suggest one negative case", 6500 * time.Millisecond},
+		{review.SpecDocs, demoDocsFindings, "exported helper missing a usage doc", 8000 * time.Millisecond},
+		{review.SpecSecurity, demoSecurityFindings, "no high-severity issues; one input-validation hardening", 10000 * time.Millisecond},
+	}
+}
+
+// demoSpecialistResults builds the completed specialist results from demoSpecs.
+func demoSpecialistResults() []review.SpecialistResult {
+	specs := demoSpecs()
+	out := make([]review.SpecialistResult, len(specs))
+	for i, s := range specs {
+		out[i] = review.SpecialistResult{
+			Specialist: s.name,
+			Summary:    s.summary,
+			Findings:   s.findings,
+		}
+	}
+	return out
+}
+
+// demoArbiterResult is the canned repo-arbiter verdict for the demo run.
+func demoArbiterResult() *review.RepoArbiterResult {
+	return &review.RepoArbiterResult{
+		UserSummary: "Repo arbiter agrees with the specialist panel; one demote applied (testing/docs convention witness flagged a non-divergent claim).",
+		RationaleBullets: []string{
+			"Convention witness saw 'congruent' for the docs finding on api.md; demote one rank.",
+			"Security finding stands as-is; the input-validation hardening is consistent with sibling endpoints.",
+		},
+		EffectiveVerdict: review.VibeVerdictRequestChanges,
+	}
+}
+
+// demoVibeResult is the canned vibe-coach verdict for the demo run.
+func demoVibeResult() *review.VibeCoachResult {
+	return &review.VibeCoachResult{
+		Verdict: review.VibeVerdictRequestChanges,
+		Summary: demoVibeSummary,
+	}
+}
+
+// FinalReviewDraft builds the completed demo review Draft — the exact value
+// SyntheticReviewProgress emits in its terminal "done" event — without waiting
+// out the scripted per-stage delays. It exists so hermetic tests (teatest
+// end-to-end flows and golden-file render tests) can drive the review overlay
+// against the demo fixtures instantly and deterministically. cfg may be nil
+// (the strictness label is then left empty).
+func FinalReviewDraft(ref gh.Ref, cfg *aiconfig.Config) *review.Draft {
+	pr := LookupPR(ref)
+	if pr == nil {
+		fallback := DemoPullRequests()[0]
+		pr = &fallback
+	}
+	var strictness aiconfig.ReviewStrictness
+	if cfg != nil {
+		strictness = cfg.ReviewStrictness
+	}
+	return &review.Draft{
 		Ref:                        ref,
 		PR:                         pr,
-		Diff:                       diff,
+		Diff:                       DemoDiff(ref),
 		Worktree:                   "/tmp/appr-ai-sal-demo",
-		Strictness:                 cfg.ReviewStrictness,
-		Specialists:                specialistResults,
-		VibeCoach:                  vibe,
-		RepoArbiter:                arbiter,
+		Strictness:                 strictness,
+		Specialists:                demoSpecialistResults(),
+		VibeCoach:                  demoVibeResult(),
+		RepoArbiter:                demoArbiterResult(),
 		RepositoryContext:          "demo repo-context bundle (canned)",
 		ContextVersusChangeSummary: demoContextVsChange,
 	}
-	_ = send(review.Progress{Stage: "done", Final: final})
+}
+
+// RunUsageTotals returns the canned per-run usage/cost total the demo emits,
+// exported so hermetic tests can assemble a "done" progress event identical to
+// SyntheticReviewProgress's terminal event.
+func RunUsageTotals() review.RunUsage { return demoRunUsage() }
+
+// demoRunUsage returns a plausible per-run usage/cost total for the scripted
+// demo (14 metered calls: 5 specialists, 4 PR agents, witness, arbiter,
+// vibe-coach, context-summary) so the overlay's R1 summary line reads
+// realistically in VHS recordings.
+func demoRunUsage() review.RunUsage {
+	return review.RunUsage{
+		Calls:        14,
+		InputTokens:  182_000,
+		OutputTokens: 21_000,
+		CostUSD:      0.43,
+		CostKnown:    true,
+		WallClock:    6*time.Minute + 12*time.Second,
+	}
 }
 
 // Demo findings: one per severity, all anchored on real lines from the

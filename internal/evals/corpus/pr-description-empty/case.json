@@ -1,0 +1,15 @@
+{
+  "id": "pr-description-empty",
+  "title": "Add feature entrypoint",
+  "target": "description",
+  "repo": "acme/app",
+  "number": 109,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/new",
+  "body": "",
+  "strictness": "balanced",
+  "additions": 3,
+  "changed_files": 1,
+  "run_pr_agents": true
+}

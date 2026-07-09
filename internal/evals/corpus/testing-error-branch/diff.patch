@@ -1,0 +1,13 @@
+diff --git a/svc/divide.go b/svc/divide.go
+new file mode 100644
+--- /dev/null
++++ b/svc/divide.go
+@@ -0,0 +1,8 @@
++package svc
++
++func Divide(a, b int) (int, error) {
++	if b == 0 {
++		return 0, errBadInput
++	}
++	return a / b, nil
++}

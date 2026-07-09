@@ -1,0 +1,16 @@
+- **Module / package boundaries.** What lives where (cmd/, internal/, pkg/,
+  src/, app/, services/, …); how layers communicate; what's intentionally
+  decoupled.
+- **Abstractions the repo prefers.** Interface use, dependency injection
+  style, error-handling patterns, option-struct vs. functional-options,
+  domain-vs-presentation separation. Cite directories or files.
+- **API shape conventions.** How public functions return values (e.g. paired
+  `(value, error)`, sentinel errors, typed errors, result objects), how
+  options are exposed, how feature flags or config are threaded through.
+- **Patterns the repo deliberately tolerates** even if "best practice"
+  disagrees. For example "we keep deep nesting in router setup", "we favour
+  small mostly-pure helpers over interfaces". Use the review history digest as
+  evidence.
+- **Refactor temperature.** Have past reviews pushed back on speculative
+  abstractions or large reshuffles? If so, say so — the specialist should
+  follow suit.

@@ -28,6 +28,15 @@ type VibeCoachDoneMsg struct {
 	RequestedAt time.Time
 }
 
+// OverlayBound marks VibeCoachDoneMsg for the root's generic overlay
+// forwarder (data.ForwardToOverlay). The goroutine's response only means
+// something to the overlay handler; without generic routing the root
+// would have to remember an explicit case, and forgetting it strands the
+// overlay in PhaseGeneratingSummary.
+func (VibeCoachDoneMsg) OverlayBound() {}
+
+var _ data.ForwardToOverlay = VibeCoachDoneMsg{}
+
 // skipSetHash returns a stable hash of the user-skip set so enterSummary
 // can decide whether to re-run vibe-coach. Empty set hashes to "".
 func skipSetHash(keys map[string]struct{}) string {
@@ -139,11 +148,14 @@ func (m *Model) syncUserSkipsToDraft() {
 	}
 	m.draft.UserSkipPostKeys = nil
 	for _, c := range m.cards {
-		// Demoted cards default to skipped but were never in the at-floor
-		// finding set, so their key matches nothing in the body/inline
-		// batch. Recording it would only pollute the skip-set hash and
-		// force a needless vibe-coach re-run on entering the summary.
-		if c.demoted {
+		// Demoted / memory-suppressed cards default to skipped but were never
+		// in the at-floor finding set (they live on the draft's DemotedHidden /
+		// MemorySuppressed side-lists), so their key matches nothing in the
+		// body/inline batch. Recording it would only pollute the skip-set hash
+		// and force a needless vibe-coach re-run on entering the summary. Their
+		// outcome is folded into reviewer memory via their own side-lists at
+		// post time instead.
+		if c.demoted || c.memorySuppressed {
 			continue
 		}
 		if c.state != cardSkipped {
@@ -163,16 +175,17 @@ func (m *Model) syncUserSkipsToDraft() {
 // running off the end of a flat finding list. Returns nil (no phase
 // transition).
 func (m *Model) advanceCard() tea.Cmd {
-	idxs := m.agentCardIndices(m.activeAgent())
-	// Next pending card after the current one.
-	for _, gi := range idxs {
-		if gi > m.idx && m.cards[gi].state == cardPending {
-			m.idx = gi
+	idxs := m.agentCardOrder(m.activeAgent())
+	cur := positionOf(idxs, m.idx)
+	// Next pending card after the current position (in the triaged order).
+	for p := cur + 1; p < len(idxs); p++ {
+		if m.cards[idxs[p]].state == cardPending {
+			m.idx = idxs[p]
 			m.vp.GotoTop()
 			return nil
 		}
 	}
-	// Wrap: first pending card anywhere in this agent.
+	// Wrap: first pending card anywhere in this agent's triaged order.
 	for _, gi := range idxs {
 		if m.cards[gi].state == cardPending {
 			m.idx = gi
@@ -200,14 +213,16 @@ func (m *Model) actPostCurrent() (tea.Model, tea.Cmd) {
 	// parsed diff, GitHub's reviews/comments endpoints will reject it with
 	// "pull_request_review_thread.line could not be resolved". Catch it here
 	// so the user gets an actionable, local explanation instead of a 422.
-	if !m.dryRun && cur.hunk == nil {
+	// B3 in-thread replies are exempt: they attach to an existing thread by
+	// node id, not to a diff line, so a moved/removed hunk doesn't block them.
+	if !m.dryRun && cur.hunk == nil && cur.threadReplyID == "" {
 		cur.state = cardError
 		cur.err = fmt.Errorf("can't post inline: %s:%d isn't on a hunk in the current PR diff (line may have moved or been removed). Press F to post as a file-level comment, R to refresh the PR, or s to skip this finding.",
 			cur.finding.Finding.Path, cur.finding.Finding.Line)
 		m.rebuildBody()
 		return m, nil
 	}
-	cmd := data.PostSingleFindingCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun)
+	cmd := data.PostSingleFindingCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, cur.threadReplyID, m.dryRun, m.demoMode)
 	return m, cmd
 }
 
@@ -245,7 +260,7 @@ func (m *Model) actToggleDemotedPRWide() (tea.Model, tea.Cmd) {
 		}
 	}
 	m.rebuildBody()
-	return m, nil
+	return m, m.scheduleSessionSave()
 }
 
 // actPostCurrentFileLevel is the file-level fallback: post the current
@@ -284,7 +299,7 @@ func (m *Model) actPostCurrentFileLevel() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	cur.fileLevelPost = true
-	cmd := data.PostSingleFindingFileLevelCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun)
+	cmd := data.PostSingleFindingFileLevelCmd(m.draft.Ref, m.draft.PR, cur.finding.Specialist, cur.finding.Finding, m.dryRun, m.demoMode)
 	return m, cmd
 }
 
@@ -376,6 +391,52 @@ func shortSHA(s string) string {
 	return s
 }
 
+// actResurfaceCurrent un-suppresses a reviewer-memory-suppressed finding (B1):
+// it flips the focused suppressed card from cardSkipped to cardPending so the
+// reviewer can post it with y. Pressing x again re-suppresses it (pending →
+// skipped). It is a no-op on any card that isn't memory-suppressed, and on
+// posted/error cards.
+func (m *Model) actResurfaceCurrent() (tea.Model, tea.Cmd) {
+	if m.idx < 0 || m.idx >= len(m.cards) {
+		return m, nil
+	}
+	cur := &m.cards[m.idx]
+	if !cur.memorySuppressed {
+		return m, nil
+	}
+	switch cur.state {
+	case cardSkipped:
+		cur.state = cardPending
+	case cardPending:
+		cur.state = cardSkipped
+	default:
+		return m, nil
+	}
+	m.rebuildBody()
+	return m, m.scheduleSessionSave()
+}
+
+// syncMemorySuppressionOutcomes reconciles the final card states of the B1
+// memory-suppressed cards back onto the draft so RecordReviewerMemory folds
+// the right signal at post time: a suppressed finding the reviewer actually
+// posted marks its draft entry Resurfaced (recorded as demote_reversed — the
+// suppressor was wrong, back off), while one left un-posted stays a skip
+// (reinforcing the pattern). Called just before recording at post time.
+func (m *Model) syncMemorySuppressionOutcomes() {
+	if m.draft == nil {
+		return
+	}
+	for _, c := range m.cards {
+		if !c.memorySuppressed {
+			continue
+		}
+		if c.memorySuppIdx < 0 || c.memorySuppIdx >= len(m.draft.MemorySuppressed) {
+			continue
+		}
+		m.draft.MemorySuppressed[c.memorySuppIdx].Resurfaced = (c.state == cardPosted)
+	}
+}
+
 func (m *Model) actSkipCurrent() (tea.Model, tea.Cmd) {
 	if m.idx < 0 || m.idx >= len(m.cards) {
 		return m, nil
@@ -388,15 +449,16 @@ func (m *Model) actSkipCurrent() (tea.Model, tea.Cmd) {
 	m.cards[m.idx].state = cardSkipped
 	advCmd := m.advanceCard()
 	m.rebuildBody()
-	return m, advCmd
+	return m, tea.Batch(advCmd, m.scheduleSessionSave())
 }
 
 // actNext / actPrev move the focused finding within the active agent tab.
 func (m *Model) actNext() (tea.Model, tea.Cmd) {
-	idxs := m.agentCardIndices(m.activeAgent())
+	idxs := m.agentCardOrder(m.activeAgent())
 	pos := positionOf(idxs, m.idx)
 	if pos >= 0 && pos < len(idxs)-1 {
 		m.idx = idxs[pos+1]
+		m.copyStatus = ""
 		m.vp.GotoTop()
 		m.rebuildBody()
 	}
@@ -404,10 +466,11 @@ func (m *Model) actNext() (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) actPrev() (tea.Model, tea.Cmd) {
-	idxs := m.agentCardIndices(m.activeAgent())
+	idxs := m.agentCardOrder(m.activeAgent())
 	pos := positionOf(idxs, m.idx)
 	if pos > 0 {
 		m.idx = idxs[pos-1]
+		m.copyStatus = ""
 		m.vp.GotoTop()
 		m.rebuildBody()
 	}

@@ -16,9 +16,9 @@ func newFocusTestModel(t *testing.T, opts Opts) *Model {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("APPR_AI_SAL_CACHE_DIR", "")
 	if opts.Complete == nil {
-		opts.Complete = ra.CompleteFunc(func(_ context.Context, _ *aiconfig.Config, _, _, _ string) (string, error) {
+		opts.Complete = func(_ context.Context, _ *aiconfig.Config, _, _, _ string) (string, error) {
 			return "stub-context", nil
-		})
+		}
 	}
 	if opts.AICfg == nil {
 		opts.AICfg = aiconfig.DefaultConfig()
@@ -121,7 +121,7 @@ func TestAutoRegenAllFiresRegenStartedForEverySpecialist(t *testing.T) {
 	got := map[string]bool{}
 	for _, msg := range msgs {
 		if r, ok := msg.(regenStartedMsg); ok {
-			got[r.Specialist] = true
+			got[r.Key.Specialist] = true
 		}
 	}
 	for _, spec := range ra.Specialists {
@@ -130,7 +130,7 @@ func TestAutoRegenAllFiresRegenStartedForEverySpecialist(t *testing.T) {
 		}
 	}
 	for _, spec := range ra.Specialists {
-		if !m.busy[busyKey("acme", "widget", spec)] {
+		if !m.busy.Running(busyKey("acme", "widget", spec)) {
 			t.Errorf("regenerateAllForCurrentRepo should mark busy[%s|%s]", "acme/widget", spec)
 		}
 	}

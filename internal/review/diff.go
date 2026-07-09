@@ -8,15 +8,15 @@ import (
 
 // FileDiff is a structured view of one file in a unified diff.
 type FileDiff struct {
-	Path      string  // post-image path (the path findings refer to with side="RIGHT")
-	OldPath   string  // pre-image path; equal to Path unless renamed
-	IsBinary  bool    // diff was a "Binary files differ" stanza
-	IsNewFile bool    // appears as new file (a -> /dev/null reversed)
-	IsDeleted bool    // appears as deleted file
-	Additions int     // count of "+" lines (excluding "+++" headers)
-	Deletions int     // count of "-" lines (excluding "---" headers)
-	Hunks     []Hunk  // hunks in document order
-	Header    string  // raw "diff --git" line, useful when rendering full file
+	Path      string // post-image path (the path findings refer to with side="RIGHT")
+	OldPath   string // pre-image path; equal to Path unless renamed
+	IsBinary  bool   // diff was a "Binary files differ" stanza
+	IsNewFile bool   // appears as new file (a -> /dev/null reversed)
+	IsDeleted bool   // appears as deleted file
+	Additions int    // count of "+" lines (excluding "+++" headers)
+	Deletions int    // count of "-" lines (excluding "---" headers)
+	Hunks     []Hunk // hunks in document order
+	Header    string // raw "diff --git" line, useful when rendering full file
 }
 
 // Hunk is one @@ section of a unified diff.

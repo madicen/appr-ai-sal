@@ -4,11 +4,14 @@ import (
 	"fmt"
 	"strings"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review"
+	"github.com/madicen/appr-ai-sal/internal/tui/data"
+	"github.com/madicen/appr-ai-sal/internal/tui/diffview"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
@@ -43,16 +46,16 @@ func renderPostErrorBlock(err error, width int) string {
 }
 
 func renderVerdictBanner(canonical, shortLabel string, maxW int) string {
-	var border lipgloss.Color
+	var border lipgloss.TerminalColor
 	switch canonical {
 	case review.VibeVerdictApprove:
-		border = lipgloss.Color("#9ECE6A")
+		border = styles.OkColor
 	case review.VibeVerdictRequestChanges:
-		border = lipgloss.Color("#E0AF68")
+		border = styles.WarnColor
 	case review.VibeVerdictComment:
-		border = lipgloss.Color("#888888")
+		border = styles.DimColor
 	default:
-		border = lipgloss.Color("#888888")
+		border = styles.DimColor
 	}
 	inner := lipgloss.JoinVertical(lipgloss.Left,
 		styles.DimStyle.Render("Merge recommendation · vibe-coach"),
@@ -86,11 +89,15 @@ func (m *Model) renderSummaryBody() string {
 		}
 	}
 	onPR, sessPosted, skippedOnly := m.tallyCardKinds()
-	b.WriteString(fmt.Sprintf("Inline comments: %s already on PR, %s posted this session, %s skipped (%d total)\n\n",
+	b.WriteString(fmt.Sprintf("Inline comments: %s already on PR, %s posted this session, %s skipped (%d total)\n",
 		styles.OkStyle.Render(fmt.Sprintf("%d", onPR)),
 		styles.OkStyle.Render(fmt.Sprintf("%d", sessPosted)),
 		styles.DimStyle.Render(fmt.Sprintf("%d", skippedOnly)),
 		len(m.cards)))
+	if ul := m.usageLine(); ul != "" {
+		b.WriteString(ul + "\n")
+	}
+	b.WriteString("\n")
 
 	if m.summaryPhaseOfferApproveWithoutSummary() {
 		b.WriteString(styles.DimStyle.Render("You have not posted any inline comments this session. Submit GitHub APPROVE with an empty body (a) to approve without publishing the summary below, or post the summary as usual (y).") + "\n\n")
@@ -255,11 +262,11 @@ func (m *Model) renderPostedBody() string {
 
 func (m *Model) tallyCardKinds() (onPR, posted, skipped int) {
 	for _, c := range m.cards {
-		// Demoted (opt-in) cards aren't part of the AI's at-floor finding
-		// set: they start skipped by default, so counting them here would
-		// distort the summary routing (e.g. "skipped every objection →
-		// offer approve") and the verdict the arbiter/vibe-coach settled on.
-		if c.demoted {
+		// Demoted / memory-suppressed (opt-in) cards aren't part of the AI's
+		// at-floor finding set: they start skipped by default, so counting them
+		// here would distort the summary routing (e.g. "skipped every objection
+		// → offer approve") and the verdict the arbiter/vibe-coach settled on.
+		if c.demoted || c.memorySuppressed {
 			continue
 		}
 		switch c.state {
@@ -290,7 +297,15 @@ func (m *Model) View() string {
 	title := styles.BoldStyle.Render(m.titleForPhase()) + "  " + m.spinnerForPhase()
 	tabBar := m.renderTabBar(max(8, m.outerW-reviewChromeFrameW-reviewBodyPadW))
 	help := styles.DimStyle.Render(m.helpForPhase())
-	body := lipgloss.JoinVertical(lipgloss.Left, title, tabBar, "", m.vp.View(), "", help)
+	// Phase 5 item 5: per-severity counts strip under the tab bar, shown once
+	// the review has produced findings. Kept out of the running phase (the mix
+	// is still churning) and rendered as its own row so it never crowds a tab.
+	rows := []string{title, tabBar}
+	if counts := formatSeverityCounts(severityTally(m.cards)); counts != "" && m.phase != phaseRunning {
+		rows = append(rows, styles.DimStyle.Render("findings: ")+counts)
+	}
+	rows = append(rows, "", m.vp.View(), "", help)
+	body := lipgloss.JoinVertical(lipgloss.Left, rows...)
 	// Render at the chrome's expected content dims (outerW-2 × outerH-4 —
 	// box border + chrome rows). Setting an explicit Height pads the body
 	// to fill the area when the running phase has few rows so the modal's
@@ -339,10 +354,13 @@ func (m *Model) helpForPhase() string {
 	case phaseRunning:
 		return "tab/[ ] switch tab · j/k focus row · space expand · q abort · ↑/↓ scroll · wheel"
 	case phaseApprove:
+		if m.challengeActive {
+			return "ctrl+s send · esc close challenge"
+		}
 		if !m.done {
 			return "tab/[ ] switch tab · ↑/↓ scroll · q abort · wheel"
 		}
-		return "tab/[ ] switch tab · y post · n/s skip · ←/→ finding · R refresh PR · q abort · wheel"
+		return "tab/[ ] switch tab · y post · n/s skip · c challenge · x resurface · ←/→ finding · R refresh PR · q abort · wheel"
 	case phaseGeneratingSummary:
 		return "refining summary with your final selections… · q abort"
 	case phaseSummary:
@@ -370,11 +388,59 @@ func (m *Model) helpForPhase() string {
 func (m *Model) MarkSummaryPosted() {
 	m.summaryDone = true
 	m.posted = true
+	// B1 reviewer memory: fold this run's accept/skip/reversal decisions into
+	// the per-repo store now that the review has actually been posted. Doing it
+	// here (not on dry-run, which never reaches MarkSummaryPosted) means only
+	// real posts train the memory. syncUserSkipsToDraft mirrors the card skip
+	// states onto the draft; syncMemorySuppressionOutcomes records which
+	// suppressed findings were resurfaced-and-posted. RecordReviewerMemory is
+	// fail-open, so a store error never blocks the posted-state transition.
+	m.syncUserSkipsToDraft()
+	m.syncMemorySuppressionOutcomes()
+	review.RecordReviewerMemory(m.draft)
+	// U2: the review is posted, so the run is done — drop any persisted resume
+	// session for this head SHA so reopening the PR doesn't offer to resume a
+	// completed review.
+	m.clearSession()
 	// The receipt lives on the summary tab; focus it so the posted body
 	// renders and the summary tab's glyph flips to ✓.
 	m.activeTab = m.summaryTabIndex()
 	m.phase = phasePosted
 	m.rebuildBody()
+}
+
+// StatusRepliesCmd returns the command that posts B3's re-run status replies
+// on the tool's own prior review threads ("resolved" / "still present"), or nil
+// when they don't apply. It is gated to a REAL re-review post: not dry-run, not
+// demo, and only when the draft carries a prior cached review (a first review
+// has none, so nothing is posted). Root fires it right after MarkSummaryPosted.
+func (m *Model) StatusRepliesCmd() tea.Cmd {
+	if m.dryRun || m.demoMode || m.draft == nil || m.draft.PriorReview == nil {
+		return nil
+	}
+	return data.PostStatusRepliesCmd(m.draft.Ref, m.draft, m.existingThreads, m.viewer, m.demoMode)
+}
+
+// NoteStatusReplies records the outcome of the B3 re-run status replies in the
+// overlay log so the reviewer sees they were posted.
+func (m *Model) NoteStatusReplies(posted, failed int) {
+	if posted == 0 && failed == 0 {
+		return
+	}
+	msg := fmt.Sprintf("posted %d status repl%s to prior thread(s)", posted, plural(posted, "y", "ies"))
+	if failed > 0 {
+		msg += fmt.Sprintf(" (%d failed)", failed)
+	}
+	m.log = append(m.log, msg)
+	m.rebuildBody()
+}
+
+// plural picks the singular or plural suffix form for n.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // MarkPostError records an error (for inline post, summary post, or approve confirmation).
@@ -392,14 +458,17 @@ func (m *Model) MarkPostError(err error) {
 }
 
 // renderHunkSnippet draws a small diff window around the target line. Width
-// is the viewport content width.
-func renderHunkSnippet(h *review.Hunk, target, window, width int) string {
+// is the viewport content width. path selects the chroma lexer (Phase 5 item
+// 4); hl applies syntax highlighting + word-level emphasis and may be nil, in
+// which case the snippet renders as plain text (the pre-item-4 behaviour).
+func renderHunkSnippet(h *review.Hunk, path string, target, window, width int, hl *diffview.Highlighter) string {
 	if h == nil {
 		return ""
 	}
 	lines := review.HunkSnippet(h, target, window)
+	wordSegs := wordDiffForSnippet(lines)
 	var b strings.Builder
-	for _, ln := range lines {
+	for i, ln := range lines {
 		// Build a 6-char gutter: "  NNN " or "+/- NNN" with the correct sign.
 		var gutter, body string
 		switch ln.Kind {
@@ -415,6 +484,9 @@ func renderHunkSnippet(h *review.Hunk, target, window, width int) string {
 		default:
 			gutter = styles.DimStyle.Render("· ")
 			body = ln.Text
+		}
+		if hl != nil {
+			body = snippetStyledBody(path, ln.Text, wordSegs[i], hl)
 		}
 		focus := ""
 		if ln.NewNo == target && ln.Kind != review.DiffRemoved {

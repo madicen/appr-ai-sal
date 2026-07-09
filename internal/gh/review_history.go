@@ -2,7 +2,6 @@ package gh
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -18,54 +17,64 @@ type PullReviewRow struct {
 	SubmittedAt time.Time
 }
 
-// ListPullReviews returns submitted reviews for a pull request (API order), capped.
+// pullReviewAPIRow is one entry from the REST pulls/{n}/reviews list.
+type pullReviewAPIRow struct {
+	User *struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	State       string `json:"state"`
+	Body        string `json:"body"`
+	SubmittedAt string `json:"submitted_at"`
+}
+
+// ListPullReviews returns up to limit submitted reviews for a pull request (in
+// API order). PENDING/DISMISSED reviews are dropped and never count against
+// limit.
+//
+// R6.3: this used to fetch a single small page (min(limit*3, 30)) and cap the
+// result, which under-filled — a PR whose first page was dominated by
+// PENDING/DISMISSED entries could return far fewer than limit valid reviews
+// even though more existed on later pages. We now page through the endpoint
+// (per_page=100) until we've collected limit valid rows or run out of pages,
+// so the returned set is correctly filled.
 func ListPullReviews(ctx context.Context, owner, repo string, prNumber int, limit int) ([]PullReviewRow, error) {
 	if limit < 1 {
 		limit = 15
 	}
-	perPage := limit * 3
-	if perPage > 30 {
-		perPage = 30
-	}
-	if perPage < 5 {
-		perPage = 5
-	}
-	path := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews?per_page=%d", owner, repo, prNumber, perPage)
-	out, err := runJSON(ctx, []string{"api", path})
-	if err != nil {
-		return nil, fmt.Errorf("list reviews for #%d: %w", prNumber, err)
-	}
-	var raw []struct {
-		User *struct {
-			Login string `json:"login"`
-		} `json:"user"`
-		State       string `json:"state"`
-		Body        string `json:"body"`
-		SubmittedAt string `json:"submitted_at"`
-	}
-	if err := json.Unmarshal(out, &raw); err != nil {
-		return nil, fmt.Errorf("parse reviews for #%d: %w", prNumber, err)
-	}
+	const perPage = 100
 	var rows []PullReviewRow
-	for _, r := range raw {
-		if len(rows) >= limit {
+	for page := 1; page <= 20; page++ {
+		path := fmt.Sprintf("repos/%s/%s/pulls/%d/reviews?per_page=%d&page=%d", owner, repo, prNumber, perPage, page)
+		var raw []pullReviewAPIRow
+		if err := ghAPIGet(ctx, path, &raw); err != nil {
+			return nil, fmt.Errorf("list reviews for #%d: %w", prNumber, err)
+		}
+		if len(raw) == 0 {
 			break
 		}
-		if r.State == "PENDING" || r.State == "DISMISSED" {
-			continue
+		for _, r := range raw {
+			if r.State == "PENDING" || r.State == "DISMISSED" {
+				continue
+			}
+			author := ""
+			if r.User != nil {
+				author = r.User.Login
+			}
+			ts, _ := time.Parse(time.RFC3339, r.SubmittedAt)
+			rows = append(rows, PullReviewRow{
+				PRNumber:    prNumber,
+				Author:      author,
+				State:       r.State,
+				Body:        strings.TrimSpace(r.Body),
+				SubmittedAt: ts,
+			})
+			if len(rows) >= limit {
+				return rows, nil
+			}
 		}
-		author := ""
-		if r.User != nil {
-			author = r.User.Login
+		if len(raw) < perPage {
+			break
 		}
-		ts, _ := time.Parse(time.RFC3339, r.SubmittedAt)
-		rows = append(rows, PullReviewRow{
-			PRNumber:    prNumber,
-			Author:      author,
-			State:       r.State,
-			Body:        strings.TrimSpace(r.Body),
-			SubmittedAt: ts,
-		})
 	}
 	return rows, nil
 }

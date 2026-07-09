@@ -2,8 +2,6 @@ package gh
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -34,64 +32,95 @@ const (
 	DiscussionReview
 )
 
-// GetDiscussion fetches the PR's issue comments + review-summary bodies in
-// one GraphQL round trip and returns them merged + chronologically sorted.
-// Reviews whose body is blank (the "Approved with no comment" case) are
-// dropped so they don't clutter the timeline.
+// discussionCommentNode / discussionReviewNode mirror the two connections we
+// pull from the PR's Conversation tab.
+type discussionCommentNode struct {
+	Body      string `json:"body"`
+	CreatedAt string `json:"createdAt"`
+	URL       string `json:"url"`
+	Author    struct {
+		Login string `json:"login"`
+	} `json:"author"`
+}
+
+type discussionReviewNode struct {
+	Body        string `json:"body"`
+	State       string `json:"state"`
+	SubmittedAt string `json:"submittedAt"`
+	URL         string `json:"url"`
+	Author      struct {
+		Login string `json:"login"`
+	} `json:"author"`
+}
+
+// discussionData mirrors the `data` object of graphqlDiscussionQuery, with
+// pageInfo on both connections so GetDiscussion can cursor-loop (R6.3).
+type discussionData struct {
+	Repository struct {
+		PullRequest struct {
+			Comments struct {
+				PageInfo pageInfo                `json:"pageInfo"`
+				Nodes    []discussionCommentNode `json:"nodes"`
+			} `json:"comments"`
+			Reviews struct {
+				PageInfo pageInfo               `json:"pageInfo"`
+				Nodes    []discussionReviewNode `json:"nodes"`
+			} `json:"reviews"`
+		} `json:"pullRequest"`
+	} `json:"repository"`
+}
+
+// GetDiscussion fetches the PR's issue comments + review-summary bodies and
+// returns them merged + chronologically sorted. Reviews whose body is blank
+// (the "Approved with no comment" case) are dropped so they don't clutter the
+// timeline. Both connections are cursor-looped so a long conversation is no
+// longer truncated at the first 100 of each.
 func GetDiscussion(ctx context.Context, ref Ref) ([]DiscussionEvent, error) {
-	out, err := runGraphQL(ctx, graphqlDiscussionQuery, map[string]string{
-		"owner":  ref.Owner,
-		"name":   ref.Repo,
-		"number": fmt.Sprintf("%d", ref.Number),
-	})
-	if err != nil {
-		return nil, err
-	}
-	var resp struct {
-		Data struct {
-			Repository struct {
-				PullRequest struct {
-					Comments struct {
-						Nodes []struct {
-							Body      string `json:"body"`
-							CreatedAt string `json:"createdAt"`
-							URL       string `json:"url"`
-							Author    struct {
-								Login string `json:"login"`
-							} `json:"author"`
-						} `json:"nodes"`
-					} `json:"comments"`
-					Reviews struct {
-						Nodes []struct {
-							Body        string `json:"body"`
-							State       string `json:"state"`
-							SubmittedAt string `json:"submittedAt"`
-							URL         string `json:"url"`
-							Author      struct {
-								Login string `json:"login"`
-							} `json:"author"`
-						} `json:"nodes"`
-					} `json:"reviews"`
-				} `json:"pullRequest"`
-			} `json:"repository"`
-		} `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
-	}
-	if err := json.Unmarshal(out, &resp); err != nil {
-		return nil, fmt.Errorf("parse discussion response: %w", err)
-	}
-	if len(resp.Errors) > 0 {
-		msgs := make([]string, 0, len(resp.Errors))
-		for _, e := range resp.Errors {
-			msgs = append(msgs, e.Message)
+	var comments []discussionCommentNode
+	var reviews []discussionReviewNode
+	commentCursor, reviewCursor := "", ""
+	// Both connections page independently. We keep requesting until neither
+	// has a next page; connections that are already exhausted just return an
+	// empty page (after their endCursor) which we ignore.
+	commentsDone, reviewsDone := false, false
+	for !commentsDone || !reviewsDone {
+		data, err := graphQLQuery[discussionData](ctx, graphqlDiscussionQuery, map[string]any{
+			"owner":         ref.Owner,
+			"name":          ref.Repo,
+			"number":        ref.Number,
+			"commentCursor": nullableCursor(commentCursor),
+			"reviewCursor":  nullableCursor(reviewCursor),
+		})
+		if err != nil {
+			return nil, err
 		}
-		return nil, fmt.Errorf("graphql discussion: %s", strings.Join(msgs, "; "))
+		cc := data.Repository.PullRequest.Comments
+		rc := data.Repository.PullRequest.Reviews
+		if !commentsDone {
+			comments = append(comments, cc.Nodes...)
+			if cc.PageInfo.HasNextPage && cc.PageInfo.EndCursor != "" {
+				commentCursor = cc.PageInfo.EndCursor
+			} else {
+				commentsDone = true
+			}
+		}
+		if !reviewsDone {
+			reviews = append(reviews, rc.Nodes...)
+			if rc.PageInfo.HasNextPage && rc.PageInfo.EndCursor != "" {
+				reviewCursor = rc.PageInfo.EndCursor
+			} else {
+				reviewsDone = true
+			}
+		}
 	}
-	pr := resp.Data.Repository.PullRequest
-	events := make([]DiscussionEvent, 0, len(pr.Comments.Nodes)+len(pr.Reviews.Nodes))
-	for _, c := range pr.Comments.Nodes {
+	return discussionEventsFrom(comments, reviews), nil
+}
+
+// discussionEventsFrom merges the two node lists into the sorted event
+// timeline. Shared by GetDiscussion and the fused PR-agent prefetch.
+func discussionEventsFrom(comments []discussionCommentNode, reviews []discussionReviewNode) []DiscussionEvent {
+	events := make([]DiscussionEvent, 0, len(comments)+len(reviews))
+	for _, c := range comments {
 		t, _ := time.Parse(time.RFC3339, c.CreatedAt)
 		events = append(events, DiscussionEvent{
 			Kind:   DiscussionComment,
@@ -101,7 +130,7 @@ func GetDiscussion(ctx context.Context, ref Ref) ([]DiscussionEvent, error) {
 			URL:    c.URL,
 		})
 	}
-	for _, r := range pr.Reviews.Nodes {
+	for _, r := range reviews {
 		body := strings.TrimSpace(r.Body)
 		if body == "" {
 			// "Approved with no comment" — skip so the timeline stays
@@ -121,13 +150,14 @@ func GetDiscussion(ctx context.Context, ref Ref) ([]DiscussionEvent, error) {
 	sort.SliceStable(events, func(i, j int) bool {
 		return events[i].When.Before(events[j].When)
 	})
-	return events, nil
+	return events
 }
 
-const graphqlDiscussionQuery = `query($owner: String!, $name: String!, $number: Int!) {
+const graphqlDiscussionQuery = `query($owner: String!, $name: String!, $number: Int!, $commentCursor: String, $reviewCursor: String) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      comments(first: 100) {
+      comments(first: 100, after: $commentCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           body
           createdAt
@@ -135,7 +165,8 @@ const graphqlDiscussionQuery = `query($owner: String!, $name: String!, $number: 
           author { login }
         }
       }
-      reviews(first: 100) {
+      reviews(first: 100, after: $reviewCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes {
           body
           state

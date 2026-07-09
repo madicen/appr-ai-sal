@@ -6,11 +6,13 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/tui/data"
+	"github.com/madicen/appr-ai-sal/internal/tui/diffview"
 	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 
@@ -198,10 +200,24 @@ func (m *Model) agentCardIndices(name string) []int {
 	return out
 }
 
+// agentCardOrder returns the agent's card indices with the active triage
+// filter + sort (Phase 5 item 5) applied. This is the ordering the reviewer
+// actually walks and sees on the tab; the raw agentCardIndices is kept for
+// tallies (which must count every card regardless of the view filter). The
+// currently-focused card (m.idx) is always retained even if the severity floor
+// would hide it, so cycling the filter can't strand the cursor on a hidden
+// card.
+func (m *Model) agentCardOrder(name string) []int {
+	base := m.agentCardIndices(name)
+	return triageOrder(m.cards, base, m.triageSort, m.triageMinSev, m.idx)
+}
+
 // firstCardForAgent returns the global index of the agent's first pending
-// card, falling back to its first card; -1 when the agent has no cards.
+// card, falling back to its first card; -1 when the agent has no cards. It
+// respects the triage filter/sort so the initial focus lands on the first
+// card the reviewer will actually see.
 func (m *Model) firstCardForAgent(name string) int {
-	idxs := m.agentCardIndices(name)
+	idxs := m.agentCardOrder(name)
 	if len(idxs) == 0 {
 		return -1
 	}
@@ -287,6 +303,14 @@ type overlayAgentRow struct {
 	// row is expanded.
 	lastRetry string
 	expanded  bool
+	// streamTokens is the running count of streamed tokens/chunks for this
+	// agent's in-flight call (P6 streaming token-liveness). Shown as "~N tok"
+	// on a running row so a long call visibly progresses instead of looking
+	// hung. Monotonic within a call.
+	streamTokens int
+	// lastActivity is when the most recent streaming heartbeat arrived, so the
+	// renderer can tell the row is actively producing output.
+	lastActivity time.Time
 }
 
 // tabKind classifies the entries in the review overlay's tab bar.
@@ -379,6 +403,36 @@ type approvalCard struct {
 	// press y to post one by hand. renderCardDetail shows a "post anyway"
 	// banner instead of the plain skipped badge.
 	demoted bool
+	// memorySuppressed marks a card built from draft.MemorySuppressed — an
+	// inline finding the deterministic reviewer-memory suppressor (B1) held
+	// back BEFORE the arbiter because the reviewer has skipped a near-identical
+	// finding memorySuppSkipCount times in this repo. Like demoted cards they
+	// start cardSkipped and never affect the verdict, but the disclosure
+	// invites the reviewer to press `x` to resurface (un-suppress) the finding
+	// so they can post it. memorySuppIdx is its index in draft.MemorySuppressed
+	// so resurfacing can flip that entry's Resurfaced flag (fed back into the
+	// memory store at post time).
+	memorySuppressed    bool
+	memorySuppIdx       int
+	memorySuppSkipCount int
+	// threadReplyID is set (B3) when this finding's anchor matched an existing
+	// unresolved review thread: instead of a duplicate top-level inline
+	// comment, posting it routes an in-thread reply to this thread's node id.
+	// Empty means the historical top-level post. Populated by routeCardsToThreads
+	// once the PR's review threads are fetched.
+	threadReplyID string
+	// withdrawnViaChallenge is set when the specialist withdrew this finding
+	// during a B4 challenge exchange. The card is auto-skipped (state ==
+	// cardSkipped) and the detail view badges it as withdrawn-via-challenge
+	// rather than a plain skip, so the reviewer can tell the difference.
+	withdrawnViaChallenge bool
+	// edited is set (Phase 5 item 2) when the reviewer edited this finding's
+	// comment body before posting — inline (bubbles textarea) or via $EDITOR.
+	// The edited text lives directly on finding.Finding.Comment so the post
+	// payload (ReviewCommentBody / InlineReviewComment / file-level / dry-run)
+	// uses it automatically; this flag drives the "edited" badge and folds the
+	// text into CardDecision.EditedBody so a U2 resume restores the edit.
+	edited bool
 }
 
 // Model is the persistent overlay that hosts the entire review flow:
@@ -411,6 +465,11 @@ type Model struct {
 	// running view shows total elapsed time relative to this; per-agent timers
 	// show each specialist's duration after it finishes.
 	runStartedAt time.Time
+	// runUsage is the latest aggregated inference usage/cost snapshot the
+	// runner emitted (Stage="usage" running totals, then the Stage="done"
+	// final). Nil until the first metered call reports (or in demo/test runs
+	// that emit no usage), so the overlay omits the usage line gracefully.
+	runUsage *review.RunUsage
 
 	phase overlayPhase
 	// tabs is the tab-bar model: overview, one per output agent, then
@@ -464,6 +523,21 @@ type Model struct {
 	// first pass.
 	priorActivity gh.PriorAprrAISalActivity
 
+	// threadRefs holds the PR's unresolved review threads (with node IDs),
+	// fetched alongside the existing comments. B3 routes a card whose anchor
+	// matches one of these to an in-thread reply instead of a duplicate
+	// top-level comment (see routeCardsToThreads). Empty on a first review /
+	// when the fetch failed → every card posts top-level as before.
+	threadRefs []review.ThreadRef
+	// existingThreads is the raw review-thread set behind threadRefs, retained
+	// so the summary post can compute the B3 re-run status replies (which need
+	// the tool's own thread bodies to identify its prior threads).
+	existingThreads []gh.ReviewThread
+	// viewer is the resolved gh login (best effort; "" when unknown). Retained
+	// for the B3 re-run status replies so they only target the tool's own
+	// prior threads.
+	viewer string
+
 	// refreshing is true while a data.RefreshPRCmd is in flight. It disables the
 	// refresh button and shows an inline "refreshing PR…" status near the
 	// error so the user knows their R press was registered.
@@ -492,6 +566,62 @@ type Model struct {
 	// header so the user knows the summary they're seeing may be stale
 	// or missing fix-prompts.
 	coachErr error
+
+	// U2 draft-persistence bookkeeping. sessionDirty flags that a decision
+	// changed since the last write; sessionSaveSeq lets a later debounced save
+	// tick supersede an earlier pending one so a burst of decisions collapses
+	// to a single atomic write. See session.go.
+	sessionDirty   bool
+	sessionSaveSeq int
+
+	// B4 "challenge this finding" sub-state. When challengeActive is true the
+	// approve phase renders the scoped challenge exchange for the card at
+	// challengeCardIdx instead of the normal card detail: a textarea for the
+	// reviewer's question and a scrollable transcript of the multi-turn
+	// exchange. challengeInput is the bubbles textarea; challengeTranscript is
+	// the in-memory []review.ChallengeTurn carried into each scoped call so the
+	// specialist sees the whole conversation; challengeInFlight guards against
+	// double-submitting while a call is running; challengeErr holds the last
+	// call error (shown in the overlay, card left unchanged). See challenge.go.
+	challengeActive     bool
+	challengeCardIdx    int
+	challengeInput      textarea.Model
+	challengeTranscript []review.ChallengeTurn
+	challengeInFlight   bool
+	challengeErr        error
+
+	// Phase 5 item 2 "edit finding before posting" sub-state. When editActive
+	// is true the approve phase renders the inline comment editor for the card
+	// at editCardIdx instead of the normal card detail: a bubbles textarea
+	// pre-filled with the finding's current comment body. ctrl+s saves (the
+	// text replaces finding.Finding.Comment and the card is flagged edited),
+	// esc cancels (reverts — the original comment is untouched), ctrl+e hands
+	// the current buffer off to $EDITOR. editErr surfaces an $EDITOR round-trip
+	// failure. See edit.go.
+	editActive  bool
+	editCardIdx int
+	editInput   textarea.Model
+	editErr     error
+
+	// copyStatus is a brief, transient footer note after a clipboard copy
+	// (Phase 5 item 9): "copied finding", "copy failed: …", etc. Set when a
+	// util.ClipboardCopiedMsg arrives and cleared on the next navigation.
+	copyStatus string
+
+	// Phase 5 item 5 "finding triage": a view-only filter/sort over each
+	// agent tab's card list. triageSort selects the ordering (default / by
+	// severity / by confidence / by file); triageMinSev is the severity floor
+	// that hides lower-severity cards from the walk (empty = show all). Neither
+	// touches the Draft — see triage.go. The controls cycle with `S` (sort)
+	// and `f` (filter) on an agent tab and are surfaced in the card header.
+	triageSort   triageSortMode
+	triageMinSev review.Severity
+
+	// hl is the lazily-built chroma highlighter (Phase 5 item 4) used to
+	// syntax-colour the focused card's diff snippet. Lazily created via
+	// highlighter() so the existing constructors (New / NewResumed) don't all
+	// need touching, and so NO_COLOR is honoured at first use.
+	hl *diffview.Highlighter
 }
 
 func zoneOverlayAgent(i int) string {
@@ -704,6 +834,11 @@ func (m *Model) hydrateAgentRowsFromDraft(d *review.Draft) {
 	for _, f := range d.DemotedHidden {
 		demotedBySpec[f.Specialist] = append(demotedBySpec[f.Specialist], f.Finding)
 	}
+	// B1 memory-suppressed findings are also surfaced (as opt-in, resurfaceable
+	// cards), so they count toward what the agent's tab shows.
+	for _, ms := range d.MemorySuppressed {
+		demotedBySpec[ms.Specialist] = append(demotedBySpec[ms.Specialist], ms.Finding)
+	}
 	for _, sr := range d.Specialists {
 		i := m.agentIndex(sr.Specialist)
 		if i < 0 {
@@ -775,9 +910,28 @@ func (m *Model) AdoptDraft(d *review.Draft) tea.Cmd {
 	}
 	m.files = review.ParseDiff(d.Diff)
 	flat := d.FlatPostableFindingsForPost()
-	m.cards = make([]approvalCard, 0, len(flat)+len(d.DemotedHidden))
+	m.cards = make([]approvalCard, 0, len(flat)+len(d.DemotedHidden)+len(d.MemorySuppressed))
 	for _, f := range flat {
 		card := approvalCard{finding: f}
+		anchorCardToDiff(&card, m.files)
+		m.cards = append(m.cards, card)
+	}
+	// B1: findings the reviewer-memory suppressor held back before the arbiter
+	// (the reviewer skipped a near-identical finding N≥3 times). They are
+	// surfaced as disclosed, opt-in cards — never silently dropped — starting
+	// skipped, with an `x`-to-resurface affordance. They belong to their
+	// original specialist so they land on that agent's tab.
+	for i, ms := range d.MemorySuppressed {
+		if strings.TrimSpace(ms.Finding.Path) == "" || ms.Finding.Line <= 0 {
+			continue
+		}
+		card := approvalCard{
+			finding:             review.FlatFinding{Specialist: ms.Specialist, Finding: ms.Finding},
+			memorySuppressed:    true,
+			memorySuppIdx:       i,
+			memorySuppSkipCount: ms.SkipCount,
+			state:               cardSkipped,
+		}
 		anchorCardToDiff(&card, m.files)
 		m.cards = append(m.cards, card)
 	}
@@ -913,13 +1067,27 @@ func (m *Model) markCardsAlreadyOnGitHub(viewer string, existing []gh.PullReview
 	return nil
 }
 
-func (m *Model) firstPendingCardIndex() int {
+// routeCardsToThreads tags each postable card whose anchor matches an
+// unresolved review thread with that thread's node id (B3). At post time such
+// a card posts an in-thread reply instead of a duplicate top-level comment.
+// Demoted / memory-suppressed cards are left alone: they are opt-in and their
+// finding never went top-level, so a reply would be surprising. Cards already
+// marked cardAlreadyOnPR by the dedupe pass keep that state (it wins), because
+// routing runs first and the dedupe pass runs after.
+func (m *Model) routeCardsToThreads() {
+	if len(m.threadRefs) == 0 {
+		return
+	}
 	for i := range m.cards {
-		if m.cards[i].state == cardPending {
-			return i
+		c := &m.cards[i]
+		if c.demoted || c.memorySuppressed {
+			continue
+		}
+		route := review.RouteFinding(c.finding.Finding, m.threadRefs)
+		if route.Kind == review.RouteReply {
+			c.threadReplyID = route.ThreadID
 		}
 	}
-	return len(m.cards)
 }
 
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -940,6 +1108,15 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case data.ExistingPRCommentsMsg:
 		m.existingCommentsLoading = false
 		m.priorActivity = msg.Prior
+		m.viewer = msg.Viewer
+		// B3: build the unresolved-thread refs and route matching cards to
+		// in-thread replies. Done before the dedupe step so it runs even when
+		// the viewer login couldn't be resolved (anchor matching needs no
+		// viewer); the exact-duplicate dedupe below takes precedence on any
+		// card it marks cardAlreadyOnPR.
+		m.existingThreads = msg.Threads
+		m.threadRefs = review.UnresolvedThreadRefs(msg.Threads, msg.Viewer)
+		m.routeCardsToThreads()
 		if msg.Prior.Found() {
 			m.log = append(m.log, formatPriorActivityLog(msg.Prior))
 		}
@@ -957,6 +1134,14 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rebuildBody()
 		return m, cmd
 
+	case sessionSaveMsg:
+		// Debounced U2 session write: only the latest scheduled tick (seq)
+		// performs the write, coalescing a burst of decision changes.
+		if msg.seq == m.sessionSaveSeq && m.sessionDirty {
+			m.persistSession()
+		}
+		return m, nil
+
 	case data.StagedFindingPostedMsg:
 		// Single finding succeeded — mark current as posted and advance.
 		var advCmd tea.Cmd
@@ -965,13 +1150,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			advCmd = m.advanceCard()
 		}
 		m.rebuildBody()
-		return m, advCmd
+		return m, tea.Batch(advCmd, m.scheduleSessionSave())
 
 	case data.PRRefreshedMsg:
 		// User pressed R after a 422 / drift; we have a fresh PR + diff. Adopt
 		// it and re-anchor every pending card to the new diff so the next y
 		// press hits an up-to-date commit_id and a valid line.
 		m.applyPRRefresh(msg.PR, msg.Diff)
+		return m, nil
+
+	case ChallengeDoneMsg:
+		return m, m.onChallengeDone(msg)
+
+	case EditorFinishedMsg:
+		return m, m.onEditorFinished(msg)
+
+	case util.ClipboardCopiedMsg:
+		m.onClipboardCopied(msg)
 		return m, nil
 
 	case VibeCoachDoneMsg:
@@ -1009,7 +1204,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch {
 		case m.phase == phaseApprove && m.idx >= 0 && m.idx < len(m.cards):
 			m.cards[m.idx].state = cardPosted // treat preview as accepted under dry-run
-			advCmd = m.advanceCard()
+			advCmd = tea.Batch(m.advanceCard(), m.scheduleSessionSave())
 		case m.phase == phaseSummary, m.phase == phaseConfirmApprove:
 			// Mirror the real-post path: record the receipt and move to
 			// phasePosted so the user gets a "Close (enter)" hint instead of
@@ -1043,6 +1238,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Phase 5 item 2: while the inline comment editor is open it owns all
+	// keyboard input (the textarea must receive every rune, including tab), so
+	// route to the edit handler before tab-navigation / digit shortcuts can
+	// steal a keystroke. ctrl+s save / esc cancel are handled inside it.
+	if m.editActive {
+		return m.handleEditKey(msg)
+	}
+	// B4: while a challenge exchange is open it owns all keyboard input — the
+	// textarea must receive every rune (including tab), so route to the
+	// challenge handler before the tab-navigation / digit shortcuts below can
+	// steal a keystroke. esc/ctrl+s and friends are handled inside it.
+	if m.challengeActive {
+		return m.handleChallengeKey(msg)
+	}
 	// Tab navigation works from every phase: the user can browse the
 	// overview, any finished agent, and (once ready) the summary at will.
 	switch msg.String() {
@@ -1082,7 +1291,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// The goroutine continues; if it eventually finishes, m.draft on the
 			// root model is populated and the user can press 'a' to reopen
 			// approval against that draft.
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	case phaseApprove:
 		switch msg.String() {
@@ -1095,6 +1304,28 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.actPostCurrent()
 		case "n", "N", "s":
 			return m.actSkipCurrent()
+		case "x", "X":
+			// Resurface a reviewer-memory-suppressed finding: bring it back
+			// from suppressed→pending so the reviewer can post it with y. A
+			// no-op on any other card.
+			return m.actResurfaceCurrent()
+		case "c", "C":
+			// B4: open a scoped challenge exchange for the focused finding.
+			// A no-op when there's no challengeable card focused.
+			return m.actOpenChallenge()
+		case "e":
+			// Phase 5 item 2: edit this finding's comment inline before posting.
+			return m.actOpenEdit()
+		case "E":
+			// Phase 5 item 2: edit this finding's comment via $EDITOR (falls
+			// back to the inline textarea when $EDITOR is unset).
+			return m.actOpenEditor()
+		case "ctrl+y":
+			// Phase 5 item 9: copy the focused finding (location + comment).
+			return m.actCopyFinding()
+		case "ctrl+o":
+			// Phase 5 item 9: copy the focused finding's diff hunk.
+			return m.actCopyHunk()
 		case "right", "l":
 			return m.actNext()
 		case "left", "h":
@@ -1107,8 +1338,18 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// the current diff. The handler is a no-op when the card
 			// isn't in a state where this makes sense.
 			return m.actPostCurrentFileLevel()
+		case "S":
+			// Phase 5 item 5: cycle the card sort mode (view-only).
+			return m.actCycleTriageSort()
+		case "f":
+			// Phase 5 item 5: cycle the severity floor filter (view-only).
+			return m.actCycleTriageFilter()
+		case "J":
+			// Phase 5 item 4: jump the PR-detail diff pane to this finding's
+			// anchor (emits JumpToDiffMsg for the root to handle).
+			return m.actJumpToDiff()
 		case "q", "esc":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	case phaseGeneratingSummary:
 		// Refining-summary interstitial. The only escape is to abort
@@ -1116,7 +1357,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// VibeCoachDoneMsg to flip into phaseSummary.
 		switch msg.String() {
 		case "q", "esc":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 		return m, nil
 	case phaseSummary:
@@ -1136,7 +1377,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "r", "R":
 			return m.actRefreshPR()
 		case "esc", "q":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	case phaseConfirmApprove:
 		switch msg.String() {
@@ -1167,12 +1408,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "r", "R":
 			return m.actRefreshPR()
 		case "esc", "q":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	case phasePosted:
 		switch msg.String() {
 		case "esc", "enter", "q", " ":
-			return m, func() tea.Msg { return CloseMsg{} }
+			return m, m.closeCmd()
 		}
 	}
 	// Fall through: pass scroll keys to the viewport.
@@ -1222,6 +1463,9 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if z := zone.Get(zones.StagedSkip); z != nil && z.InBounds(msg) {
 				return m.actSkipCurrent()
 			}
+			if z := zone.Get(zones.StagedChallenge); z != nil && z.InBounds(msg) {
+				return m.actOpenChallenge()
+			}
 			if z := zone.Get(zones.StagedNext); z != nil && z.InBounds(msg) {
 				return m.actNext()
 			}
@@ -1232,7 +1476,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m.actRefreshPR()
 			}
 			if z := zone.Get(zones.StagedQuit); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return CloseMsg{} }
+				return m, m.closeCmd()
 			}
 		case phaseSummary:
 			if z := zone.Get(zones.StagedSummaryYes); z != nil && z.InBounds(msg) {
@@ -1253,7 +1497,7 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m.actRefreshPR()
 			}
 			if z := zone.Get(zones.StagedQuit); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return CloseMsg{} }
+				return m, m.closeCmd()
 			}
 		case phaseConfirmApprove:
 			if z := zone.Get(zones.StagedSummaryYes); z != nil && z.InBounds(msg) {
@@ -1284,11 +1528,11 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m.actRefreshPR()
 			}
 			if z := zone.Get(zones.StagedQuit); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return CloseMsg{} }
+				return m, m.closeCmd()
 			}
 		case phasePosted:
 			if z := zone.Get(zones.PostedOK); z != nil && z.InBounds(msg) {
-				return m, func() tea.Msg { return CloseMsg{} }
+				return m, m.closeCmd()
 			}
 		}
 	}

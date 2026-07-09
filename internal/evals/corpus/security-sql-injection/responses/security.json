@@ -1,0 +1,13 @@
+{
+  "summary": "User input is interpolated into a SQL statement.",
+  "findings": [
+    {
+      "path": "db/user.go",
+      "line": 9,
+      "side": "RIGHT",
+      "severity": "error",
+      "comment": "This builds the query with fmt.Sprintf and untrusted input, which is a SQL injection. Use a parameterized query with a placeholder and pass name as an argument instead.",
+      "anchor_excerpt": "\tquery := fmt.Sprintf(\"SELECT * FROM users WHERE name = '%s'\", name)"
+    }
+  ]
+}

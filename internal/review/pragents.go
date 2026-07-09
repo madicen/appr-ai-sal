@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 )
@@ -27,20 +28,18 @@ const (
 // AllPRAgents is the ordered set of PR-level agents. Description and Scope read
 // only the title/body/diff; Checks reads the CI rollup; Discussion reads the
 // unresolved review threads and conversation.
-var AllPRAgents = []string{
-	SpecDescription,
-	SpecChecks,
-	SpecDiscussion,
-	SpecScope,
-}
+//
+// Like AllSpecialists it is derived from the declarative registry
+// (registry.go): its KindPRWide members in registry order, kept exported for
+// callers.
+var AllPRAgents = builtinNames(KindPRWide)
 
-// IsPRAgent reports whether name is one of the PR-level agents.
+// IsPRAgent reports whether name is one of the PR-level agents. It consults the
+// registry (Kind == KindPRWide) rather than a hard-coded name switch, so a
+// user-defined PR-wide specialist is classified correctly too.
 func IsPRAgent(name string) bool {
-	switch name {
-	case SpecDescription, SpecChecks, SpecDiscussion, SpecScope:
-		return true
-	}
-	return false
+	s, ok := lookupSpec(name)
+	return ok && s.Kind == KindPRWide
 }
 
 // PRAgentInput carries the PR-level signals the agents reason over. The runner
@@ -51,6 +50,18 @@ type PRAgentInput struct {
 	Checks     *gh.ChecksReport
 	Threads    []gh.ReviewThread
 	Discussion []gh.DiscussionEvent
+	// StaticAnnotations is the pre-rendered static-analysis annotations block
+	// (Q5.b) — deterministic tool output run locally on the changed files. Only
+	// the checks agent consumes it (it is the agent that reasons over
+	// mechanical PR health); empty when the pre-pass produced no annotations.
+	StaticAnnotations string
+	// PriorFindingsStatus is the pre-rendered `## Prior review findings`
+	// section (B2 incremental re-review) — the findings a prior review of an
+	// earlier head SHA produced, tagged with whether their file changed since.
+	// Only the discussion agent consumes it (it is the agent that verifies
+	// whether prior feedback was addressed). Empty on a first review (no prior
+	// cache), so the discussion prompt is then byte-identical to pre-B2.
+	PriorFindingsStatus string
 }
 
 // runPRAgent runs a single PR-level agent over the PR metadata and diff and
@@ -60,7 +71,11 @@ type PRAgentInput struct {
 // line 0) which the anchor gates leave untouched, but an agent may still anchor
 // a concrete fix to a changed line (e.g. the Checks agent), so the same gates
 // apply.
-func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, in PRAgentInput) SpecialistResult {
+// intentSection is the pre-rendered Q8 `## PR author intent` block. It is
+// non-empty only for intent-aware PR agents (scope) AND only when the pre-pass
+// extracted something; "" for every other agent and for a no-op pre-pass, so
+// those prompts are byte-for-byte unchanged from before Q8.
+func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree string, pr *gh.PR, diff string, in PRAgentInput, intentSection string) SpecialistResult {
 	res := SpecialistResult{Specialist: name, Findings: []Finding{}}
 
 	systemPrompt, err := SpecialistPrompt(name)
@@ -69,12 +84,15 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 		return res
 	}
 
-	userPrompt := buildPRAgentUserPrompt(name, pr, diff, in, cfg.ReviewStrictness)
+	userPrompt := buildPRAgentUserPrompt(name, pr, diff, in, cfg.ReviewStrictness, intentSection)
 	// PR agents do not inject repo/lang/tech briefs; pass hasRepoContext=false
 	// so non-Claude backends get the diff-only tooling hint.
-	systemPrompt, userPrompt = augmentPromptsForProvider(cfg.Provider, systemPrompt, userPrompt, false)
+	systemPrompt, userPrompt = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, systemPrompt, userPrompt, false)
 
-	out, err := Complete(ctx, cfg, systemPrompt, userPrompt, worktree)
+	// R5: PR agents get the slim schema (no suggestion/anchor_excerpt fields),
+	// matching the slim prAgentOutputContract; user-defined PR-wide specs share
+	// it via schemaForAgent's Kind check.
+	out, err := completeJSONWithSchema(ctx, cfg, systemPrompt, userPrompt, worktree, schemaForAgent(name))
 	if err != nil {
 		res.Err = err
 		return res
@@ -89,18 +107,20 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 	if parsed.Findings != nil {
 		floor := MinSeverityForStrictness(cfg.ReviewStrictness)
 		res.Findings = FilterFindingsBySeverity(parsed.Findings, floor)
+		res.RawSuggestionAttempts = countInlineSuggestionAttempts(res.Findings)
 		// Keep each PR agent in its lane before any anchor/suggestion work:
 		// description/scope are whole-PR judgments (force PR-wide) and the
 		// discussion agent may only anchor to an actual review thread. This
 		// runs first so we never waste a repair call on a finding we are
 		// about to drop or de-anchor. See constrainPRAgentScope.
 		res.Findings = constrainPRAgentScope(name, res.Findings, in.Threads)
-		if name == SpecDiscussion {
+		if spec, ok := lookupSpec(name); ok && spec.RebuttalAware {
 			// Backstop: when the PR author had the last word in an unresolved
 			// thread (e.g. "it's already there" with a link), the concern is
 			// disputed, not unaddressed. Demote a "not addressed" finding so
 			// it doesn't block on the author's own rebuttal. See
-			// downrankAuthorRebuttedThreads.
+			// downrankAuthorRebuttedThreads. Registry-driven (RebuttalAware)
+			// rather than a hard-coded SpecDiscussion comparison.
 			res.Findings = downrankAuthorRebuttedThreads(pr, res.Findings, in.Threads)
 		}
 		parsedFiles := ParseDiff(diff)
@@ -109,7 +129,7 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 		res.Findings = validateAnchorExcerpt(res.Findings, parsedFiles)
 		res.Findings = validateNamingConvention(res.Findings)
 		res.Findings = synthesizeSuggestions(res.Findings, parsedFiles)
-		res.Findings = repairMissingSuggestions(ctx, cfg, worktree, name, res.Findings, parsedFiles)
+		res.Findings, res.RepairFired, res.RepairSucceeded = repairMissingSuggestions(ctx, cfg, worktree, name, res.Findings, parsedFiles)
 		res.Findings = FilterFindingsBySeverity(res.Findings, floor)
 	}
 	return res
@@ -131,8 +151,12 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 //   - checks (and anything else): unchanged — Checks legitimately anchors a fix
 //     to a failing-check line.
 func constrainPRAgentScope(name string, findings []Finding, threads []gh.ReviewThread) []Finding {
-	switch name {
-	case SpecDescription, SpecScope:
+	spec, ok := lookupSpec(name)
+	if !ok {
+		return findings
+	}
+	switch spec.PRScope {
+	case ScopeWholePR:
 		for i := range findings {
 			f := &findings[i]
 			if findingIsInlinePostable(*f) {
@@ -145,7 +169,7 @@ func constrainPRAgentScope(name string, findings []Finding, threads []gh.ReviewT
 			}
 		}
 		return findings
-	case SpecDiscussion:
+	case ScopeThreadAnchored:
 		anchors := unresolvedThreadAnchors(threads)
 		out := findings[:0]
 		for _, f := range findings {
@@ -318,7 +342,7 @@ func threadAnchorKey(path string, line int) string {
 // orients the model on what data it has.
 const prAgentIntro = "You are reviewing a pull request as a whole, not line by line. The PR's head branch is checked out in the working directory and you may read files for extra context, but focus strictly on the single aspect described in the system prompt above. Base your judgement on the PR metadata, the unified diff, and the sections in this message.\n\n"
 
-func buildPRAgentUserPrompt(name string, pr *gh.PR, diff string, in PRAgentInput, strict aiconfig.ReviewStrictness) string {
+func buildPRAgentUserPrompt(name string, pr *gh.PR, diff string, in PRAgentInput, strict aiconfig.ReviewStrictness, intentSection string) string {
 	var b strings.Builder
 	b.WriteString(prAgentIntro)
 	b.WriteString("PR: " + pr.Repository + "#")
@@ -336,20 +360,45 @@ func buildPRAgentUserPrompt(name string, pr *gh.PR, diff string, in PRAgentInput
 	}
 	b.WriteString("\n\n")
 
+	// Q8: extracted author-intent section (empty for non-intent-aware agents
+	// and for a no-op pre-pass → byte-identical to pre-Q8 output).
+	if s := strings.TrimSpace(intentSection); s != "" {
+		b.WriteString(s)
+		b.WriteString("\n\n")
+	}
+
 	b.WriteString(strictnessBlockForSpecialists(strict))
 
 	switch name {
 	case SpecChecks:
 		b.WriteString(formatChecksSection(in.Checks))
+		// Q5.b: feed the checks agent the static-analysis pre-pass annotations
+		// (local deterministic tool output) alongside the CI rollup.
+		if s := strings.TrimSpace(in.StaticAnnotations); s != "" {
+			b.WriteString(s)
+			b.WriteString("\n\n")
+		}
 	case SpecDiscussion:
 		b.WriteString(formatDiscussionSection(in.Threads, in.Discussion))
+		// B2: on a re-review, feed the discussion agent the prior review's
+		// findings tagged with whether their file changed since, so it can
+		// note which were addressed by the new commits. Empty on a first
+		// review → byte-identical to pre-B2.
+		if s := strings.TrimSpace(in.PriorFindingsStatus); s != "" {
+			b.WriteString(s)
+			b.WriteString("\n\n")
+		}
 	}
 
 	b.WriteString("Unified diff (line numbers in `+` hunks are the lines you cite in findings, with side=\"RIGHT\"):\n\n")
 	b.WriteString("```diff\n")
 	b.WriteString(diff)
 	b.WriteString("\n```\n\n")
-	b.WriteString(reviewOutputContract)
+	// PR agents get the dedicated slim contract (no suggestion mechanics) —
+	// their inline suggestions are force-stripped / never produced, so the
+	// full reviewOutputContract's ~2.5k tokens of suggestion machinery is dead
+	// weight for them. See contracts.go.
+	b.WriteString(prAgentOutputContract)
 	return b.String()
 }
 
@@ -386,7 +435,11 @@ func formatChecksSection(report *gh.ChecksReport) string {
 		fmt.Fprintf(&b, "Failing / erroring checks (%d):\n\n", len(failing))
 		for _, r := range failing {
 			state := checkRunState(r)
-			fmt.Fprintf(&b, "- %s [%s]\n", checkRunName(r), state)
+			required := "optional"
+			if r.Required {
+				required = "required"
+			}
+			fmt.Fprintf(&b, "- %s [%s] (%s for merge)\n", checkRunName(r), state, required)
 			if t := strings.TrimSpace(r.Title); t != "" {
 				b.WriteString("  Title: " + t + "\n")
 			}
@@ -406,7 +459,11 @@ func formatChecksSection(report *gh.ChecksReport) string {
 	if len(passing) > 0 {
 		names := make([]string, 0, len(passing))
 		for _, r := range passing {
-			names = append(names, checkRunName(r))
+			label := checkRunName(r)
+			if r.Required {
+				label += " (required)"
+			}
+			names = append(names, label)
 		}
 		b.WriteString("Passing / other checks: " + strings.Join(names, ", ") + "\n\n")
 	}

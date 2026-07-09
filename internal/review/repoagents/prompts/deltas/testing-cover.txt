@@ -1,0 +1,16 @@
+- **Test framework / runner.** What the repo uses (go `testing`, jest, vitest,
+  pytest, rspec, jest-vitest mix, etc.) and how tests are invoked
+  (`make test`, `go test ./...`, `npm test`, CI workflow).
+- **Test layout.** Where tests live (alongside source as `_test.go`,
+  `tests/` dir, `__tests__`, integration suites in `e2e/`); naming patterns;
+  table-driven vs. behavioural style.
+- **What the repo expects to be tested.** From conventions and review
+  history: which kinds of changes consistently land without tests (small
+  refactors, doc-only changes, internal helpers) and which kinds always get
+  test additions (handlers, parsers, anything user-visible).
+- **Mocking / fixtures conventions.** Hand-written fakes vs. mockgen,
+  database isolation strategy, network mocking, golden files.
+- **What past reviewers have *blocked on* vs. *waved through*.** If the
+  history digest shows merged PRs going through with no test additions for
+  certain change shapes, name them. Likewise call out "this team always asks
+  for a regression test on bug fixes" if that's visible.

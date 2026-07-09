@@ -1,0 +1,14 @@
+{
+  "id": "tech-iac-s3-tags",
+  "title": "Add S3 bucket policy",
+  "target": "tech",
+  "repo": "acme/infra",
+  "number": 108,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/bucket-policy",
+  "body": "Attaches a policy to the artifacts bucket.",
+  "strictness": "balanced",
+  "additions": 6,
+  "changed_files": 1
+}

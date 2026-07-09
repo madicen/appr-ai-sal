@@ -1,0 +1,16 @@
+{
+  "must_appear": [
+    {
+      "specialist": "security",
+      "path": "blob/checksum.go",
+      "line": 9,
+      "line_tolerance": 1,
+      "pattern": "(?i)md5|sha256|collision",
+      "note": "seeded weak-hash bug"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": {
+    "security": true
+  }
+}

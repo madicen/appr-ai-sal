@@ -2,7 +2,6 @@ package gh
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -27,10 +26,6 @@ func ListPullReviewComments(ctx context.Context, ref Ref) ([]PullReviewComment, 
 	for page := 1; page <= 25; page++ {
 		path := fmt.Sprintf("repos/%s/%s/pulls/%d/comments?per_page=%d&page=%d",
 			ref.Owner, ref.Repo, ref.Number, perPage, page)
-		out, err := runJSON(ctx, []string{"api", path})
-		if err != nil {
-			return nil, err
-		}
 		var raw []struct {
 			Body string `json:"body"`
 			Path string `json:"path"`
@@ -41,8 +36,8 @@ func ListPullReviewComments(ctx context.Context, ref Ref) ([]PullReviewComment, 
 			} `json:"user"`
 			CreatedAt string `json:"created_at"`
 		}
-		if err := json.Unmarshal(out, &raw); err != nil {
-			return nil, fmt.Errorf("parse pull comments for #%d: %w", ref.Number, err)
+		if err := ghAPIGet(ctx, path, &raw); err != nil {
+			return nil, err
 		}
 		if len(raw) == 0 {
 			break

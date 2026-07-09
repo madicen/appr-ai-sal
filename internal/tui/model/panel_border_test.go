@@ -59,4 +59,3 @@ func TestPanelFitsWithinTerminalWidth(t *testing.T) {
 		})
 	}
 }
-

@@ -6,40 +6,76 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
+	"github.com/madicen/appr-ai-sal/internal/applog"
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
 	"github.com/madicen/appr-ai-sal/internal/review/langagents"
 	"github.com/madicen/appr-ai-sal/internal/review/repoagents"
+	"github.com/madicen/appr-ai-sal/internal/review/repocontext"
+	"github.com/madicen/appr-ai-sal/internal/review/staticpass"
 	"github.com/madicen/appr-ai-sal/internal/review/techagents"
 )
 
 // Progress messages are emitted on the channel returned by Run so the TUI can
 // stream updates to the user as specialists complete.
 type Progress struct {
-	Stage   string // "checkout", "diff", "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "pr-agent", "vibe-coach", "repo-arbiter", "done"; specialist/pr-agent Detail is "<name>:start"/"<name>:done"/"<name>:retry N (...)" (pr-agent also emits "warning: ..." for fetch failures); vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed
+	Stage   string // "checkout", "diff", "incremental" (B2 re-review plan), "repo-context", "repo-agents", "tech-agents", "lang-agents", "repo-evidence", "context-summary", "convention-witness", "specialist", "pr-agent", "vibe-coach", "repo-arbiter", "circuit-breaker", "degraded", "usage", "done"; specialist/pr-agent Detail is "<name>:start"/"<name>:done"/"<name>:retry N (...)"/"<name>:skipped" (pr-agent also emits "warning: ..." for fetch failures); vibe-coach Detail is "start"/"done"/"retry N (...)" or "skipped" when downstream agents are bypassed; circuit-breaker/degraded (R4) carry the abort reason / partial-degradation summary in Detail
 	Detail  string // free-form detail about the stage
 	Err     error  // non-nil if this stage hit an error worth surfacing
 	Result  *SpecialistResult
 	Vibe    *VibeCoachResult
 	Arbiter *RepoArbiterResult // populated on Stage="repo-arbiter" Detail="done"
 	Final   *Draft             // populated only on the final "done" message
+	// Usage carries a running snapshot of aggregated inference usage/cost.
+	// It rides Stage="usage" events (running totals as calls complete) and the
+	// final Stage="done" event (the run total). Nil on every other event.
+	Usage *RunUsage
+	// Activity carries a throttled streaming-liveness heartbeat (P6 streaming).
+	// It rides Stage="activity" events as a streaming stage emits tokens, so
+	// the running overlay can show a long call visibly progressing (a growing
+	// token count on the agent row) instead of looking hung. Nil on every
+	// other event.
+	Activity *StreamActivity
 }
 
-// perStageBudget is the max wall-clock per individual AI stage (specialist,
-// vibe-coach, expert, arbiter). It's intentionally generous — the user can
-// always abort with q from the running overlay, and we no longer wrap the
-// whole review in a single context.WithTimeout that cuts off downstream
-// stages mid-pipeline.
+// StreamActivity is a streaming-liveness heartbeat for the running overlay. It
+// carries the stage label (so the overlay can attach it to the right agent
+// row) and the running token count for that call.
+type StreamActivity struct {
+	// Stage is the applog stage label, e.g. "specialist security",
+	// "pr-agent description", "repo-arbiter", "vibe-coach".
+	Stage string
+	// Tokens is the approximate running count of streamed tokens/chunks for the
+	// call, for a live "~N tok" indicator.
+	Tokens int
+}
+
+// perStageBudget is the ABSOLUTE ceiling per individual AI stage (specialist,
+// vibe-coach, expert, arbiter) — a safety net, not the primary liveness guard.
+//
+// P6 streaming made the idle/first-byte timeouts (derived from TimeoutSec) the
+// real liveness guard: a slow-but-alive stream resets its idle timer and keeps
+// going, so this ceiling must sit comfortably ABOVE the idle timeout or it
+// would re-introduce exactly the "kills a long-but-active generation at
+// TimeoutSec" bug streaming was meant to fix. We therefore size it as a
+// generous multiple of the idle timeout (with a floor), so a genuinely wedged
+// stage still eventually aborts while an actively streaming one never is. The
+// user can always abort with q from the running overlay.
 func perStageBudget(cfg *aiconfig.Config) time.Duration {
-	d := cfg.RunContextTimeout()
-	if d < 5*time.Minute {
-		d = 5 * time.Minute
+	idle := cfg.StreamIdleTimeout()
+	d := 6 * idle
+	if d < 30*time.Minute {
+		d = 30 * time.Minute
 	}
 	return d
 }
@@ -62,14 +98,51 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 	go func() {
 		defer close(out)
 
+		applog.Info("review run start", "ref", ref.String(), "provider", string(runCfg.Provider), "strictness", string(runCfg.ReviewStrictness))
+
+		// R1: meter every inference call this run makes. The observer is
+		// installed on the run's context, so every stage that derives from it
+		// (specialists, PR agents, arbiter, witness, vibe-coach, the repair
+		// pass, the context-vs-change summary) reports usage/cost through the
+		// single ai provider layer — no per-signature sink threading. The
+		// accumulator is concurrency-safe because parallel specialists/PR
+		// agents report from their own goroutines.
+		runStart := time.Now()
+		usageAcc := newUsageAccumulator()
+		ctx = ai.WithUsageObserver(ctx, func(r ai.CallReport) {
+			usageAcc.record(r)
+			// Emit a running-total snapshot so the overlay can show usage
+			// climbing live. Sends are safe alongside the parallel stage
+			// goroutines already writing to out; the channel is only closed
+			// after every inference call has returned.
+			snap := usageAcc.snapshot(time.Since(runStart))
+			out <- Progress{Stage: "usage", Usage: &snap}
+		})
+
+		// P6 streaming: stream every stage this run makes (SSE for HTTP
+		// providers, --output-format stream-json for the claude CLI). This is
+		// the single install point — every stage context derives from ctx, so
+		// the ai.Complete shim sees WithStreaming and sets Request.Stream.
+		ctx = ai.WithStreaming(ctx)
+		// Surface token-liveness: as a streaming stage emits deltas, forward a
+		// throttled heartbeat as a Stage="activity" Progress event so the
+		// running overlay shows the call progressing. The observer may fire
+		// from parallel stage goroutines (like the usage observer); the same
+		// channel-lifetime guarantee applies.
+		ctx = ai.WithActivityObserver(ctx, func(r ai.ActivityReport) {
+			out <- Progress{Stage: "activity", Activity: &StreamActivity{Stage: r.Stage, Tokens: r.Tokens}}
+		})
+
 		pr, err := gh.GetPR(ctx, ref)
 		if err != nil {
+			applog.Error("review stage failed", "stage", "fetch-pr", "ref", ref.String(), "err", err.Error())
 			out <- Progress{Stage: "fetch-pr", Err: fmt.Errorf("fetch PR: %w", err)}
 			return
 		}
 
 		worktree, err := prepareWorktree(ctx, ref)
 		if err != nil {
+			applog.Error("review stage failed", "stage", "checkout", "ref", ref.String(), "err", err.Error())
 			out <- Progress{Stage: "checkout", Err: fmt.Errorf("prepare worktree: %w", err)}
 			return
 		}
@@ -82,12 +155,91 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		}
 		out <- Progress{Stage: "diff", Detail: fmt.Sprintf("%d bytes", len(diff))}
 
+		// B2: incremental re-review. When a prior review of this PR (an earlier
+		// head SHA) is cached, plan carries the interdiff (which files changed),
+		// the carried-forward prior findings on unchanged files, and the
+		// discussion agent's prior-findings section. plan is nil on a FIRST
+		// review (no cache) — the pipeline below then runs exactly as it did
+		// before B2 (the first-review backward-compat guarantee). Fully
+		// fail-open: any cache problem yields nil → full review.
+		plan := planIncremental(ref, pr, diff)
+		if plan != nil {
+			out <- Progress{Stage: "incremental", Detail: plan.progressDetail()}
+		}
+
 		rc, rerr := repoconfig.Load()
 		if rerr != nil {
 			rc = repoconfig.Default()
 			out <- Progress{Stage: "repo-context", Detail: "config: " + rerr.Error()}
 		}
 		repoconfig.ApplyParallelExecutionEnv(rc)
+
+		// R2: install a single per-run weighted semaphore on the context so no
+		// more than MaxConcurrentInference (default 3) inference calls run
+		// concurrently across the WHOLE run — every stage goroutine derives
+		// from this ctx, so the cap is shared across specialists, PR agents,
+		// the hidden repair pass, and the arbiter/witness regardless of the
+		// parallel toggles. This is the client-side rate limit that makes the
+		// parallel defaults safe. No inference has happened yet at this point
+		// (only gh/git fetches), so no call escapes the cap.
+		ctx = ai.WithConcurrencyLimit(ctx, rc.MaxConcurrentInferenceOrDefault())
+
+		// Q8: PR-author intent pre-pass. One cheap LLM call over the PR
+		// description + linked issues, extracted into a structured section
+		// injected into the intent-aware stages (scope, testing, vibe-coach).
+		// Launched here — after the usage observer + concurrency cap are on
+		// ctx, so the call is metered and capped — and collected just before
+		// the specialist / PR-agent phases, overlapping with repo-context
+		// composition so it rarely adds wall-clock. Fully fail-open: a nil
+		// result means the intent-aware stages behave exactly as before Q8.
+		intentCh := make(chan *PRIntent, 1)
+		go func() { intentCh <- RunIntentPrepass(ctx, runCfg, ref, pr) }()
+
+		// R4: aggregate run circuit breaker. Trips when too many AI stages fail
+		// in a row OR the whole run exceeds a wall-clock cap; once tripped the
+		// remaining stages are skipped (never interrupted mid-call) and marked
+		// degraded so the summary can disclose the partial review. Both arms are
+		// configurable via repo-context.json (see RunWallClockCap /
+		// MaxConsecutiveStageFailuresOrDefault; a negative value disables an arm).
+		breaker := newRunBreaker(runStart, rc.RunWallClockCap(), rc.MaxConsecutiveStageFailuresOrDefault())
+
+		// R3: shape the diff BEFORE it is inlined into any prompt. The budgeter
+		// drops lockfiles/vendored/generated/minified/binary files (manifest
+		// entry only), applies a per-file line cap, and enforces a conservative
+		// per-provider whole-diff byte cap so a multi-megabyte PR can never blow
+		// the provider context window / trigger a 400. A diff that fits under
+		// all caps with nothing to elide passes through byte-identical, so
+		// ordinary small PRs are unaffected. The RAW diff is kept for the TUI /
+		// GitHub (final.Diff) — surviving lines keep their real line numbers, so
+		// findings the model files against the shaped diff still anchor
+		// correctly against the full diff.
+		shapedDiff, budgetReport := budgetDiff(diff, newBudgetConfig(rc, runCfg))
+		if budgetReport.Truncated {
+			applog.Info("review diff budgeted",
+				"ref", ref.String(),
+				"original_bytes", budgetReport.OriginalBytes,
+				"shaped_bytes", budgetReport.ShapedBytes,
+				"elided", len(budgetReport.Elided),
+				"truncated", len(budgetReport.Truncations))
+			out <- Progress{Stage: "diff", Detail: "warning: " + budgetReport.DisclosureLine()}
+		}
+
+		// B2: on a re-review the code specialists only need the files that
+		// changed since the prior review — carried-forward findings cover the
+		// unchanged files, so we skip them entirely (the O(delta) win). The PR
+		// agents keep the full shaped diff (they reason about the whole PR).
+		// On a first review plan is nil, specialistDiff stays the full shaped
+		// diff, and skipSpecialists is false, so the specialist phase is
+		// byte-identical to pre-B2.
+		specialistDiff := shapedDiff
+		skipSpecialists := false
+		if plan != nil {
+			if len(plan.interdiff.Changed) == 0 {
+				skipSpecialists = true
+			} else if reduced := reduceDiffToFiles(shapedDiff, plan.interdiff.Changed); strings.TrimSpace(reduced) != "" {
+				specialistDiff = reduced
+			}
+		}
 
 		// PR-level agents (description / checks / discussion / scope) read the
 		// PR's CI checks, review threads, and conversation. Fetch those signals
@@ -100,20 +252,16 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			prDataCh = make(chan PRAgentInput, 1)
 			go func() {
 				var in PRAgentInput
-				if checks, cerr := gh.GetChecks(ctx, ref); cerr == nil {
-					in.Checks = checks
+				// R6.1: one fused GraphQL call fetches checks + review threads
+				// + discussion (was three separate execs). On error the
+				// individual sections stay empty and the matching agent runs
+				// without that signal, matching the prior fail-open behavior.
+				if data, derr := gh.GetPRAgentData(ctx, ref); derr == nil {
+					in.Checks = data.Checks
+					in.Threads = data.Threads
+					in.Discussion = data.Discussion
 				} else {
-					out <- Progress{Stage: "pr-agent", Detail: "warning: checks fetch: " + cerr.Error()}
-				}
-				if threads, terr := gh.GetReviewThreads(ctx, ref); terr == nil {
-					in.Threads = threads
-				} else {
-					out <- Progress{Stage: "pr-agent", Detail: "warning: review-threads fetch: " + terr.Error()}
-				}
-				if disc, derr := gh.GetDiscussion(ctx, ref); derr == nil {
-					in.Discussion = disc
-				} else {
-					out <- Progress{Stage: "pr-agent", Detail: "warning: discussion fetch: " + derr.Error()}
+					out <- Progress{Stage: "pr-agent", Detail: "warning: pr-agent data fetch: " + derr.Error()}
 				}
 				prDataCh <- in
 			}()
@@ -169,7 +317,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				cvCh <- cvOutcome{}
 				return
 			}
-			s, err := SummarizeContextVersusChange(ctx, runCfg, pr, diff, repoCtx, worktree)
+			s, err := SummarizeContextVersusChange(applog.WithStage(ctx, "context-summary"), runCfg, pr, shapedDiff, repoCtx, worktree)
 			cvCh <- cvOutcome{text: s, err: err}
 		}()
 
@@ -179,6 +327,57 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		prEvidence := BuildPRReviewEvidence(ctx, rc, pr, diff, worktree)
 		if strings.TrimSpace(prEvidence) != "" {
 			out <- Progress{Stage: "repo-evidence", Detail: fmt.Sprintf("%d bytes", len(prEvidence))}
+		}
+
+		// Q5: static-analysis pre-pass. Runs cheap deterministic tools (gofmt,
+		// go vet, plus any configured golangci-lint / ruff / eslint /
+		// terraform validate) over the changed files in the worktree BEFORE the
+		// specialists, each behind its own timeout and fully fail-open (a
+		// missing binary / config / slow tool contributes nothing and never
+		// errors a run). Its output is injected into every code specialist's
+		// prompt (staticSection: "the linter already flags X — don't re-report;
+		// report what linters can't see") and the checks agent (staticChecks),
+		// and its formatter-clean-file set (staticCleanFiles) drives the Q5.d
+		// "linter is silent" downgrade of hand-rolled formatting nits.
+		staticSection := ""
+		staticChecks := ""
+		var staticCleanFiles map[string]bool
+		{
+			changed := changedPathsFromDiff(diff)
+			var localRoot string
+			if rc != nil {
+				localRoot = rc.LocalRootFor(pr.Owner, pr.Repo)
+			}
+			sp := staticpass.Run(ctx, worktree, changed, staticpass.Options{
+				Lint: repocontext.DetectLintConfigs(worktree, localRoot),
+			})
+			staticSection = staticpass.WrapSpecialistSection(staticpass.FormatSpecialistSection(sp))
+			staticChecks = staticpass.FormatChecksAnnotations(sp)
+			staticCleanFiles = sp.FormatterCleanFiles()
+			if anns := sp.Annotations(); len(anns) > 0 || len(staticCleanFiles) > 0 {
+				out <- Progress{Stage: "static-analysis", Detail: fmt.Sprintf("%d annotation(s), %d clean file(s)", len(anns), len(staticCleanFiles))}
+			}
+		}
+
+		// B5: deterministic context expander for backends WITHOUT live repo
+		// tools. Gated on Capabilities().RepoTools == false — the Claude
+		// subprocess reads the worktree with Read/Glob/Grep, so this is a
+		// no-op for it (empty section → specialist prompts byte-identical).
+		// For HTTP providers (which review the diff blind) it gathers, under a
+		// provider-sized byte budget, the enclosing function bodies, referenced
+		// type definitions, and callers/callees the change touches (Go AST
+		// baseline, optionally enriched by gopls/ctags). Fully fail-open. The
+		// section is shared across every code specialist, like staticSection.
+		expandedSection, expandRes := buildExpandedContextSection(ctx, runCfg, worktree, diff)
+		if expandRes.HasContent() {
+			detail := fmt.Sprintf("%d item(s)", len(expandRes.Items))
+			if len(expandRes.EnrichersUsed) > 0 {
+				detail += " (via " + strings.Join(expandRes.EnrichersUsed, "+") + ")"
+			}
+			if expandRes.Truncated {
+				detail += "; truncated to budget"
+			}
+			out <- Progress{Stage: "context-expand", Detail: detail}
 		}
 
 		// Language briefs: pick the dominant language(s) the PR touches
@@ -204,6 +403,17 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// done before the arbiter. Default (flag off): PR agents run after the
 		// specialists, sequentially, to keep concurrent LLM calls (and
 		// rate-limit bursts) low — mirroring ParallelSpecialists.
+		// Collect the intent pre-pass result (launched above). Renders to an
+		// empty section on a fail-open nil, so the intent-aware stages stay
+		// byte-identical to pre-Q8 in that case.
+		prIntent := <-intentCh
+		intentSection := FormatIntentSection(prIntent)
+		if prIntent.HasContent() {
+			out <- Progress{Stage: "intent", Detail: fmt.Sprintf("%d bytes", len(intentSection))}
+		} else {
+			out <- Progress{Stage: "intent", Detail: "skipped (no description / issues)"}
+		}
+
 		var prAgents []SpecialistResult
 		prParallel := prAgentsEnabled && rc != nil && rc.ParallelPRAgents
 		var prWG sync.WaitGroup
@@ -212,19 +422,43 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			go func() {
 				defer prWG.Done()
 				prData := <-prDataCh
-				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, diff, prData, out))
+				prData.StaticAnnotations = staticChecks
+				if plan != nil {
+					prData.PriorFindingsStatus = plan.priorStatus
+				}
+				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
 			}()
 		}
 
 		// Specialists: sequential by default (repo-context.json parallel_specialists),
 		// or parallel when configured / env override — see runSpecialistsPhase.
-		specialists := runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, diff, perAgent, prEvidence, langSection, techSection, out)
+		// They receive the shaped diff (R3) so no single call can overflow the
+		// provider context window. On a re-review (plan != nil) they receive
+		// the reduced diff (changed files only); when nothing changed the phase
+		// is skipped and every prior finding is carried forward.
+		var specialists []SpecialistResult
+		if skipSpecialists {
+			specialists = emptyActiveSpecialistResults(strings.TrimSpace(techSection) != "")
+			out <- Progress{Stage: "incremental", Detail: "no files changed since prior review; carrying prior findings forward"}
+		} else {
+			specialists = runSpecialistsPhase(ctx, runCfg, rc, worktree, pr, specialistDiff, perAgent, prEvidence, staticSection, staticCleanFiles, langSection, techSection, intentSection, expandedSection, breaker, out)
+		}
+		// Merge the carried-forward prior findings (on unchanged files) into the
+		// freshly-produced ones (over the changed files). No-op on a first
+		// review (plan nil / no carried findings).
+		if plan != nil {
+			specialists = mergeCarriedFindings(specialists, plan.carried)
+		}
 
 		if prParallel {
 			prWG.Wait()
 		} else if prAgentsEnabled {
 			prData := <-prDataCh
-			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, diff, prData, out))
+			prData.StaticAnnotations = staticChecks
+			if plan != nil {
+				prData.PriorFindingsStatus = plan.priorStatus
+			}
+			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
 		}
 
 		cv := <-cvCh
@@ -245,6 +479,19 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 		// counts are consistent across every surface. See finding_dedupe.go.
 		allSpecialists = dedupeInlineFindingsAcrossSpecialists(allSpecialists)
 
+		// B1 reviewer memory: load once for this repo (fail-open → empty).
+		// The deterministic pre-arbiter suppressor holds back inline findings
+		// matching a pattern the reviewer has skipped N≥3 times; the held-back
+		// findings are carried on the draft (MemorySuppressed) so the TUI can
+		// disclose and resurface them — never silently dropped. The rejected-
+		// patterns section (built below) is injected into the arbiter prompt.
+		repoMemory := LoadRepoMemory(pr)
+		var memSuppressed []MemorySuppressedFinding
+		allSpecialists, memSuppressed = ApplyMemorySuppression(repoMemory, allSpecialists)
+		if len(memSuppressed) > 0 {
+			out <- Progress{Stage: "reviewer-memory", Detail: fmt.Sprintf("suppressed %d finding(s) matching repeatedly-skipped patterns", len(memSuppressed))}
+		}
+
 		skipDownstream := !SpecialistsHaveAnyFindings(allSpecialists)
 
 		final := &Draft{
@@ -256,9 +503,30 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			Specialists:                allSpecialists,
 			RepositoryContext:          repoBlock,
 			ContextVersusChangeSummary: cvSummary,
+			PRIntent:                   prIntent,
+			MemorySuppressed:           memSuppressed,
+		}
+		// B3: on a re-review, carry the prior cached review onto the Draft so
+		// the posting path can leave status replies on the tool's own prior
+		// review threads (resolved / still present). Nil on a first review, so
+		// the posting path is byte-identical to pre-B3.
+		if plan != nil {
+			final.PriorReview = plan.prior
+		}
+		// Carry the diff-budget report so the rendered body can disclose that
+		// the review ran on a truncated diff (R3). Only set when shaping
+		// actually happened; nil means the full diff was reviewed.
+		if budgetReport.Truncated {
+			br := budgetReport
+			final.DiffBudget = &br
 		}
 
-		if skipDownstream {
+		breakerTripped, breakerJust, breakerReason := breaker.check(time.Now())
+		announceBreakerTrip(out, breakerJust, breakerReason)
+		if skipDownstream || breakerTripped {
+			// No findings to synthesize, OR the circuit breaker tripped during
+			// the specialist/PR-agent phases — either way skip the synthesis
+			// stages (don't pile more calls onto a wedged run).
 			out <- Progress{Stage: "vibe-coach", Detail: "skipped"}
 			if rc != nil && rc.RepoExpertPanel {
 				out <- Progress{Stage: "repo-arbiter", Detail: "skipped"}
@@ -278,8 +546,24 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				out <- Progress{Stage: "repo-arbiter", Detail: "start"}
 				// Pass the combined slice (code specialists + PR agents) so the
 				// arbiter sees the whole-PR findings and can suppress/demote
-				// them, not just the code specialists'.
-				arb := RunRepoArbiter(ctx, runCfg, worktree, pr, allSpecialists, perAgent, techSection, witnesses)
+				// them, not just the code specialists'. Wrapped in
+				// stageWithRetry so a transient parse/transport glitch on this
+				// (previously non-retried) path re-runs like every other AI
+				// stage — isRetryableStageError already lists "parse repo
+				// arbiter".
+				var arb *RepoArbiterResult
+				arbNotify := func(attempt int, err error) {
+					out <- Progress{Stage: "repo-arbiter", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
+				}
+				_ = stageWithRetry(ctx, runCfg, "repo-arbiter", arbNotify, func(sctx context.Context) error {
+					stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "repo-arbiter"), perStageBudget(runCfg))
+					defer cancel()
+					arb = RunRepoArbiter(stCtx, runCfg, worktree, pr, allSpecialists, perAgent, techSection, witnesses, RejectedPatternsSection(repoMemory))
+					if arb != nil && arb.Err != nil {
+						return arb.Err
+					}
+					return nil
+				})
 				if arb != nil && rc != nil && !rc.RepoArbiterDemotions {
 					arb.Demoted = nil
 				}
@@ -287,6 +571,10 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 				if arb != nil && arb.Err == nil {
 					FinalizeRepoArbiter(arb, final)
 				}
+				// Feed the arbiter's outcome to the breaker so a synthesis-stage
+				// failure counts toward the consecutive-failure abort too.
+				_, aJust, aReason := breaker.recordStage(arb == nil || arb.Err != nil, time.Now())
+				announceBreakerTrip(out, aJust, aReason)
 				out <- Progress{Stage: "repo-arbiter", Detail: "done", Arbiter: arb}
 			}
 
@@ -295,36 +583,80 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			// the moment they reach the approve phase. The TUI re-runs it
 			// lazily only if the user changes the skip set during approve
 			// (see reviewOverlay.enterSummary + RunVibeCoachForDraft).
-			out <- Progress{Stage: "vibe-coach", Detail: "start"}
-			vibe := RunVibeCoachForDraft(ctx, runCfg, final, func(attempt int, err error) {
-				out <- Progress{Stage: "vibe-coach", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
-			})
-			final.VibeCoach = vibe
-			out <- Progress{Stage: "vibe-coach", Detail: "done", Vibe: vibe}
+			if tripped, just, reason := breaker.check(time.Now()); tripped {
+				announceBreakerTrip(out, just, reason)
+				out <- Progress{Stage: "vibe-coach", Detail: "skipped"}
+			} else {
+				out <- Progress{Stage: "vibe-coach", Detail: "start"}
+				vibe := RunVibeCoachForDraft(ctx, runCfg, final, func(attempt int, err error) {
+					out <- Progress{Stage: "vibe-coach", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
+				})
+				final.VibeCoach = vibe
+				out <- Progress{Stage: "vibe-coach", Detail: "done", Vibe: vibe}
+			}
 		}
 
-		out <- Progress{Stage: "done", Final: final}
+		// R4: surface partial-degradation so the user (and the posted body) can
+		// see which stages failed after retries vs which were skipped by the
+		// circuit breaker.
+		if failedStages, skippedStages := final.DegradedStages(); len(failedStages)+len(skippedStages) > 0 {
+			applog.Info("review run degraded",
+				"ref", ref.String(),
+				"failed", strings.Join(failedStages, ","),
+				"skipped", strings.Join(skippedStages, ","))
+			out <- Progress{Stage: "degraded", Detail: degradedDetail(failedStages, skippedStages)}
+		}
+
+		// B2: cache the completed draft under the new head SHA so the next
+		// review of this PR (with new commits) can re-review incrementally.
+		// Fail-open: a write failure is logged and never affects this run.
+		// Prune older-SHA drafts so the cache keeps one document per PR.
+		if pr != nil && strings.TrimSpace(pr.HeadSHA) != "" {
+			dc := NewDraftCache()
+			if err := dc.Save(final, pr.HeadSHA); err != nil {
+				applog.Warn("draft cache: save failed (continuing)", "ref", ref.String(), "err", err.Error())
+			} else {
+				dc.PruneOtherSHAs(ref, pr.HeadSHA)
+			}
+		}
+
+		runUsage := usageAcc.snapshot(time.Since(runStart))
+		applog.Info("review run usage",
+			"ref", ref.String(),
+			"calls", runUsage.Calls,
+			"input_tokens", runUsage.InputTokens,
+			"output_tokens", runUsage.OutputTokens,
+			"cost_usd", runUsage.CostUSD,
+			"cost_known", runUsage.CostKnown,
+			"wall_ms", runUsage.WallClock.Milliseconds())
+		out <- Progress{Stage: "done", Final: final, Usage: &runUsage}
 	}()
 
 	return out, nil
 }
 
 // ActiveSpecialists returns the specialists to run (and to surface in the
-// overlay) for one review. The tech specialist exists only to enforce the
-// repo's technology-expert briefs, so when none are configured it has nothing
-// to do, ever — exclude it entirely rather than run a guaranteed-empty pass or
-// show a permanently empty tab. Every other specialist is a universal baseline
-// reviewer and is always included.
+// overlay) for one review. It consults the registry: every KindCode spec runs,
+// in registry order (built-ins first, then any user-defined code specialists),
+// except specs marked RequiresTechBriefs (the tech specialist), which are
+// dropped when techConfigured is false — the tech specialist exists only to
+// enforce the repo's technology-expert briefs, so with none configured it has
+// nothing to do and would otherwise cost a guaranteed-empty API call.
+//
+// The returned slice is freshly allocated, so callers may mutate it without
+// disturbing the registry or AllSpecialists.
 func ActiveSpecialists(techConfigured bool) []string {
-	if techConfigured {
-		return append([]string(nil), AllSpecialists...)
-	}
-	out := make([]string, 0, len(AllSpecialists))
-	for _, s := range AllSpecialists {
-		if s == SpecTech {
+	r := getRegistry()
+	out := make([]string, 0, len(r.order))
+	for _, name := range r.order {
+		s := r.byName[name]
+		if s.Kind != KindCode {
 			continue
 		}
-		out = append(out, s)
+		if s.RequiresTechBriefs && !techConfigured {
+			continue
+		}
+		out = append(out, s.Name)
 	}
 	return out
 }
@@ -368,30 +700,57 @@ func HasUsableTechExperts(pr *gh.PR, rc *repoconfig.Config) bool {
 //
 // techSection is the rendered technology-experts section (one labelled block
 // per configured tech for this repo); shared across every specialist.
-func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, langSection string, techSection string, out chan<- Progress) []SpecialistResult {
+// intentSection is the Q8 rendered `## PR author intent` block; it is injected
+// only into intent-aware specialists (testing) and is "" for the rest and for a
+// no-op pre-pass, keeping every other specialist's prompt byte-identical.
+func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, perAgent map[string]string, prEvidence string, staticSection string, staticCleanFiles map[string]bool, langSection string, techSection string, intentSection string, expandedSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "specialist", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
 			out <- Progress{Stage: "specialist", Detail: fmt.Sprintf("%s:retry %d (%s)", name, attempt, retryReason(err))}
 		}
-		var r SpecialistResult
 		repoCtx := ""
 		if perAgent != nil {
 			repoCtx = perAgent[name]
 		}
 		ev := ""
-		if name == SpecTesting || name == SpecDocs {
+		if specWantsEvidence(name) {
 			ev = prEvidence
 		}
-		_ = stageWithRetry(ctx, runCfg, "specialist "+name, notify, func(sctx context.Context) error {
-			stCtx, cancel := context.WithTimeout(sctx, perStageBudget(runCfg))
-			defer cancel()
-			r = runReviewSpecialist(stCtx, runCfg, name, worktree, pr, diff, repoCtx, ev, langSection, techSection)
-			if r.Err != nil {
-				return r.Err
-			}
-			return nil
-		})
+		intent := ""
+		if specWantsIntent(name) {
+			intent = intentSection
+		}
+		// One member run against the given (possibly stage-routed / ensemble)
+		// config, with the stage's retry + per-stage timeout budget. Budget is
+		// read from the stage cfg, which is a clone of runCfg differing only in
+		// Model, so retry/timeout knobs are identical to runCfg.
+		runWith := func(stageCfg *aiconfig.Config) SpecialistResult {
+			var r SpecialistResult
+			_ = stageWithRetry(ctx, stageCfg, "specialist "+name, notify, func(sctx context.Context) error {
+				stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "specialist "+name), perStageBudget(stageCfg))
+				defer cancel()
+				r = runReviewSpecialist(stCtx, stageCfg, name, worktree, pr, diff, repoCtx, ev, staticSection, staticCleanFiles, langSection, techSection, intent, expandedSection)
+				if r.Err != nil {
+					return r.Err
+				}
+				return nil
+			})
+			return r
+		}
+		// Q7: an ensemble stage runs once per configured model and unions the
+		// findings; otherwise the stage runs once on its per-stage-routed model
+		// (ForStage returns runCfg unchanged when no routing applies, so the
+		// common path is byte-for-byte as before).
+		var r SpecialistResult
+		if models := runCfg.EnsembleModels(name); len(models) >= 2 {
+			r = runEnsemble(name, models, runCfg, runWith)
+		} else {
+			r = runWith(runCfg.ForStage(name))
+		}
+		if r.RepairFired > 0 {
+			out <- Progress{Stage: "specialist", Detail: fmt.Sprintf("%s:repair fired=%d succeeded=%d", name, r.RepairFired, r.RepairSucceeded)}
+		}
 		cp := r
 		out <- Progress{Stage: "specialist", Detail: name + ":done", Result: &cp}
 		return r
@@ -406,11 +765,40 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 	parallel := rc != nil && rc.ParallelSpecialists
 	if !parallel {
 		for i, name := range active {
+			// R4: before starting each specialist, honour the circuit breaker.
+			// Once tripped, mark this specialist and every remaining one skipped
+			// (not failed — they never ran) and stop, so a run that's already
+			// wedged doesn't grind through the whole panel.
+			if tripped, just, reason := breaker.check(time.Now()); tripped {
+				announceBreakerTrip(out, just, reason)
+				for j := i; j < len(active); j++ {
+					specialists[j] = skippedSpecialistResult(active[j], "circuit breaker: "+reason)
+					out <- Progress{Stage: "specialist", Detail: active[j] + ":skipped"}
+				}
+				return specialists
+			}
 			specialists[i] = runOne(name)
+			if specialists[i].Err != nil {
+				specialists[i].Outcome = OutcomeFailed
+			}
+			_, just, reason := breaker.recordStage(specialists[i].Err != nil, time.Now())
+			announceBreakerTrip(out, just, reason)
 		}
 		return specialists
 	}
 
+	// Parallel dispatch: the breaker can't abort an in-flight call, so we run
+	// the phase, then feed each result (in slice order, deterministic) to the
+	// breaker so a downstream phase (PR agents / witness / arbiter / vibe) is
+	// aborted if this phase tripped it.
+	if tripped, just, reason := breaker.check(time.Now()); tripped {
+		announceBreakerTrip(out, just, reason)
+		for i, name := range active {
+			specialists[i] = skippedSpecialistResult(name, "circuit breaker: "+reason)
+			out <- Progress{Stage: "specialist", Detail: name + ":skipped"}
+		}
+		return specialists
+	}
 	var wg sync.WaitGroup
 	for i, name := range active {
 		wg.Add(1)
@@ -421,6 +809,13 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 		}()
 	}
 	wg.Wait()
+	for i := range specialists {
+		if specialists[i].Err != nil {
+			specialists[i].Outcome = OutcomeFailed
+		}
+		_, just, reason := breaker.recordStage(specialists[i].Err != nil, time.Now())
+		announceBreakerTrip(out, just, reason)
+	}
 	return specialists
 }
 
@@ -430,22 +825,42 @@ func runSpecialistsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoc
 // run sequentially by default, or concurrently among themselves when
 // rc.ParallelPRAgents is set. Results are returned in AllPRAgents order;
 // callers may re-sort with sortedPRAgentResults after parallel runs.
-func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, in PRAgentInput, out chan<- Progress) []SpecialistResult {
+// intentSection is the Q8 rendered `## PR author intent` block; injected only
+// into intent-aware PR agents (scope) and "" for the rest / a no-op pre-pass.
+func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconfig.Config, worktree string, pr *gh.PR, diff string, in PRAgentInput, intentSection string, breaker *runBreaker, out chan<- Progress) []SpecialistResult {
 	runOne := func(name string) SpecialistResult {
 		out <- Progress{Stage: "pr-agent", Detail: name + ":start"}
 		notify := func(attempt int, err error) {
 			out <- Progress{Stage: "pr-agent", Detail: fmt.Sprintf("%s:retry %d (%s)", name, attempt, retryReason(err))}
 		}
+		intent := ""
+		if specWantsIntent(name) {
+			intent = intentSection
+		}
+		runWith := func(stageCfg *aiconfig.Config) SpecialistResult {
+			var r SpecialistResult
+			_ = stageWithRetry(ctx, stageCfg, "pr-agent "+name, notify, func(sctx context.Context) error {
+				stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "pr-agent "+name), perStageBudget(stageCfg))
+				defer cancel()
+				r = runPRAgent(stCtx, stageCfg, name, worktree, pr, diff, in, intent)
+				if r.Err != nil {
+					return r.Err
+				}
+				return nil
+			})
+			return r
+		}
+		// Q7: PR agents honour the same per-stage routing / ensemble mode as
+		// the code specialists (see runSpecialistsPhase).
 		var r SpecialistResult
-		_ = stageWithRetry(ctx, runCfg, "pr-agent "+name, notify, func(sctx context.Context) error {
-			stCtx, cancel := context.WithTimeout(sctx, perStageBudget(runCfg))
-			defer cancel()
-			r = runPRAgent(stCtx, runCfg, name, worktree, pr, diff, in)
-			if r.Err != nil {
-				return r.Err
-			}
-			return nil
-		})
+		if models := runCfg.EnsembleModels(name); len(models) >= 2 {
+			r = runEnsemble(name, models, runCfg, runWith)
+		} else {
+			r = runWith(runCfg.ForStage(name))
+		}
+		if r.RepairFired > 0 {
+			out <- Progress{Stage: "pr-agent", Detail: fmt.Sprintf("%s:repair fired=%d succeeded=%d", name, r.RepairFired, r.RepairSucceeded)}
+		}
 		cp := r
 		out <- Progress{Stage: "pr-agent", Detail: name + ":done", Result: &cp}
 		return r
@@ -455,11 +870,32 @@ func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconf
 	parallel := rc != nil && rc.ParallelPRAgents
 	if !parallel {
 		for i, name := range AllPRAgents {
+			if tripped, just, reason := breaker.check(time.Now()); tripped {
+				announceBreakerTrip(out, just, reason)
+				for j := i; j < len(AllPRAgents); j++ {
+					results[j] = skippedSpecialistResult(AllPRAgents[j], "circuit breaker: "+reason)
+					out <- Progress{Stage: "pr-agent", Detail: AllPRAgents[j] + ":skipped"}
+				}
+				return results
+			}
 			results[i] = runOne(name)
+			if results[i].Err != nil {
+				results[i].Outcome = OutcomeFailed
+			}
+			_, just, reason := breaker.recordStage(results[i].Err != nil, time.Now())
+			announceBreakerTrip(out, just, reason)
 		}
 		return results
 	}
 
+	if tripped, just, reason := breaker.check(time.Now()); tripped {
+		announceBreakerTrip(out, just, reason)
+		for i, name := range AllPRAgents {
+			results[i] = skippedSpecialistResult(name, "circuit breaker: "+reason)
+			out <- Progress{Stage: "pr-agent", Detail: name + ":skipped"}
+		}
+		return results
+	}
 	var wg sync.WaitGroup
 	for i, name := range AllPRAgents {
 		wg.Add(1)
@@ -470,7 +906,22 @@ func runPRAgentsPhase(ctx context.Context, runCfg *aiconfig.Config, rc *repoconf
 		}()
 	}
 	wg.Wait()
+	for i := range results {
+		if results[i].Err != nil {
+			results[i].Outcome = OutcomeFailed
+		}
+		_, just, reason := breaker.recordStage(results[i].Err != nil, time.Now())
+		announceBreakerTrip(out, just, reason)
+	}
 	return results
+}
+
+// announceBreakerTrip emits the one-time circuit-breaker Progress event when a
+// recordStage/check call is the one that tripped the breaker.
+func announceBreakerTrip(out chan<- Progress, justTripped bool, reason string) {
+	if justTripped {
+		out <- Progress{Stage: "circuit-breaker", Detail: "aborting remaining stages: " + reason}
+	}
 }
 
 // runConventionWitnessPhase calls the convention-witness agent for any
@@ -489,17 +940,53 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 	if pr == nil {
 		return nil
 	}
-	var inputs []conventionwitness.FindingInput
-	var techFindings []Finding
+	inputs, techFindings, formattingFindings := witnessInputsForSpecialists(specialists)
+	if len(inputs) == 0 {
+		return nil
+	}
+	// Append tech-specific sibling-sampling evidence so tech findings have
+	// repo-grounding signal of their own; the shared prEvidence pack is
+	// testing/docs-oriented and rarely covers IaC findings. Formatting
+	// findings get their own identifier-style census evidence (Q6.5).
+	evidence = appendTechConventionEvidence(evidence, worktree, techFindings)
+	evidence = appendFormattingConventionEvidence(evidence, worktree, formattingFindings)
+	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("start (%d findings)", len(inputs))}
+	// Wrap in stageWithRetry so a transient parse/transport glitch on this
+	// (previously non-retried) path re-runs like every other AI stage.
+	notify := func(attempt int, err error) {
+		out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
+	}
+	var res conventionwitness.Result
+	_ = stageWithRetry(ctx, runCfg, "convention-witness", notify, func(sctx context.Context) error {
+		wctx, cancel := context.WithTimeout(applog.WithStage(sctx, "convention-witness"), perStageBudget(runCfg))
+		defer cancel()
+		res = conventionwitness.Run(wctx, runCfg, Complete, worktree,
+			conventionwitness.PrWideRef{Repository: pr.Repository, Number: pr.Number, Title: pr.Title},
+			inputs, evidence)
+		return res.Err
+	})
+	if res.Err != nil {
+		out <- Progress{Stage: "convention-witness", Detail: "warning: " + res.Err.Error()}
+		return nil
+	}
+	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("done (%d witnesses)", len(res.Witnesses))}
+	return res.Witnesses
+}
+
+// witnessInputsForSpecialists collects the convention-witness inputs from a
+// specialist set: one FindingInput per witnessable finding, plus the tech and
+// formatting findings that get their own harvested evidence blocks. Both
+// inline (path+line) and PR-wide (path "", line 0) comment-bearing findings
+// are included (Q6.5) — path-history evidence speaks to PR-wide testing/docs
+// findings, and formatting findings get an identifier-style census. Extracted
+// from runConventionWitnessPhase so the selection logic is unit-testable.
+func witnessInputsForSpecialists(specialists []SpecialistResult) (inputs []conventionwitness.FindingInput, techFindings, formattingFindings []Finding) {
 	for _, s := range specialists {
-		if s.Err != nil {
-			continue
-		}
-		if s.Specialist != SpecTesting && s.Specialist != SpecDocs && s.Specialist != SpecTech {
+		if s.Err != nil || !specWitnessable(s.Specialist) {
 			continue
 		}
 		for _, f := range s.Findings {
-			if strings.TrimSpace(f.Path) == "" || f.Line <= 0 {
+			if !findingIsInlinePostable(f) && strings.TrimSpace(f.Comment) == "" {
 				continue
 			}
 			inputs = append(inputs, conventionwitness.FindingInput{
@@ -510,30 +997,29 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 				Severity:   string(f.Severity),
 				Comment:    f.Comment,
 			})
-			if s.Specialist == SpecTech {
+			if specWantsConventionEvidence(s.Specialist) {
 				techFindings = append(techFindings, f)
+			}
+			if specWantsFormattingEvidence(s.Specialist) {
+				formattingFindings = append(formattingFindings, f)
 			}
 		}
 	}
-	if len(inputs) == 0 {
-		return nil
+	return inputs, techFindings, formattingFindings
+}
+
+// degradedDetail formats a one-line summary of degraded stages for the
+// Stage="degraded" Progress event, e.g. "failed after retries: security;
+// skipped: docs, tech".
+func degradedDetail(failed, skipped []string) string {
+	var parts []string
+	if len(failed) > 0 {
+		parts = append(parts, "failed after retries: "+strings.Join(failed, ", "))
 	}
-	// Append tech-specific sibling-sampling evidence so tech findings have
-	// repo-grounding signal of their own; the shared prEvidence pack is
-	// testing/docs-oriented and rarely covers IaC findings.
-	evidence = appendTechConventionEvidence(evidence, worktree, techFindings)
-	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("start (%d findings)", len(inputs))}
-	wctx, cancel := context.WithTimeout(ctx, perStageBudget(runCfg))
-	defer cancel()
-	res := conventionwitness.Run(wctx, runCfg, conventionwitness.CompleteFunc(Complete), worktree,
-		conventionwitness.PrWideRef{Repository: pr.Repository, Number: pr.Number, Title: pr.Title},
-		inputs, evidence)
-	if res.Err != nil {
-		out <- Progress{Stage: "convention-witness", Detail: "warning: " + res.Err.Error()}
-		return nil
+	if len(skipped) > 0 {
+		parts = append(parts, "skipped: "+strings.Join(skipped, ", "))
 	}
-	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("done (%d witnesses)", len(res.Witnesses))}
-	return res.Witnesses
+	return strings.Join(parts, "; ")
 }
 
 // retryReason produces a short, log-friendly label for the cause of a retry.
@@ -548,44 +1034,142 @@ func retryReason(err error) string {
 	return msg
 }
 
-// prepareWorktree clones the PR's head into a fresh directory under the
-// user's cache. The directory is named so that repeated runs against the
-// same PR get distinct worktrees (timestamp-suffixed) — keeps things simple
-// and avoids "directory not empty" failures on retries.
+const (
+	// worktreeMarkerName marks a cache dir as one appr-ai-sal created, so the
+	// GC only ever deletes its own worktrees.
+	worktreeMarkerName = ".appr-ai-sal-worktree"
+	// worktreeKeepDays purges any marked worktree older than this many days.
+	worktreeKeepDays = 7
+	// worktreeKeepPerPR keeps at most this many of the newest worktrees for
+	// any single PR; older ones are purged even if under worktreeKeepDays.
+	worktreeKeepPerPR = 2
+)
+
+// prepareWorktree returns a working tree with the PR's head checked out under
+// the user's cache. It prefers the R7 shared bare-repo cache — maintain one
+// bare mirror per owner/repo, fetch only the PR head delta, and `git worktree
+// add` a per-run tree (reusing an existing tree when the head SHA is
+// unchanged) — and falls open to the historical fresh-full-clone-per-run
+// behavior if anything in the cache path fails, so a run never dies because
+// of the cache. Either way the returned directory contains the PR head
+// exactly as before and carries the GC marker.
+//
+// The two strategies are indirected through package-level vars so the
+// fail-open wiring can be unit-tested without a live network.
+var (
+	cacheWorktreeStrategy = prepareWorktreeFromCache
+	freshCloneStrategy    = prepareFreshCloneWorktree
+)
+
 func prepareWorktree(ctx context.Context, ref gh.Ref) (string, error) {
 	base := cacheDir()
 	if err := os.MkdirAll(base, 0o755); err != nil {
 		return "", err
 	}
-	dir := filepath.Join(base, fmt.Sprintf("%s-%s-%d-%d",
-		ref.Owner, ref.Repo, ref.Number, time.Now().Unix()))
+	// Purge stale worktrees before adding a new one so the cache doesn't grow
+	// without bound, then prune the bare repos' worktree bookkeeping so git
+	// forgets the dirs the purge removed. Both are best-effort: GC failures
+	// never block a review.
+	purgeStaleWorktrees(base)
+	pruneBareRepoWorktrees(ctx)
+
+	if dir, err := cacheWorktreeStrategy(ctx, ref, base); err == nil {
+		return dir, nil
+	} else {
+		applog.Warn("worktree cache unavailable; falling back to fresh clone",
+			"ref", ref.String(), "err", err.Error())
+	}
+	return freshCloneStrategy(ctx, ref, base)
+}
+
+// prepareFreshCloneWorktree is the historical strategy: a fresh full clone of
+// the PR head into a timestamp-suffixed directory. It is the fail-open path
+// when the shared bare-repo cache can't be used.
+func prepareFreshCloneWorktree(ctx context.Context, ref gh.Ref, base string) (string, error) {
+	dir := filepath.Join(base, worktreeDirName(ref))
 	if err := gh.CheckoutPR(ctx, ref, dir); err != nil {
 		return "", err
 	}
-	// Drop a marker so we know the dir is ours when we eventually purge old
-	// worktrees in a future version.
-	_ = os.WriteFile(filepath.Join(dir, ".appr-ai-sal-worktree"), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
+	// Record the checked-out head SHA in the marker when we can resolve it so
+	// a later cache-path run could reuse this tree; empty is fine (the marker
+	// only needs to exist for the GC to recognise the dir as ours).
+	sha, _ := gh.WorktreeHeadSHA(ctx, dir)
+	writeWorktreeMarker(dir, sha)
 	return dir, nil
 }
 
-func cacheDir() string {
-	if v := os.Getenv("APPR_AI_SAL_CACHE_DIR"); v != "" {
-		return v
-	}
-	if v := os.Getenv("XDG_CACHE_HOME"); v != "" {
-		return filepath.Join(v, "appr-ai-sal", "worktrees")
-	}
-	home, err := os.UserHomeDir()
+// purgeStaleWorktrees best-effort deletes old review worktrees under base:
+// any dir bearing the marker file whose marker mtime is older than
+// worktreeKeepDays, plus — per PR — all but the newest worktreeKeepPerPR
+// dirs. It only ever removes dirs carrying the appr-ai-sal marker, so a
+// user-created directory sharing the cache is never touched. Fail-open: any
+// error on a single dir is ignored so GC never blocks a run.
+func purgeStaleWorktrees(base string) {
+	entries, err := os.ReadDir(base)
 	if err != nil {
-		return filepath.Join(".cache", "appr-ai-sal", "worktrees")
+		return
 	}
-	return filepath.Join(home, ".cache", "appr-ai-sal", "worktrees")
+	type wt struct {
+		name  string
+		group string
+		unix  int64
+	}
+	var owned []wt
+	cutoff := time.Now().Add(-worktreeKeepDays * 24 * time.Hour)
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		dir := filepath.Join(base, e.Name())
+		info, err := os.Stat(filepath.Join(dir, worktreeMarkerName))
+		if err != nil {
+			continue // no marker → not ours; leave it alone
+		}
+		if info.ModTime().Before(cutoff) {
+			_ = os.RemoveAll(dir)
+			continue
+		}
+		group, unix := splitWorktreeName(e.Name())
+		owned = append(owned, wt{name: e.Name(), group: group, unix: unix})
+	}
+	byGroup := map[string][]wt{}
+	for _, w := range owned {
+		byGroup[w.group] = append(byGroup[w.group], w)
+	}
+	for _, ws := range byGroup {
+		if len(ws) <= worktreeKeepPerPR {
+			continue
+		}
+		sort.Slice(ws, func(i, j int) bool { return ws[i].unix > ws[j].unix }) // newest first
+		for _, w := range ws[worktreeKeepPerPR:] {
+			_ = os.RemoveAll(filepath.Join(base, w.name))
+		}
+	}
+}
+
+// splitWorktreeName splits "<owner>-<repo>-<number>-<unix>" into the PR group
+// prefix ("<owner>-<repo>-<number>") and the trailing unix timestamp. Owner
+// and repo may contain hyphens, so we split only on the final "-<digits>".
+func splitWorktreeName(name string) (group string, unix int64) {
+	i := strings.LastIndex(name, "-")
+	if i < 0 || i == len(name)-1 {
+		return name, 0
+	}
+	n, err := strconv.ParseInt(name[i+1:], 10, 64)
+	if err != nil {
+		return name, 0
+	}
+	return name[:i], n
+}
+
+func cacheDir() string {
+	return appdirs.CacheSubdir(appdirs.WorktreesSubdir)
 }
 
 // RepoProfilesDir returns the directory for cached repository context bundles
 // (sibling of the worktrees folder when using the default XDG layout).
 func RepoProfilesDir() string {
-	return filepath.Clean(filepath.Join(cacheDir(), "..", "repo-profiles"))
+	return appdirs.CacheSubdir("repo-profiles")
 }
 
 // composeLangBriefSection picks the dominant-language briefs for the PR

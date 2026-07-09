@@ -79,12 +79,12 @@ func TestStatusBarDetailDiffOnlyToggles(t *testing.T) {
 	_ = m.View()
 	waitBubbleZone(t, zones.StatusDiffOnly)
 
-	before := m.diffOnly
+	before := detailState(t, m).DiffOnly()
 	out, _, handled := m.handleStatusBarMouse(clickCenterOfZone(t, zones.StatusDiffOnly))
 	if !handled {
 		t.Fatal("diff-only status click should be handled")
 	}
-	if out.(*Model).diffOnly == before {
+	if detailState(t, out.(*Model)).DiffOnly() == before {
 		t.Fatalf("diff-only status click should flip diffOnly (was %v)", before)
 	}
 }

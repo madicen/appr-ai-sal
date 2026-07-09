@@ -21,6 +21,14 @@ func (m *Model) rebuildBody() {
 	case phaseRunning:
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderRunningBody(), m.vp.Width))
 	case phaseApprove:
+		if m.editActive {
+			m.vp.SetContent(util.EnforceMaxLineWidth(m.renderEdit(max(8, m.vp.Width)), m.vp.Width))
+			break
+		}
+		if m.challengeActive {
+			m.vp.SetContent(util.EnforceMaxLineWidth(m.renderChallenge(max(8, m.vp.Width)), m.vp.Width))
+			break
+		}
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderAgentTab(m.activeAgent()), m.vp.Width))
 	case phaseGeneratingSummary:
 		m.vp.SetContent(util.EnforceMaxLineWidth(m.renderGeneratingSummaryBody(), m.vp.Width))
@@ -170,7 +178,7 @@ func (m *Model) renderTabBar(width int) string {
 	widths := make([]int, len(m.tabs))
 	for i, t := range m.tabs {
 		label := m.tabStatusGlyph(t) + " " + tabShortLabel(t)
-		styled := " " + label + " "
+		var styled string
 		if i == m.activeTab {
 			styled = styles.BoldStyle.Render("[" + label + "]")
 		} else {
@@ -278,7 +286,8 @@ func (m *Model) renderAgentTab(name string) string {
 		return b.String()
 	}
 
-	idxs := m.agentCardIndices(name)
+	idxs := m.agentCardOrder(name)
+	rawIdxs := m.agentCardIndices(name)
 	inline, general := m.agentFindingBreakdown(name)
 	demotedPRWide := m.agentDemotedPRWideFindings(name)
 	switch {
@@ -291,8 +300,14 @@ func (m *Model) renderAgentTab(name string) string {
 			pos = 0
 		}
 		b.WriteString(styles.BoldStyle.Render(fmt.Sprintf("Finding %d of %d", pos+1, len(idxs))) +
-			styles.DimStyle.Render(fmt.Sprintf("  ·  %d already on PR  ·  %d posted  ·  %d skipped", onPR, posted, skipped)) + "\n\n")
+			styles.DimStyle.Render(fmt.Sprintf("  ·  %d already on PR  ·  %d posted  ·  %d skipped", onPR, posted, skipped)) + "\n")
+		b.WriteString(m.renderTriageLine(len(rawIdxs), len(idxs)) + "\n\n")
 		b.WriteString(m.renderCardDetail(rowW))
+	case len(rawIdxs) > 0:
+		// Every card for this agent was filtered out by the triage severity
+		// floor; tell the reviewer instead of claiming the agent is clean.
+		b.WriteString(m.renderTriageLine(len(rawIdxs), 0) + "\n\n")
+		b.WriteString(styles.DimStyle.Render(fmt.Sprintf("All %d finding(s) for this agent are hidden by the current severity filter (%s). Press f to widen it.", len(rawIdxs), triageMinSevLabel(m.triageMinSev))) + "\n")
 	case name == review.SpecVibeCoach:
 		// The vibe coach never files findings; its merge recommendation
 		// (shown above) and author prompts live on the Summary tab. It runs
@@ -434,11 +449,11 @@ func (m *Model) renderAgentSuppressions(name string, rowW int) string {
 func (m *Model) agentCardTally(name string) (onPR, posted, skipped int) {
 	for _, gi := range m.agentCardIndices(name) {
 		c := m.cards[gi]
-		// A demoted card sits at its default skipped state until the
-		// reviewer acts; only count it once they post it (a real action).
-		// Leaving it out of the skipped count keeps the strip honest about
-		// what the reviewer actually did.
-		if c.demoted && c.state != cardPosted {
+		// A demoted / memory-suppressed card sits at its default skipped state
+		// until the reviewer acts; only count it once they post it (a real
+		// action). Leaving it out of the skipped count keeps the strip honest
+		// about what the reviewer actually did.
+		if (c.demoted || c.memorySuppressed) && c.state != cardPosted {
 			continue
 		}
 		switch c.state {
@@ -634,7 +649,11 @@ func (m *Model) renderRunningBody() string {
 		headline += "  ·  " + styles.ErrStyle.Render(fmt.Sprintf("%d failed", failedN))
 	}
 	b.WriteString(headline + "\n")
-	b.WriteString(renderProgressBar(doneN, totalN, max(20, rowW/2)) + "\n\n")
+	b.WriteString(renderProgressBar(doneN, totalN, max(20, rowW/2)) + "\n")
+	if ul := m.usageLine(); ul != "" {
+		b.WriteString(ul + "\n")
+	}
+	b.WriteString("\n")
 
 	// Stage groups in pipeline order. Each group prints a header (with its
 	// own done/total) and then its rows, indented by 2 cells.
@@ -905,6 +924,11 @@ func agentStatusDetail(a *overlayAgentRow) string {
 		return styles.DimStyle.Render("queued")
 	case oaRunning:
 		base := styles.BoldStyle.Render("running") + styles.DimStyle.Render(" · "+humanElapsed(time.Since(a.startedAt)))
+		if a.streamTokens > 0 {
+			// P6 streaming token-liveness: a growing count proves the call is
+			// alive even on a multi-minute generation.
+			base += styles.DimStyle.Render(fmt.Sprintf(" · ~%d tok", a.streamTokens))
+		}
 		if a.retries > 0 {
 			base += styles.DimStyle.Render(" · retried " + fmt.Sprintf("%d×", a.retries))
 		}
@@ -1135,10 +1159,29 @@ func (m *Model) renderCardDetail(rowW int) string {
 			b.WriteString("  " + styles.DimStyle.Render(fmt.Sprintf("(demoted from %s by repo arbiter)", string(orig))))
 		}
 	}
+	if cur.edited {
+		// Phase 5 item 2: flag that the reviewer rewrote this comment so it's
+		// clear the posted text is theirs, not the model's verbatim output.
+		b.WriteString("  " + styles.WarnStyle.Render("✎ edited"))
+	}
 	b.WriteString("\n")
 	if cur.demoted {
 		b.WriteString(styles.WarnStyle.Render("⊘ Demoted below the review threshold by the repo arbiter — it won't post and doesn't affect the verdict.") + "\n")
 		b.WriteString(styles.DimStyle.Render("Press y to post it anyway as a normal inline comment.") + "\n")
+	}
+	if cur.memorySuppressed {
+		b.WriteString(styles.WarnStyle.Render(fmt.Sprintf("⊘ Suppressed: you've skipped this pattern %d× in this repo — held back before the arbiter and excluded from the verdict.", cur.memorySuppSkipCount)) + "\n")
+		if cur.state == cardPending {
+			b.WriteString(styles.DimStyle.Render("Resurfaced — press y to post it, or x to re-suppress.") + "\n")
+		} else {
+			b.WriteString(styles.DimStyle.Render("Press x to resurface it (then y to post).") + "\n")
+		}
+	}
+	// B3 in-thread reply routing: this finding's anchor matched an existing
+	// unresolved review thread, so posting it replies in that thread instead
+	// of filing a duplicate top-level comment.
+	if cur.threadReplyID != "" && cur.state != cardAlreadyOnPR {
+		b.WriteString(styles.DimStyle.Render("↳ Posts as a reply to the existing review thread on this line (not a new comment).") + "\n")
 	}
 	// Anchor auto-correction notes. Two independent code paths can move
 	// a finding off its model-reported line, and we surface each so the
@@ -1162,7 +1205,7 @@ func (m *Model) renderCardDetail(rowW int) string {
 	// Diff hunk preview
 	if cur.hunk != nil {
 		b.WriteString(styles.DimStyle.Render("Diff context") + "\n")
-		b.WriteString(renderHunkSnippet(cur.hunk, cur.finding.Finding.Line, 4, rowW))
+		b.WriteString(renderHunkSnippet(cur.hunk, cur.finding.Finding.Path, cur.finding.Finding.Line, 4, rowW, m.highlighter()))
 		b.WriteString("\n")
 	} else {
 		b.WriteString(styles.DimStyle.Render("(no diff hunk located for this line — F posts as a file-level comment, R refreshes the PR, s skips)") + "\n\n")
@@ -1202,9 +1245,14 @@ func (m *Model) renderCardDetail(rowW int) string {
 			b.WriteString(styles.OkStyle.Render("✓ posted") + "\n\n")
 		}
 	case cardSkipped:
-		if cur.demoted {
+		switch {
+		case cur.withdrawnViaChallenge:
+			b.WriteString(styles.DimStyle.Render("↩ withdrawn by the specialist under challenge — auto-skipped, won't post") + "\n\n")
+		case cur.demoted:
 			b.WriteString(styles.DimStyle.Render("— not posting (demoted); press y to post anyway") + "\n\n")
-		} else {
+		case cur.memorySuppressed:
+			b.WriteString(styles.DimStyle.Render("— suppressed by reviewer memory; press x to resurface") + "\n\n")
+		default:
 			b.WriteString(styles.DimStyle.Render("— skipped") + "\n\n")
 		}
 	case cardError:
@@ -1225,10 +1273,17 @@ func (m *Model) renderCardDetail(rowW int) string {
 	right := zone.Mark(zones.StagedNext, styles.DimStyle.Render(" next → "))
 	post := zone.Mark(zones.StagedPost, styles.OkStyle.Render(" Post (y) "))
 	skip := zone.Mark(zones.StagedSkip, styles.DimStyle.Render(" Skip (n) "))
+	challenge := zone.Mark(zones.StagedChallenge, styles.DimStyle.Render(" Challenge (c) "))
 	quit := zone.Mark(zones.StagedQuit, styles.ErrStyle.Render(" Abort (q) "))
-	row := strings.Join([]string{left, post, skip, right, quit}, "  ")
+	row := strings.Join([]string{left, post, skip, challenge, right, quit}, "  ")
 	b.WriteString(lipgloss.NewStyle().Width(rowW).Render(row))
 	b.WriteString("\n")
+	// Phase 5 items 2 + 9: edit / clipboard affordances live one line below
+	// the primary action row (they're less frequent than post/skip).
+	b.WriteString(styles.DimStyle.Render("e edit · E $EDITOR · ctrl+y copy finding · ctrl+o copy hunk") + "\n")
+	if m.copyStatus != "" {
+		b.WriteString(styles.DimStyle.Render("⧉ "+m.copyStatus) + "\n")
+	}
 	if m.dryRun {
 		b.WriteString("\n" + styles.ErrStyle.Render("DRY-RUN") + styles.DimStyle.Render(" — Post shows the GitHub payload only; nothing is sent.") + "\n")
 	}

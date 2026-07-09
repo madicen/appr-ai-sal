@@ -4,10 +4,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	zone "github.com/lrstanley/bubblezone"
-	bubbledropdown "github.com/madicen/bubble-dropdown"
 
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/dropdown"
 )
 
 // Dropdown kinds on the Review & AI tab. ddNone means no dropdown.
@@ -16,6 +15,8 @@ const (
 	ddStrictness
 	ddProfile
 	ddProvider
+	ddPreset
+	ddModel
 )
 
 // providerDDValues maps the provider dropdown's option index to the
@@ -23,15 +24,31 @@ const (
 var (
 	providerDDValues = []aiconfig.Provider{
 		aiconfig.ProviderClaude,
+		aiconfig.ProviderAnthropic,
 		aiconfig.ProviderGemini,
 		aiconfig.ProviderOllama,
 		aiconfig.ProviderOpenAICompatible,
+		aiconfig.ProviderAzure,
 	}
-	providerDDLabels = []string{"claude", "gemini", "ollama", "openai_compatible"}
+	providerDDLabels = []string{"claude", "anthropic", "gemini", "ollama", "openai_compatible", "azure"}
 
 	// strictnessDDLabels index order matches strictnessAt / strictnessIndex.
 	strictnessDDLabels = []string{"critical-only", "lenient", "balanced", "strict"}
 )
+
+// presetDDLabels are the preset picker options: a leading "(custom)" no-op
+// entry followed by each built-in provider preset. Applying a non-custom entry
+// fills the provider + base URL (+ Azure api-version). presetDDIndexToPreset
+// converts the option index to a preset index into aiconfig.ProviderPresets.
+func presetDDLabels() []string {
+	presets := aiconfig.ProviderPresets()
+	labels := make([]string, 0, len(presets)+1)
+	labels = append(labels, "(custom)")
+	for _, p := range presets {
+		labels = append(labels, p.Name)
+	}
+	return labels
+}
 
 // providerDDIndex returns the dropdown index for a provider (0 when unknown).
 func providerDDIndex(p aiconfig.Provider) int {
@@ -58,16 +75,65 @@ func strictnessHint(i int) string {
 	}
 }
 
-func newSettingsDropdown(labels []string, idx int, placeholder string) *bubbledropdown.Dropdown {
-	d := bubbledropdown.New(
-		bubbledropdown.WithOptions(labels),
-		bubbledropdown.WithInitialIndex(idx),
-		bubbledropdown.WithPlaceholder(placeholder),
-	)
-	// Match the existing bubble-color-picker integration: use the global
-	// bubblezone manager so the trigger is hit-tested via the root zone.Scan.
-	d.SetZoneManager(zone.DefaultManager)
-	return d
+// initDropdowns builds the three Review & AI dropdowns through the shared
+// dropdown.Host, wiring each one's OnSelect to mirror its selection onto the
+// draft (strictness / profile) or leaving it read-at-commit (provider). It is
+// called once from New; refreshProfileDropdown keeps the profile list current.
+func (m *Model) initDropdowns(selProv aiconfig.Provider) {
+	m.strictnessDD = dropdown.New("strictness")
+	m.strictnessDD.OnSelect = func(idx int) tea.Cmd {
+		m.draft.ReviewStrictness = strictnessAt(idx)
+		return nil
+	}
+	m.strictnessDD.Rebuild(strictnessDDLabels, strictnessIndex(m.draft.ReviewStrictness))
+
+	// The provider value lives on the dropdown and is read by
+	// commitEditorToSelectedProfile, so it needs no OnSelect mirror.
+	m.providerDD = dropdown.New("provider")
+	m.providerDD.Rebuild(providerDDLabels, providerDDIndex(selProv))
+
+	m.profileDD = dropdown.New("profile")
+	m.profileDD.OnSelect = func(idx int) tea.Cmd {
+		m.selectProfileByIndex(idx)
+		return nil
+	}
+	m.refreshProfileDropdown()
+
+	// Preset picker: applying a non-"(custom)" entry fills provider + base URL
+	// (+ Azure api-version) onto the edited profile. Manual entry still works.
+	m.presetDD = dropdown.New("preset")
+	m.presetDD.OnSelect = func(idx int) tea.Cmd {
+		m.applyPreset(idx)
+		return nil
+	}
+	m.presetDD.Rebuild(presetDDLabels(), 0)
+}
+
+// applyPreset copies preset option idx (0 = "(custom)", a no-op) onto the
+// selected profile and reloads the editor. It commits in-progress edits first
+// so nothing is lost.
+func (m *Model) applyPreset(idx int) {
+	if idx <= 0 { // 0 = "(custom)"
+		return
+	}
+	presets := aiconfig.ProviderPresets()
+	pi := idx - 1
+	if pi < 0 || pi >= len(presets) {
+		return
+	}
+	preset := presets[pi]
+	m.commitEditorToSelectedProfile()
+	if m.selectedProfileIdx < 0 || m.selectedProfileIdx >= len(m.draft.Profiles) {
+		return
+	}
+	prof := m.draft.Profiles[m.selectedProfileIdx]
+	prof.Provider = preset.Provider
+	prof.BaseURL = preset.BaseURL
+	if preset.Provider == aiconfig.ProviderAzure {
+		prof.AzureAPIVersion = preset.APIVersion
+	}
+	m.draft.Profiles[m.selectedProfileIdx] = prof
+	m.loadEditorFromSelectedProfile()
 }
 
 // profileDDLabels builds the profile dropdown options from the draft profile
@@ -88,38 +154,52 @@ func (m *Model) profileDDLabels() []string {
 	return labels
 }
 
-// newProfileDropdown builds a profile dropdown reflecting the current draft.
-// The component has no runtime SetOptions, so the dropdown is recreated
-// whenever the option set changes (see refreshProfileDropdown).
-func (m *Model) newProfileDropdown() *bubbledropdown.Dropdown {
+// refreshProfileDropdown rebuilds the profile dropdown so its labels (names,
+// active marker) and selection track the draft. The Host skips the rebuild
+// while the panel is open (no structural change can be in flight then).
+func (m *Model) refreshProfileDropdown() {
+	if m.profileDD.Open() {
+		return
+	}
 	idx := m.selectedProfileIdx
 	if idx < 0 || idx >= len(m.draft.Profiles) {
 		idx = 0
 	}
-	return newSettingsDropdown(m.profileDDLabels(), idx, "profile")
+	m.profileDD.Rebuild(m.profileDDLabels(), idx)
+	m.syncDropdownFocus()
 }
 
-// refreshProfileDropdown rebuilds the profile dropdown so its labels (names,
-// active marker) and selection track the draft. Only runs while the panel is
-// closed; an open panel implies no structural change can be in flight.
-func (m *Model) refreshProfileDropdown() {
-	if m.profileDD != nil && m.profileDD.Open() {
-		return
+// dropdownForKind returns the Host backing a dropdown kind (nil for ddNone).
+func (m *Model) dropdownForKind(kind int) *dropdown.Host {
+	switch kind {
+	case ddStrictness:
+		return m.strictnessDD
+	case ddProfile:
+		return m.profileDD
+	case ddProvider:
+		return m.providerDD
+	case ddPreset:
+		return m.presetDD
+	case ddModel:
+		return m.modelDD
 	}
-	m.profileDD = m.newProfileDropdown()
-	m.syncDropdownFocus()
+	return nil
 }
 
 // openDropdownKind reports which Review & AI dropdown panel is open (ddNone
 // when none). At most one is open at a time.
 func (m *Model) openDropdownKind() int {
 	switch {
-	case m.strictnessDD != nil && m.strictnessDD.Open():
+	case m.strictnessDD.Open():
 		return ddStrictness
-	case m.profileDD != nil && m.profileDD.Open():
+	case m.profileDD.Open():
 		return ddProfile
-	case m.providerDD != nil && m.providerDD.Open():
+	case m.providerDD.Open():
 		return ddProvider
+	case m.presetDD.Open():
+		return ddPreset
+	case m.modelDD.Open():
+		return ddModel
 	}
 	return ddNone
 }
@@ -134,8 +214,12 @@ func (m *Model) focusedDropdownKind() int {
 		return ddStrictness
 	case fieldProfilePicker:
 		return ddProfile
+	case fieldPreset:
+		return ddPreset
 	case fieldProvider:
 		return ddProvider
+	case fieldModelList:
+		return ddModel
 	default:
 		return ddNone
 	}
@@ -148,25 +232,14 @@ func fieldForDropdown(kind int) int {
 		return fieldStrictness
 	case ddProfile:
 		return fieldProfilePicker
+	case ddPreset:
+		return fieldPreset
 	case ddProvider:
 		return fieldProvider
+	case ddModel:
+		return fieldModelList
 	default:
 		return fieldStrictness
-	}
-}
-
-// dropdownPtr returns the address of the dropdown field for kind so Update
-// results can be written back (Dropdown.Update returns a fresh pointer).
-func (m *Model) dropdownPtr(kind int) **bubbledropdown.Dropdown {
-	switch kind {
-	case ddStrictness:
-		return &m.strictnessDD
-	case ddProfile:
-		return &m.profileDD
-	case ddProvider:
-		return &m.providerDD
-	default:
-		return nil
 	}
 }
 
@@ -177,34 +250,18 @@ func (m *Model) syncDropdownFocus() {
 	if m.panelTab == 0 {
 		fk = m.focusedDropdownKind()
 	}
-	if m.strictnessDD != nil {
-		m.strictnessDD.SetFocused(fk == ddStrictness)
-	}
-	if m.profileDD != nil {
-		m.profileDD.SetFocused(fk == ddProfile)
-	}
-	if m.providerDD != nil {
-		m.providerDD.SetFocused(fk == ddProvider)
-	}
+	m.strictnessDD.SetFocused(fk == ddStrictness)
+	m.profileDD.SetFocused(fk == ddProfile)
+	m.providerDD.SetFocused(fk == ddProvider)
+	m.presetDD.SetFocused(fk == ddPreset)
+	m.modelDD.SetFocused(fk == ddModel)
 }
 
-// forwardToDropdown routes msg to the dropdown of kind, translating mouse
-// coordinates from absolute screen space into the settings-body-local space
-// the open panel uses for geometric hit-testing, then applies the resulting
-// selection to the draft. Returns any tea.Cmd the dropdown emits.
+// forwardToDropdown routes msg to the dropdown of kind. The Host translates
+// mouse coordinates into settings-body-local space (see ContentTop) and
+// mirrors any selection change onto the draft via its OnSelect callback.
 func (m *Model) forwardToDropdown(kind int, msg tea.Msg) tea.Cmd {
-	pp := m.dropdownPtr(kind)
-	if pp == nil || *pp == nil {
-		return nil
-	}
-	if mm, ok := msg.(tea.MouseMsg); ok {
-		mm.Y -= m.contentTop
-		msg = mm
-	}
-	updated, cmd := (*pp).Update(msg)
-	*pp = updated
-	m.applyDropdownSelection(kind)
-	return cmd
+	return m.dropdownForKind(kind).Forward(msg)
 }
 
 // handleDropdownResult applies an ItemChosenMsg / ItemCanceledMsg to the open
@@ -215,25 +272,6 @@ func (m *Model) handleDropdownResult(msg tea.Msg) tea.Cmd {
 		return nil
 	}
 	return m.forwardToDropdown(kind, msg)
-}
-
-// applyDropdownSelection mirrors a dropdown's current selection onto the
-// draft config: strictness updates the draft directly, provider is stored on
-// the dropdown (read at commit time), and profile switches the edited profile.
-func (m *Model) applyDropdownSelection(kind int) {
-	switch kind {
-	case ddStrictness:
-		if m.strictnessDD != nil {
-			m.draft.ReviewStrictness = strictnessAt(m.strictnessDD.SelectedIndex())
-		}
-	case ddProvider:
-		// The provider value lives on the dropdown and is read by
-		// commitEditorToSelectedProfile; nothing else to mirror here.
-	case ddProfile:
-		if m.profileDD != nil {
-			m.selectProfileByIndex(m.profileDD.SelectedIndex())
-		}
-	}
 }
 
 // selectProfileByIndex commits in-progress edits, switches the edited profile
@@ -249,9 +287,6 @@ func (m *Model) selectProfileByIndex(idx int) {
 
 // editedProvider returns the provider currently selected in the dropdown.
 func (m *Model) editedProvider() aiconfig.Provider {
-	if m.providerDD == nil {
-		return aiconfig.ProviderClaude
-	}
 	i := m.providerDD.SelectedIndex()
 	if i < 0 || i >= len(providerDDValues) {
 		return aiconfig.ProviderClaude

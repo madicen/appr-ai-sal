@@ -3,6 +3,25 @@ package repoagents
 import (
 	ra "github.com/madicen/appr-ai-sal/internal/review/repoagents"
 	ta "github.com/madicen/appr-ai-sal/internal/review/techagents"
+	"github.com/madicen/appr-ai-sal/internal/tui/util/async"
+)
+
+// Keys identify the row an async operation belongs to. specKey and techKey
+// address one agent within a repo; repoKey addresses a whole repo.
+type (
+	specKey struct{ Owner, Repo, Specialist string }
+	techKey struct{ Owner, Repo, Tech string }
+	repoKey struct{ Owner, Repo string }
+)
+
+// Marker payloads for err-only completions. They give delete / save / remove
+// distinct Go types even though they carry no value, so the Update type
+// switch can still dispatch them (a plain async.Result[K, struct{}] would make
+// delete and save the same type).
+type (
+	deleted struct{}
+	saved   struct{}
+	removed struct{}
 )
 
 // reposLoadedMsg delivers the discovered repo list to the model.
@@ -19,46 +38,6 @@ type agentsLoadedMsg struct {
 	Err   error
 }
 
-// regenStartedMsg is emitted when a regenerate command is dispatched (for
-// surfacing per-row "regenerating…" state immediately).
-type regenStartedMsg struct {
-	Owner      string
-	Repo       string
-	Specialist string
-}
-
-// regenDoneMsg is emitted when a regenerate command completes.
-type regenDoneMsg struct {
-	Owner      string
-	Repo       string
-	Specialist string
-	Agent      *ra.Agent
-	Err        error
-}
-
-// deletedMsg is emitted when a delete-agent command completes.
-type deletedMsg struct {
-	Owner      string
-	Repo       string
-	Specialist string
-	Err        error
-}
-
-// savedMsg is emitted when a manual edit of an agent body is persisted.
-type savedMsg struct {
-	Owner      string
-	Repo       string
-	Specialist string
-	Err        error
-}
-
-// repoRemovedMsg is emitted when the user deletes the entire repo file.
-type repoRemovedMsg struct {
-	Owner string
-	Repo  string
-	Err   error
-}
-
 // techsLoadedMsg delivers the per-repo TechAgents map for owner/repo.
 type techsLoadedMsg struct {
 	Owner string
@@ -67,50 +46,25 @@ type techsLoadedMsg struct {
 	Err   error
 }
 
-// techRegenStartedMsg is emitted when a tech regenerate command is dispatched.
-type techRegenStartedMsg struct {
-	Owner string
-	Repo  string
-	Tech  string
-}
+// Per-row async lifecycle messages, via the shared async.Started /
+// async.Result generics (see internal/tui/util/async). The Specialist agent
+// family and the Tech-expert family mirror each other; their key types keep
+// the instantiations (and thus the type-switch cases) distinct.
+type (
+	// Specialist agents (keyed by owner/repo/specialist).
+	regenStartedMsg = async.Started[specKey]
+	regenDoneMsg    = async.Result[specKey, *ra.Agent]
+	deletedMsg      = async.Result[specKey, deleted]
+	savedMsg        = async.Result[specKey, saved]
 
-// techRegenDoneMsg is emitted when a tech regenerate command completes.
-type techRegenDoneMsg struct {
-	Owner string
-	Repo  string
-	Tech  string
-	Agent *ta.Agent
-	Err   error
-}
+	// Whole-repo operations (keyed by owner/repo).
+	repoRemovedMsg        = async.Result[repoKey, removed]
+	techSuggestStartedMsg = async.Started[repoKey]
+	techSuggestDoneMsg    = async.Result[repoKey, []ta.Candidate]
 
-// techDeletedMsg is emitted when a delete-tech command completes.
-type techDeletedMsg struct {
-	Owner string
-	Repo  string
-	Tech  string
-	Err   error
-}
-
-// techSavedMsg is emitted when a manual tech-brief edit is persisted.
-type techSavedMsg struct {
-	Owner string
-	Repo  string
-	Tech  string
-	Err   error
-}
-
-// techSuggestStartedMsg is emitted when a suggest-technologies command is
-// dispatched so the panel can show its "analyzing…" state immediately.
-type techSuggestStartedMsg struct {
-	Owner string
-	Repo  string
-}
-
-// techSuggestDoneMsg delivers the suggested technology candidates for
-// owner/repo (or an error, e.g. ta.ErrNoRepoAccess).
-type techSuggestDoneMsg struct {
-	Owner      string
-	Repo       string
-	Candidates []ta.Candidate
-	Err        error
-}
+	// Tech-expert agents (keyed by owner/repo/tech).
+	techRegenStartedMsg = async.Started[techKey]
+	techRegenDoneMsg    = async.Result[techKey, *ta.Agent]
+	techDeletedMsg      = async.Result[techKey, deleted]
+	techSavedMsg        = async.Result[techKey, saved]
+)

@@ -2,15 +2,15 @@ package techagents
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/llmjson"
 	"github.com/madicen/appr-ai-sal/internal/repoconfig"
 	"github.com/madicen/appr-ai-sal/internal/review/repocontext"
 )
@@ -41,7 +41,7 @@ type SuggestOpts struct {
 	Owner    string
 	Repo     string
 	Worktree string // optional; LocalRoot is used when empty
-	Complete CompleteFunc
+	Complete ai.CompleteFunc
 	Existing []string
 }
 
@@ -113,58 +113,15 @@ func isDir(p string) bool {
 	return err == nil && st.IsDir()
 }
 
-// parseCandidates extracts the JSON candidate array from noisy model output.
-// It tolerates a leading ```json fence and surrounding prose.
+// parseCandidates extracts the JSON candidate array from noisy model output
+// via the shared llmjson salvage ladder (tolerates ```json fences, surrounding
+// prose, comments, and trailing commas).
 func parseCandidates(raw string) ([]Candidate, error) {
-	s := strings.TrimSpace(raw)
-	var cands []Candidate
-	if err := json.Unmarshal([]byte(s), &cands); err == nil {
-		return cands, nil
+	cands, err := llmjson.Parse[[]Candidate](raw)
+	if err != nil {
+		return nil, fmt.Errorf("no JSON array found in model output")
 	}
-	if arr := extractJSONArray(s); arr != "" {
-		if err := json.Unmarshal([]byte(arr), &cands); err == nil {
-			return cands, nil
-		}
-	}
-	return nil, fmt.Errorf("no JSON array found in model output")
-}
-
-// extractJSONArray returns the first balanced top-level [...] block in s,
-// skipping brackets that appear inside JSON strings.
-func extractJSONArray(s string) string {
-	start := strings.IndexByte(s, '[')
-	if start < 0 {
-		return ""
-	}
-	depth := 0
-	inStr := false
-	esc := false
-	for i := start; i < len(s); i++ {
-		c := s[i]
-		if inStr {
-			switch {
-			case esc:
-				esc = false
-			case c == '\\':
-				esc = true
-			case c == '"':
-				inStr = false
-			}
-			continue
-		}
-		switch c {
-		case '"':
-			inStr = true
-		case '[':
-			depth++
-		case ']':
-			depth--
-			if depth == 0 {
-				return s[start : i+1]
-			}
-		}
-	}
-	return ""
+	return cands, nil
 }
 
 // dedupeCandidates canonicalises tech keys, drops entries with empty keys,
@@ -210,34 +167,13 @@ func dedupeCandidates(in []Candidate, existing []string) []Candidate {
 }
 
 func loadSuggesterPrompt() (string, error) {
-	if override, ok, err := readSuggesterOverride(); err != nil {
-		return "", err
-	} else if ok {
-		return override, nil
-	}
-	b, err := fs.ReadFile(promptFS, "prompts/tech-suggester.md")
-	if err != nil {
-		return "", fmt.Errorf("load tech-suggester prompt: %w", err)
-	}
-	return string(b), nil
+	return agentstore.LoadPrompt(promptFS, "prompts/tech-suggester.md", "tech-suggester.md")
 }
 
 // SuggesterPromptOverridePath is where users may write a custom suggester
 // prompt to replace the embedded one.
 func SuggesterPromptOverridePath() string {
-	return filepath.Join(configDir(), "prompts", "tech-suggester.md")
-}
-
-func readSuggesterOverride() (string, bool, error) {
-	p := SuggesterPromptOverridePath()
-	b, err := os.ReadFile(p)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", false, nil
-		}
-		return "", false, fmt.Errorf("read override %s: %w", p, err)
-	}
-	return string(b), true, nil
+	return agentstore.PromptOverridePath("tech-suggester.md")
 }
 
 func buildSuggesterUserPrompt(owner, repo, bundle string) string {

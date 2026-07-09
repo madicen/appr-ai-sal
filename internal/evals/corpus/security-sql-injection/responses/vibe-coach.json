@@ -1,0 +1,14 @@
+{
+  "verdict": "request_changes",
+  "summary": "A SQL injection in the new user-lookup path must be fixed before merge.",
+  "prompts": [
+    {
+      "title": "Parameterize the user lookup query",
+      "rationale": "The name argument is concatenated into SQL, so a crafted name can read or modify arbitrary rows.",
+      "agent_prompt": "Rewrite LookupUser in db/user.go to use a parameterized query (db.QueryRow(\"SELECT * FROM users WHERE name = ?\", name)) instead of fmt.Sprintf.",
+      "finding_refs": [
+        {"specialist": "security", "path": "db/user.go", "line": 9}
+      ]
+    }
+  ]
+}

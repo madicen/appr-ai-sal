@@ -2,13 +2,14 @@ package review
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
 
+	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
 	"github.com/madicen/appr-ai-sal/internal/gh"
+	"github.com/madicen/appr-ai-sal/internal/llmjson"
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
 )
 
@@ -70,10 +71,24 @@ func formatPerAgentBriefs(perAgent map[string]string) string {
 	return b.String()
 }
 
-func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) string {
+func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness, rejectedMemory string, strictness aiconfig.ReviewStrictness) string {
 	var b strings.Builder
 	b.WriteString("PR: " + pr.Repository + "#")
 	fmt.Fprintf(&b, "%d %s\n\n", pr.Number, pr.Title)
+	// Q3.5: calibrate demotion aggressiveness to the chosen intensity. Empty
+	// at the default (balanced) level, so a balanced run's prompt is
+	// byte-identical to pre-Q3.5.
+	if sb := strictnessBlockForArbiter(strictness); sb != "" {
+		b.WriteString(sb)
+	}
+	// B1 reviewer memory: patterns the human has repeatedly declined in this
+	// repo. Injected only when non-empty, so a repo with no memory produces a
+	// byte-identical prompt to pre-B1.
+	if rm := strings.TrimSpace(rejectedMemory); rm != "" {
+		b.WriteString("## Previously rejected patterns (reviewer memory)\n\n")
+		b.WriteString(rm)
+		b.WriteString("\n")
+	}
 	briefs := formatPerAgentBriefs(perAgent)
 	if strings.TrimSpace(briefs) != "" {
 		b.WriteString("## Per-specialist repo-agent briefs\n\n")
@@ -89,7 +104,9 @@ func buildRepoArbiterUserPrompt(pr *gh.PR, specialistDigest string, perAgent map
 		b.WriteString(md)
 		b.WriteString("\n")
 	}
-	b.WriteString("## Specialist + vibe digest (authoritative for finding paths/lines)\n\n")
+	// The vibe-coach runs AFTER the arbiter, so its output is never part of
+	// this digest — the heading names only what is actually present.
+	b.WriteString("## Specialist findings digest (authoritative for finding paths/lines)\n\n")
 	b.WriteString(specialistDigest)
 	b.WriteString("\n")
 	b.WriteString(repoArbiterOutputContract)
@@ -111,17 +128,15 @@ type repoArbiterJSON struct {
 }
 
 func parseRepoArbiterJSON(s string) (*repoArbiterJSON, error) {
-	s = strings.TrimSpace(s)
-	var v repoArbiterJSON
-	if err := json.Unmarshal([]byte(s), &v); err == nil {
+	v, err := llmjson.Parse[repoArbiterJSON](s)
+	if err == nil {
 		return &v, nil
 	}
-	if obj := extractJSONObject(s); obj != "" {
-		if err := json.Unmarshal([]byte(obj), &v); err == nil {
-			return &v, nil
-		}
-	}
-	return nil, fmt.Errorf("parse repo arbiter JSON")
+	// Include a bounded raw-output excerpt so a stage-retry log / progress
+	// line names what the model actually returned instead of an opaque
+	// "parse repo arbiter JSON". The "parse repo arbiter" substring keeps the
+	// error classified as retryable by isRetryableStageError.
+	return nil, fmt.Errorf("parse repo arbiter JSON (raw: %s)", truncate(strings.TrimSpace(s), 500))
 }
 
 // FinalizeRepoArbiter validates suppressions and demotions against the
@@ -208,8 +223,8 @@ func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 			ar.DroppedSuppressions = append(ar.DroppedSuppressions, "no matching inline finding: "+k)
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
-			ar.DroppedSuppressions = append(ar.DroppedSuppressions, "cannot suppress security finding: "+k)
+		if !specSuppressible(ff.Specialist) {
+			ar.DroppedSuppressions = append(ar.DroppedSuppressions, "cannot suppress "+specKey(ff.Specialist)+" finding: "+k)
 			continue
 		}
 		if ff.Finding.Severity == SeverityError || ff.Finding.Severity == SeverityCritical {
@@ -253,8 +268,8 @@ func FinalizeRepoArbiter(ar *RepoArbiterResult, d *Draft) {
 			ar.DroppedDemotions = append(ar.DroppedDemotions, "no matching inline finding: "+k)
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
-			ar.DroppedDemotions = append(ar.DroppedDemotions, "cannot demote security finding: "+k)
+		if !specDemotable(ff.Specialist) {
+			ar.DroppedDemotions = append(ar.DroppedDemotions, "cannot demote "+specKey(ff.Specialist)+" finding: "+k)
 			continue
 		}
 		if ff.Finding.Severity == SeverityCritical {
@@ -389,8 +404,8 @@ func isGeneralRef(path string, line int) bool {
 // finding out of the review.
 func suppressGuardForGeneral(matches []FlatFinding) string {
 	for _, ff := range matches {
-		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
-			return "cannot suppress security finding"
+		if !specSuppressible(ff.Specialist) {
+			return "cannot suppress " + specKey(ff.Specialist) + " finding"
 		}
 		if ff.Finding.Severity == SeverityError || ff.Finding.Severity == SeverityCritical {
 			return "cannot suppress error-or-critical-severity finding"
@@ -414,8 +429,8 @@ func demoteGeneralFindings(d *Draft, matches []FlatFinding, dem DemotedFindingRe
 	}
 	plans := make([]plan, 0, len(matches))
 	for _, ff := range matches {
-		if strings.EqualFold(strings.TrimSpace(ff.Specialist), SpecSecurity) {
-			return nil, "", "cannot demote security finding"
+		if !specDemotable(ff.Specialist) {
+			return nil, "", "cannot demote " + specKey(ff.Specialist) + " finding"
 		}
 		if ff.Finding.Severity == SeverityCritical {
 			return nil, "", "cannot demote critical-severity finding"
@@ -471,16 +486,18 @@ func demotedSeverity(s Severity) (Severity, bool) {
 	}
 }
 
-func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) *RepoArbiterResult {
+func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialistDigest string, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness, rejectedMemory string) *RepoArbiterResult {
 	ar := &RepoArbiterResult{}
 	sys, err := SpecialistPrompt(specRepoArbiter)
 	if err != nil {
 		ar.Err = err
 		return ar
 	}
-	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses)
-	sys, user = augmentPromptsForProvider(cfg.Provider, sys, user, true)
-	out, err := Complete(ctx, cfg, sys, user, worktree)
+	user := buildRepoArbiterUserPrompt(pr, specialistDigest, perAgent, techSection, witnesses, rejectedMemory, cfg.ReviewStrictness)
+	sys, user = augmentPromptsForProvider(ai.CapabilitiesFor(cfg).RepoTools, sys, user, true)
+	// R5: constrain the arbiter's output shape (suppress/demote refs) on
+	// schema-capable providers with the registry-derived arbiter schema.
+	out, err := completeJSONWithSchema(ctx, cfg, sys, user, worktree, arbiterSchema())
 	if err != nil {
 		ar.Err = err
 		return ar
@@ -515,7 +532,15 @@ func runRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, 
 // (already injected into specialist prompts), the cross-specialist
 // technology experts section, and optional convention witnesses produced
 // between the specialists and this pass.
-func RunRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness) *RepoArbiterResult {
+// rejectedMemory is the pre-rendered "previously rejected patterns" section
+// (B1) from the per-repo reviewer memory, or "" when there is no memory. When
+// empty the arbiter prompt is byte-identical to pre-B1; the runner supplies it
+// and evals pass "".
+func RunRepoArbiter(ctx context.Context, cfg *aiconfig.Config, worktree string, pr *gh.PR, specialists []SpecialistResult, perAgent map[string]string, techSection string, witnesses []conventionwitness.Witness, rejectedMemory string) *RepoArbiterResult {
+	// Q7: route the arbiter to its configured model (stage_models["arbiter"] /
+	// "default"); a no-op clone when unrouted. Applied here so every caller
+	// (runner, evals) picks up arbiter routing uniformly.
+	cfg = cfg.ForStage(StageArbiter)
 	specDigest := buildSpecialistDigestForRepoExperts(specialists)
-	return runRepoArbiter(ctx, cfg, worktree, pr, specDigest, perAgent, techSection, witnesses)
+	return runRepoArbiter(ctx, cfg, worktree, pr, specDigest, perAgent, techSection, witnesses, rejectedMemory)
 }

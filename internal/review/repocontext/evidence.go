@@ -51,12 +51,12 @@ type FileEvidence struct {
 
 // EvidenceAggregates summarises FileEvidence across the changed file set.
 type EvidenceAggregates struct {
-	ChangedSourceFiles                   int
-	ChangedTestFiles                     int
-	ChangedDocFiles                      int
-	ChangedSourceFilesWithSiblingTest    int
-	ChangedSourceFilesInPackageWithDocGo int
-	TotalExportedSymbolsTouched          int
+	ChangedSourceFiles                    int
+	ChangedTestFiles                      int
+	ChangedDocFiles                       int
+	ChangedSourceFilesWithSiblingTest     int
+	ChangedSourceFilesInPackageWithDocGo  int
+	TotalExportedSymbolsTouched           int
 	TotalDocumentedExportedSymbolsTouched int
 }
 
@@ -113,12 +113,12 @@ func BuildEvidence(ctx context.Context, opts EvidenceOptions) (*Evidence, error)
 
 // dirSample is a cached scan of one directory under the worktree.
 type dirSample struct {
-	dir              string
-	sourceFiles      []string
-	testFiles        []string
-	docFiles         []string
-	hasDocGo         bool
-	readmePath       string
+	dir         string
+	sourceFiles []string
+	testFiles   []string
+	docFiles    []string
+	hasDocGo    bool
+	readmePath  string
 }
 
 const dirEntryScanCap = 400
@@ -614,20 +614,14 @@ func countTSExports(lines []string) (int, int) {
 }
 
 func hasJSDocAbove(lines []string, i int) bool {
-	for j := i - 1; j >= 0; j-- {
-		t := strings.TrimSpace(lines[j])
-		if t == "" {
-			return false
-		}
-		if strings.HasPrefix(t, "//") {
-			return true
-		}
-		if strings.HasPrefix(t, "*") || strings.HasPrefix(t, "*/") || strings.HasPrefix(t, "/**") || strings.HasPrefix(t, "/*") {
-			return true
-		}
+	if i <= 0 {
 		return false
 	}
-	return false
+	t := strings.TrimSpace(lines[i-1])
+	if strings.HasPrefix(t, "//") {
+		return true
+	}
+	return strings.HasPrefix(t, "*") || strings.HasPrefix(t, "*/") || strings.HasPrefix(t, "/**") || strings.HasPrefix(t, "/*")
 }
 
 func firstIdentifier(s string) string {
@@ -718,7 +712,7 @@ func BuildRepoWideEvidence(ctx context.Context, opts RepoWideEvidenceOptions) (*
 		}
 		visited++
 		ev.DirsSampled++
-		var sources, tests, docs []string
+		var sources, tests []string
 		hasDocGo := false
 		hasReadme := false
 		for _, e := range ents {
@@ -736,7 +730,6 @@ func BuildRepoWideEvidence(ctx context.Context, opts RepoWideEvidenceOptions) (*
 				tests = append(tests, rp)
 				ev.TotalTestFilesSampled++
 			case isDocName(name):
-				docs = append(docs, rp)
 				ev.TotalDocFilesSampled++
 				if isReadmeName(name) {
 					hasReadme = true

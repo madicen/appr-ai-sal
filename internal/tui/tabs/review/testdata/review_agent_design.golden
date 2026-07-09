@@ -1,0 +1,32 @@
+ design   1 finding(s) · —
+
+Summary
+    interface boundary noted; cohesion looks reasonable
+
+Finding 1 of 1  ·  0 already on PR  ·  0 posted  ·  0 skipped
+sort: default  ·  filter: all  ·  (S sort · f filter)
+
+ design   internal/tui/data/commands.go:78  warn
+
+Diff context
++ func StartReviewCmd(ref gh.Ref, cfg *aiconfig.Config, demo bool) tea.Cmd {
+· 	snap := cfg.Clone()
+· 	return func() tea.Msg {
+· 		ctx := context.Background()
++ 		if demo { ◀ here
++ 			ch := demopkg.SyntheticReviewProgress(ctx, ref, snap)
++ 			return ReviewStartedMsg{Ch: ch}
++ 		}
+· 		ch, err := review.Run(ctx, ref, snap)
+
+Comment GitHub will post
+    AI-generated review comment — tool: appr-ai-sal, agent: design
+
+    The demo bool parameter on StartReviewCmd mixes a recording concern into the production data layer's
+    signature. Consider an internal data.Source interface that real and demo paths both satisfy, so future
+    feature flags don't keep widening this signature.
+
+ ← prev    Post (y)    Skip (n)    Challenge (c)    next →    Abort (q)
+e edit · E $EDITOR · ctrl+y copy finding · ctrl+o copy hunk
+
+DRY-RUN — Post shows the GitHub payload only; nothing is sent.

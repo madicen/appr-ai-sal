@@ -1,0 +1,10 @@
+diff --git a/build/run.go b/build/run.go
+new file mode 100644
+--- /dev/null
++++ b/build/run.go
+@@ -0,0 +1,5 @@
++package build
++
++func Run() error {
++	return nil
++}

@@ -1,0 +1,20 @@
+diff --git a/pipeline/process.go b/pipeline/process.go
+new file mode 100644
+--- /dev/null
++++ b/pipeline/process.go
+@@ -0,0 +1,15 @@
++package pipeline
++
++func Process(items []int) int {
++	total := 0
++	for _, v := range items {
++		if v > 0 {
++			if v%2 == 0 {
++				if v < 100 {
++					total += v
++				}
++			}
++		}
++	}
++	return total
++}

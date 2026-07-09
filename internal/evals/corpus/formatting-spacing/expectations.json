@@ -1,0 +1,23 @@
+{
+  "must_appear": [
+    {
+      "specialist": "formatting",
+      "path": "calc/compute.go",
+      "line": 4,
+      "line_tolerance": 1,
+      "pattern": "(?i)gofmt|spaces around",
+      "note": "legit spacing fix (suggestion should survive)"
+    }
+  ],
+  "must_not_appear": [
+    {
+      "specialist": "formatting",
+      "path": "calc/compute.go",
+      "pattern": "(?i)snake_case|compute_total",
+      "note": "scar tissue: snake_case prescribed on Go — naming gate must demote/strip it below the balanced floor"
+    }
+  ],
+  "expect_json_first_try": {
+    "formatting": true
+  }
+}

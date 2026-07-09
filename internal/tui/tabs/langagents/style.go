@@ -1,61 +1,64 @@
 package langagents
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"github.com/charmbracelet/lipgloss"
 
-// Styles intentionally re-use the same palette ideas as the repoagents
-// tab so the two tabs feel like siblings, but with a slightly narrower
-// table since language briefs have less per-row content.
+	"github.com/madicen/appr-ai-sal/internal/theme"
+)
+
+// Styles route through the semantic palette in internal/theme so the tab
+// draws from the same source as the rest of the app (Phase 5 item 7) instead
+// of the ad-hoc 256-colour indices it used to carry. The status chips map to
+// their semantic roles (success / info / warning / error); the tab keeps the
+// same sibling feel as the repo-agents tab because both now resolve the shared
+// palette, and everything degrades to monochrome together under NO_COLOR.
 var (
 	titleStyle = lipgloss.NewStyle().
 			Bold(true).
-			Foreground(lipgloss.Color("213"))
+			Foreground(theme.Adaptive(theme.RoleAccent))
 
 	hintStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("245")).
+			Foreground(theme.Adaptive(theme.RoleMuted)).
 			Italic(true)
 
 	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("250"))
+			Foreground(theme.Adaptive(theme.RoleFg))
 
 	rowStyle = lipgloss.NewStyle().
 			Padding(0, 1)
 
 	rowSelectedStyle = rowStyle.
-				Background(lipgloss.Color("236")).
-				Foreground(lipgloss.Color("231"))
-
-	chipBundled = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("114")).
-			Bold(true)
+				Background(theme.Adaptive(theme.RoleSelectionBg)).
+				Foreground(theme.Adaptive(theme.RoleSelectionFg))
 
 	chipCached = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("117"))
+			Foreground(theme.Adaptive(theme.RoleInfo))
 
 	chipMissing = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("203")).
+			Foreground(theme.Adaptive(theme.RoleError)).
 			Bold(true)
 
 	chipStale = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("215"))
+			Foreground(theme.Adaptive(theme.RoleWarning))
 
 	chipBusy = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("228")).
+			Foreground(theme.Adaptive(theme.RoleInfo)).
 			Italic(true)
 
 	errStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("203")).
+			Foreground(theme.Adaptive(theme.RoleError)).
 			Bold(true)
 
 	// btnStyle / btnDangerStyle render the per-row mouse action buttons
 	// (Generate/Refresh and Delete) and the footer Close button so the
 	// tab can be driven without the keyboard.
 	btnStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("231")).
-			Background(lipgloss.Color("238")).
+			Foreground(theme.Adaptive(theme.RoleOnSurface)).
+			Background(theme.Adaptive(theme.RoleSurface)).
 			Padding(0, 1)
 
 	btnDangerStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("231")).
-			Background(lipgloss.Color("131")).
+			Foreground(theme.Adaptive(theme.RoleOnAccent)).
+			Background(theme.Adaptive(theme.RoleDanger)).
 			Padding(0, 1)
 )

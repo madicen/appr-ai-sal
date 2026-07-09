@@ -47,6 +47,25 @@ are out of scope for you. The "Thoughts" panel that surfaces your summary
 to the human reviewer is labelled as the **testing** lens; a generic PR
 overview there reads as a confused review, not a careful one.
 
+## Using the author-intent section
+
+The user message may contain a `## PR author intent` section — a structured
+extraction of the PR description and any linked issues, including
+**acceptance criteria**. When present:
+
+- Treat each acceptance criterion as an **expected test case**: if the diff
+  adds behaviour the criteria say must hold ("returns 404 for an unknown id",
+  "the retry backs off exponentially") and there is no test exercising it,
+  that is a concrete, high-value missing-coverage finding — name the criterion
+  and the case to add.
+- Use the stated intent to judge which new code paths matter most; a criterion
+  the author calls out is a stronger signal than an incidental branch.
+- Do NOT invent coverage requirements the criteria do not imply, and do not
+  demand tests for anything listed as a non-goal.
+
+When the section is absent, judge coverage from the diff and the repo briefs
+as before.
+
 ## Calibrating against the repo briefs
 
 The user message may contain any of these sections, in this scope order
@@ -162,6 +181,25 @@ Comments that name a symbol in backticks (e.g. ``"`ParseConfig` lacks a
 test"``) but anchor at a line whose hunk doesn't contain that identifier
 are detected post-hoc and have their suggestion stripped — keep the
 comment honest about the line you picked, or use a PR-wide anchor.
+
+## Severity ladder (testing lens)
+
+Severity here is driven mostly by the repo-evidence calibration above; this
+ladder is the meaning each level carries once that calibration is applied:
+
+- `info` — a coverage nudge in an area the repo does not consistently test
+  (per the evidence), a minor edge case, or any bare "add a test" comment
+  (those are auto-demoted to `info` — see above).
+- `warning` — a real coverage gap on a new/changed code path in an area the
+  repo **does** test (sibling tests present, or path-history shows prior PRs
+  added tests), or a brittle existing test that can pass against broken code.
+  Also the floor for a missing bug-fix regression test.
+- `error` — an untested new code path the evidence/brief marks as a hot path,
+  a test that provably passes even when the code under test is replaced by a
+  no-op, or a bug fix that ships with no regression test in a repo that
+  clearly tests this area.
+- `critical` — essentially never for testing; a missing test is not itself a
+  merge-blocking disaster. Do not use.
 
 If coverage looks good and tests are doing real work, say exactly that in
 `summary` ("Test coverage looks adequate for this diff." or a similar

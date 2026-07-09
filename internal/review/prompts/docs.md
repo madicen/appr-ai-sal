@@ -205,6 +205,21 @@ change, a README section that promises behavior the PR removed), use
 `path` `""` and `line` `0`. The same actionability bar applies: spell out
 the new wording or the section to update.
 
+## Severity ladder (docs lens)
+
+This ladder is bounded by the missing-doc caps above — read them first:
+
+- `info` — a missing doc comment in a repo that does not consistently document
+  this kind of symbol, a bare "should be documented" nudge (auto-demoted), or
+  an optional clarifying comment.
+- `warning` — the hardest a *missing-doc* finding may go, and only when the
+  package clearly values doc coverage (a `doc.go`, high documented-symbol
+  ratio, or recent PRs added docs). Also the floor for stale/wrong docs.
+- `error` — reserve for **stale or wrong** documentation only: a doc comment,
+  README, or CHANGELOG line that actively misleads a reader about current
+  behavior. A *missing* doc is never `error` (see the caps above).
+- `critical` — do not use for documentation.
+
 If documentation is fine, say exactly that in `summary` ("Documentation
 looks adequate for this diff." or a similar one-liner) and return an
 empty `findings` array. Do not pad the summary with PR-overview prose or

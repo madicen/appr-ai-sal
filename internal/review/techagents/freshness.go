@@ -3,6 +3,8 @@ package techagents
 import (
 	"strings"
 	"time"
+
+	"github.com/madicen/appr-ai-sal/internal/agentstore"
 )
 
 // Freshness summarises the state of a repo's stored tech-experts from a
@@ -66,29 +68,14 @@ func Compute(ta *TechAgents, now time.Time, staleAfter time.Duration) Freshness 
 	if ta == nil {
 		return FreshnessMissing
 	}
-	have := 0
-	var oldest time.Time
-	sawZeroTimestamp := false
+	var scan agentstore.StaleScan
 	for _, a := range ta.Agents {
-		if strings.TrimSpace(a.Context) == "" {
-			continue
-		}
-		have++
-		if a.GeneratedAt.IsZero() {
-			sawZeroTimestamp = true
-			continue
-		}
-		if oldest.IsZero() || a.GeneratedAt.Before(oldest) {
-			oldest = a.GeneratedAt
-		}
+		scan.Observe(a.Context, a.GeneratedAt)
 	}
-	if have == 0 {
+	if scan.Have == 0 {
 		return FreshnessMissing
 	}
-	if sawZeroTimestamp {
-		return FreshnessStale
-	}
-	if staleAfter > 0 && !oldest.IsZero() && now.Sub(oldest) > staleAfter {
+	if scan.Stale(now, staleAfter) {
 		return FreshnessStale
 	}
 	return FreshnessFresh

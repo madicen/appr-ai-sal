@@ -1,0 +1,4 @@
+- Formatting / spelling nits (those belong to formatting).
+- Code design or test coverage feedback (separate briefs).
+- Generic "comments should explain why" lectures unless the repo's bundle
+  states the rule.

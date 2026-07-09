@@ -5,14 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
-	"github.com/madicen/appr-ai-sal/internal/aiconfig"
+	"github.com/madicen/appr-ai-sal/internal/appdirs"
 )
 
 // DefaultPath is ~/.config/appr-ai-sal/theme.json (honours
-// APPR_AI_SAL_CONFIG_DIR / XDG_CONFIG_HOME via aiconfig.ConfigDir).
+// APPR_AI_SAL_CONFIG_DIR / XDG_CONFIG_HOME via appdirs.ConfigDir).
 func DefaultPath() string {
-	return filepath.Join(aiconfig.ConfigDir(), "theme.json")
+	return filepath.Join(appdirs.ConfigDir(), "theme.json")
 }
 
 // Load reads theme.json if present and returns the merged theme. A missing
@@ -37,6 +38,7 @@ func Load() (*Theme, error) {
 			out.Colors[k] = normalizeHex(v)
 		}
 	}
+	out.Mode = t.Mode
 	return out, nil
 }
 
@@ -57,7 +59,13 @@ func Save(t *Theme, path string) error {
 			overrides[s.Key] = normalizeHex(v)
 		}
 	}
-	b, err := json.MarshalIndent(Theme{Colors: overrides}, "", "  ")
+	// Persist a non-default appearance mode so the choice survives restarts;
+	// the built-in default (dark) stays out of the file to keep it minimal.
+	mode := ""
+	if m := strings.ToLower(strings.TrimSpace(t.Mode)); m != "" && ParseMode(m) != ModeDark {
+		mode = ParseMode(m).String()
+	}
+	b, err := json.MarshalIndent(Theme{Colors: overrides, Mode: mode}, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal theme: %w", err)
 	}

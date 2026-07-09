@@ -1,0 +1,14 @@
+{
+  "summary": "The memory limit uses a decimal suffix.",
+  "findings": [
+    {
+      "path": "deploy/api.yaml",
+      "line": 10,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Kubernetes memory limits use binary suffixes; 717M is megabytes, not mebibytes. Use the binary suffix so 717M becomes 717Mi.",
+      "suggestion": "              memory: 717Mi",
+      "anchor_excerpt": "              memory: 717M"
+    }
+  ]
+}

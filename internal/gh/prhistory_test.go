@@ -48,7 +48,7 @@ func TestPathDirMatches(t *testing.T) {
 	cases := map[string]bool{
 		"internal/review":     true,
 		"internal/review/sub": true,
-		"internal":            true,  // parent of one of the wanted dirs
+		"internal":            true, // parent of one of the wanted dirs
 		"cmd":                 true,
 		"docs":                false,
 		"":                    false,
@@ -77,17 +77,17 @@ func TestRootDocFile(t *testing.T) {
 
 func TestIsPRTestFileName(t *testing.T) {
 	cases := map[string]bool{
-		"foo_test.go":   true,
-		"foo.go":        false,
-		"test_app.py":   true,
-		"app_test.py":   true,
-		"x.test.tsx":    true,
-		"x.spec.js":     true,
-		"x.ts":          false,
-		"foo_spec.rb":   true,
-		"FooTest.java":  true,
-		"FooTests.kt":   true,
-		"random.txt":    false,
+		"foo_test.go":  true,
+		"foo.go":       false,
+		"test_app.py":  true,
+		"app_test.py":  true,
+		"x.test.tsx":   true,
+		"x.spec.js":    true,
+		"x.ts":         false,
+		"foo_spec.rb":  true,
+		"FooTest.java": true,
+		"FooTests.kt":  true,
+		"random.txt":   false,
 	}
 	for p, want := range cases {
 		if got := isPRTestFileName(p); got != want {
@@ -113,12 +113,12 @@ func TestIsPRDocFileName(t *testing.T) {
 
 func TestIsPRSourceFileName(t *testing.T) {
 	cases := map[string]bool{
-		"foo.go":   true,
-		"foo.py":   true,
-		"foo.tsx":  true,
-		"foo.tf":   true,
-		"foo.txt":  false,
-		"foo.md":   false,
+		"foo.go":  true,
+		"foo.py":  true,
+		"foo.tsx": true,
+		"foo.tf":  true,
+		"foo.txt": false,
+		"foo.md":  false,
 	}
 	for p, want := range cases {
 		if got := isPRSourceFileName(p); got != want {

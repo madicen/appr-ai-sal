@@ -1,0 +1,3 @@
+Plain markdown. No JSON, no surrounding code fence. About 200–600 words,
+scannable subheadings and bullets. Be concrete: cite real paths or symbols
+when the inputs allow. End at the last bullet.

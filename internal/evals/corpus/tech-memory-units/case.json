@@ -1,0 +1,14 @@
+{
+  "id": "tech-memory-units",
+  "title": "Add resource limits to deployment",
+  "target": "tech",
+  "repo": "acme/infra",
+  "number": 107,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/limits",
+  "body": "Sets a memory limit on the api container.",
+  "strictness": "balanced",
+  "additions": 10,
+  "changed_files": 1
+}

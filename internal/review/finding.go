@@ -1,0 +1,371 @@
+// Package review orchestrates specialist AI agents over a checked-out PR
+// and assembles their output into a single draft GitHub review.
+//
+// The package's core types are split across focused files:
+//   - finding.go        — domain types (Finding, Severity, specialist consts,
+//     SpecialistResult, RepoArbiterResult and its refs).
+//   - draft.go          — the Draft aggregate plus its suppression/demotion
+//     key bookkeeping (built on the unified findingkey.Key).
+//   - verdict.go        — the merge-verdict state machine: one explicit
+//     reducer (reduceMergeVerdict) plus the vibe-coach domain types.
+//   - render.go         — the markdown review-body rendering.
+//   - github_payload.go — GitHub review-payload construction (ToReview*,
+//     EffectiveReviewEventAndBody, self-author downgrade).
+//   - fallback_prompts.go — vibe-coach fallback-prompt bookkeeping.
+package review
+
+import (
+	"strings"
+)
+
+// Severity is the importance of a single finding.
+type Severity string
+
+const (
+	SeverityInfo     Severity = "info"
+	SeverityWarning  Severity = "warning"
+	SeverityError    Severity = "error"
+	SeverityCritical Severity = "critical" // show-stopper / merge-blocking; stricter than error
+)
+
+// Specialist names. Edit the corresponding file in prompts/specialists/ to
+// change a specialist's behavior.
+const (
+	SpecFormatting = "formatting"
+	SpecDesign     = "design"
+	SpecTesting    = "testing"
+	SpecDocs       = "docs"
+	SpecSecurity   = "security"
+	SpecTech       = "tech"
+	SpecVibeCoach  = "vibe-coach"
+)
+
+// AllSpecialists is the set of code-reviewing specialists, ordered roughly
+// from most local (formatting) to most cross-cutting (security), followed by
+// the tech specialist that enforces the configured technology-expert briefs
+// against the diff. The vibe coach is intentionally omitted — it runs after
+// the others as a second pass.
+//
+// It is derived from the declarative registry (registry.go) rather than
+// hand-maintained: the registry is the single source of truth for a
+// specialist's behaviour, and this slice is just its KindCode members in
+// registry order, kept exported for the many callers that range/len over it.
+var AllSpecialists = builtinNames(KindCode)
+
+// Finding is one item from a specialist. Use a concrete path and line > 0 for
+// feedback tied to a location in the diff (posted as a GitHub inline review
+// comment). Use path "" and line 0 for PR-level / general feedback (included
+// only in the review body, not as an inline comment).
+type Finding struct {
+	Path     string   `json:"path"`
+	Line     int      `json:"line"`
+	Side     string   `json:"side,omitempty"` // LEFT or RIGHT; default RIGHT
+	Severity Severity `json:"severity"`
+	Comment  string   `json:"comment"`
+	// StartLine is the optional FIRST line of a multi-line inline finding
+	// (Q6.1). When set (> 0 and < Line) the finding spans the post-image
+	// range StartLine..Line on Side, which GitHub renders as a multi-line
+	// review comment and — for a ```suggestion block — a multi-line
+	// replacement. Zero means the finding is single-line (anchored only at
+	// Line), the historical behaviour. validateMultiLineSuggestionRange
+	// verifies the whole range is anchorable and clears StartLine (and any
+	// suggestion) when it is not, so a malformed range can never post.
+	StartLine int `json:"start_line,omitempty"`
+	// Suggestion is optional: only GitHub-ready replacement text for ```suggestion
+	// (see SuggestionPostsToGitHub). Narrative belongs in Comment alone.
+	Suggestion string `json:"suggestion,omitempty"`
+	// Confidence is the model's optional self-reported confidence in the
+	// finding, 0.0–1.0 (Q3.4). nil when the model omitted it (older runs /
+	// backends that strip unknown keys). Deterministic gates may lower it
+	// (e.g. a wrong-line prose comment). Never posted to GitHub as a field;
+	// the TUI may sort/badge by it (deferred — see the Q3.4 report note).
+	Confidence *float64 `json:"confidence,omitempty"`
+	// Verified is the model's optional self-report of whether it confirmed
+	// the finding against the code (Q3.4). nil when omitted. The
+	// anchor-excerpt gate sets it false when the finding's quoted excerpt did
+	// not match the anchored line and could not be relocated (a prose comment
+	// on the wrong line). Never posted to GitHub as a field.
+	Verified *bool `json:"verified,omitempty"`
+	// AnchorExcerpt is the model's verbatim copy of the post-image line at
+	// Path:Line. The reviewOutputContract asks specialists to include it on
+	// every inline finding so we can deterministically check that the model
+	// anchored where it thinks it did. Empty when the model omitted the
+	// field (older runs / backends that strip unknown keys); the
+	// validateAnchorExcerpt gate is silent in that case. Never posted to
+	// GitHub — diagnostic field only.
+	AnchorExcerpt string `json:"anchor_excerpt,omitempty"`
+	// SuggestionStrippedReason is set when validateAndPruneSuggestions cleared
+	// a non-empty Suggestion because applying it would clearly break the file
+	// (no-op replace, duplicates a nearby line, anchor-vs-comment mismatch),
+	// or when validateAnchorExcerpt cleared a suggestion because the model's
+	// AnchorExcerpt did not match the line at Path:Line and could not be
+	// uniquely relocated within the same hunk.
+	// Carried through to the TUI so the human reviewer can see why the
+	// one-click fix is missing instead of guessing the model "forgot". Never
+	// posted to GitHub.
+	SuggestionStrippedReason string `json:"-"`
+	// ActionabilityNote is set when validateActionability flags the finding's
+	// comment as a bare deficiency statement ("lacks a comment", "missing
+	// docs") with no proposed wording. The validator demotes severity to
+	// info in that case; this field records why so the TUI can hint at the
+	// reason. Never posted to GitHub.
+	ActionabilityNote string `json:"-"`
+	// AnchorMismatchNote is set when validateAnchorExcerpt found that a
+	// suggestion-less finding's AnchorExcerpt did not match the line at
+	// Path:Line and could not be relocated (Q6.3). A prose comment left on
+	// the wrong line is a false positive to the reader, so the gate records
+	// why the anchor is suspect (and sets Verified=false + lowers Confidence)
+	// so the TUI can badge it and the reviewer can double-check the location.
+	// Never posted to GitHub.
+	AnchorMismatchNote string `json:"-"`
+	// AnchorRelocatedFrom records the original (wrong) line number when
+	// validateAnchorExcerpt moved this finding to a different line in the
+	// same hunk because the model's AnchorExcerpt uniquely matched there.
+	// Zero when no relocation happened. Used by the TUI to render an
+	// "auto-corrected from line N → M" note so the reviewer can sanity-check
+	// the new position before accepting. Never posted to GitHub.
+	AnchorRelocatedFrom int `json:"-"`
+	// SuggestionSynthesized is true when synthesizeSuggestions built the
+	// Suggestion from the finding's comment (the model named the corrected
+	// token but emitted no suggestion of its own). The text is a string
+	// substitution on the anchor line, not the model's verbatim output, so
+	// the TUI card and the posted GitHub comment disclose it as
+	// appr-ai-sal-derived and ask the reviewer to check it before applying.
+	// Never posted to GitHub as a field.
+	SuggestionSynthesized bool `json:"-"`
+	// SuggestionRepaired is true when the batched suggestion-repair pass
+	// (repairMissingSuggestions) generated this Suggestion: a focused second
+	// model call picked the anchor line and wrote the replacement for a
+	// finding the first pass left without a usable fix. Like
+	// SuggestionSynthesized it drives a disclosure note on the TUI card and
+	// the posted comment so the reviewer knows to check it. Never posted to
+	// GitHub as a field.
+	SuggestionRepaired bool `json:"-"`
+}
+
+// findingIsInlinePostable reports whether f should become a GitHub inline comment.
+func findingIsInlinePostable(f Finding) bool {
+	return strings.TrimSpace(f.Path) != "" && f.Line > 0 && strings.TrimSpace(f.Comment) != ""
+}
+
+// boolPtr / floatPtr build pointers for the optional Confidence/Verified
+// fields (Q3.4) so callers can distinguish "unset" (nil) from a real value.
+func boolPtr(b bool) *bool        { return &b }
+func floatPtr(f float64) *float64 { return &f }
+
+// lowerConfidenceTo lowers f.Confidence to at most c (never raising it). A nil
+// Confidence becomes c: a deterministic gate that distrusts a finding always
+// caps its confidence even when the model never reported one.
+func lowerConfidenceTo(f *Finding, c float64) {
+	if f.Confidence == nil || *f.Confidence > c {
+		f.Confidence = floatPtr(c)
+	}
+}
+
+// demoteSeverityOneRank drops a severity by exactly one rank (critical→error→
+// warning→info), matching the repo arbiter's one-rank demotion semantics.
+// info is the floor. Used by the wrong-line-prose gate (Q6.3).
+func demoteSeverityOneRank(s Severity) Severity {
+	switch s {
+	case SeverityCritical:
+		return SeverityError
+	case SeverityError:
+		return SeverityWarning
+	case SeverityWarning:
+		return SeverityInfo
+	default:
+		return SeverityInfo
+	}
+}
+
+// generalFindings returns findings meant for the review body (no inline anchor).
+func generalFindings(findings []Finding) []Finding {
+	var out []Finding
+	for _, f := range findings {
+		if strings.TrimSpace(f.Comment) == "" {
+			continue
+		}
+		if findingIsInlinePostable(f) {
+			continue
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// SuggestionPostsToGitHub reports whether the finding's suggestion field is
+// emitted as a GitHub ```suggestion block (as opposed to comment-only).
+func SuggestionPostsToGitHub(f Finding) bool {
+	s := strings.TrimSpace(f.Suggestion)
+	if s == "" {
+		return false
+	}
+	if strings.Contains(s, "```") {
+		return false
+	}
+	comment := strings.TrimSpace(f.Comment)
+	if s == comment {
+		return false
+	}
+	// Avoid treating huge pasted explanations as code hunks.
+	if len(s) > 8192 {
+		return false
+	}
+	return true
+}
+
+// SpecialistOutcome distinguishes how a specialist/PR-agent stage ended, so
+// the run summary can tell partial-degradation apart from a clean run (R4):
+//   - OutcomeOK: the stage ran to completion (it may still have zero findings).
+//   - OutcomeFailed: the stage ran but errored after exhausting its retries.
+//   - OutcomeSkipped: the stage never ran because the run's circuit breaker
+//     aborted the remaining stages (or it was otherwise intentionally bypassed).
+type SpecialistOutcome int
+
+const (
+	OutcomeOK SpecialistOutcome = iota
+	OutcomeFailed
+	OutcomeSkipped
+)
+
+func (o SpecialistOutcome) String() string {
+	switch o {
+	case OutcomeFailed:
+		return "failed-after-retries"
+	case OutcomeSkipped:
+		return "skipped"
+	default:
+		return "ok"
+	}
+}
+
+// SpecialistResult is the output of one specialist over the PR.
+type SpecialistResult struct {
+	Specialist string    `json:"specialist"`
+	Summary    string    `json:"summary"`
+	Findings   []Finding `json:"findings"`
+	// Err is non-nil if the specialist failed to run; Summary/Findings will be
+	// empty in that case.
+	Err error `json:"-"`
+	// Outcome distinguishes a clean run from a failed-after-retries run and a
+	// skipped (circuit-breaker-aborted) stage. Zero value is OutcomeOK, so
+	// results built without setting it behave as before; the runner sets
+	// OutcomeFailed on a retry-exhausted stage and OutcomeSkipped on an aborted
+	// one. Never posted to GitHub.
+	Outcome SpecialistOutcome `json:"-"`
+	// OutcomeReason explains a non-OK Outcome (e.g. the circuit-breaker reason
+	// a stage was skipped). Never posted to GitHub.
+	OutcomeReason string `json:"-"`
+	// RepairFired / RepairSucceeded record the suggestion-repair pass's
+	// hidden second LLM call: how many suggestion-less findings were sent to
+	// the repair model and how many came back with a re-validated one-click
+	// fix. Surfaced as Progress telemetry so the run's repair activity is
+	// observable. Never posted to GitHub.
+	RepairFired     int `json:"-"`
+	RepairSucceeded int `json:"-"`
+	// RawSuggestionAttempts is the number of inline findings the model
+	// emitted with a non-empty suggestion BEFORE the deterministic gates ran
+	// (validation/anchor/naming/IaC strip). It is captured only so the evals
+	// harness (internal/evals) can compute a suggestion-survival rate — how
+	// many of the model's proposed one-click fixes survived the gates — and
+	// an anchor-hit rate. Zero for the normal review path where it is unread.
+	// Never posted to GitHub.
+	RawSuggestionAttempts int `json:"-"`
+}
+
+// EffectiveOutcome resolves the stage's outcome robustly: an explicit Outcome
+// wins, otherwise a non-nil Err is treated as OutcomeFailed. This lets callers
+// that set only Err (the pre-R4 convention, and much of the test corpus) still
+// be classified correctly as failed-after-retries.
+func (r SpecialistResult) EffectiveOutcome() SpecialistOutcome {
+	if r.Outcome != OutcomeOK {
+		return r.Outcome
+	}
+	if r.Err != nil {
+		return OutcomeFailed
+	}
+	return OutcomeOK
+}
+
+// skippedSpecialistResult builds a placeholder result for a stage the circuit
+// breaker aborted before it ran, so the summary can list it as degraded
+// (skipped, not failed) without a spurious Err.
+func skippedSpecialistResult(name, reason string) SpecialistResult {
+	return SpecialistResult{Specialist: name, Outcome: OutcomeSkipped, OutcomeReason: reason}
+}
+
+// SpecialistsHaveAnyFindings reports whether any specialist produced at least
+// one finding (after strictness filtering). When false, the runner skips
+// vibe-coach and the repo expert panel — nothing for those passes to synthesize.
+func SpecialistsHaveAnyFindings(specialists []SpecialistResult) bool {
+	for _, r := range specialists {
+		if len(r.Findings) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// SuppressedFindingRef identifies an inline finding the repo arbiter recommends not posting.
+type SuppressedFindingRef struct {
+	Specialist string `json:"specialist"`
+	Path       string `json:"path"`
+	Line       int    `json:"line"`
+	Side       string `json:"side,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// DemotedFindingRef identifies an inline finding whose severity the repo
+// arbiter recommends dropping by exactly one rank (error→warning, warning→info).
+// From and To are recorded so the TUI can show "was: error, now: warning".
+type DemotedFindingRef struct {
+	Specialist string   `json:"specialist"`
+	Path       string   `json:"path"`
+	Line       int      `json:"line"`
+	Side       string   `json:"side,omitempty"`
+	From       Severity `json:"from,omitempty"`
+	To         Severity `json:"to,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
+}
+
+// RepoArbiterResult merges repo experts with specialist output; may adjust verdict and suppress inline posts.
+type RepoArbiterResult struct {
+	UserSummary      string
+	RationaleBullets []string
+	VerdictOverride  string // empty = keep vibe-coach verdict
+	EffectiveVerdict string // filled at apply time: override or original
+	SummaryMode      string // none | append | replace
+	SummaryAddendum  string
+	SummaryReplace   string
+	Suppressed       []SuppressedFindingRef
+	suppressKeySet   map[string]struct{} // populated by ApplyToDraft
+	// Demoted lists arbiter-recommended one-rank severity drops. Validated
+	// and applied by FinalizeRepoArbiter (mutates Finding.Severity in place,
+	// then re-runs the strictness floor so demoted-to-info findings can
+	// disappear under balanced/lenient/critical-only).
+	Demoted             []DemotedFindingRef
+	demoteKeySet        map[string]Severity // populated by FinalizeRepoArbiter; key→original severity
+	DroppedDemotions    []string            // human-readable reject reasons
+	DroppedSuppressions []string            // human-readable reject reasons
+	// Err is non-nil if the arbiter stage failed. json:"-" because an error
+	// value is not round-trippable (marshals to {}, unmarshal into an
+	// interface fails) and would break the U1 headless Draft dump and the U2
+	// session snapshot; a rehydrated arbiter is only used when Err is nil.
+	Err error `json:"-"`
+}
+
+// RepoArbiterSuppressionCount returns how many inline findings were suppressed for posting.
+func (r *RepoArbiterResult) RepoArbiterSuppressionCount() int {
+	if r == nil {
+		return 0
+	}
+	return len(r.Suppressed)
+}
+
+// FlatFinding is one postable inline finding with its specialist context.
+type FlatFinding struct {
+	Specialist string
+	SpecIndex  int
+	FindIndex  int
+	Finding    Finding
+}

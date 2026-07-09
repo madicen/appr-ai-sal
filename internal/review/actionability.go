@@ -16,12 +16,15 @@ import (
 // these noisy nudges out of the way at balanced/strict.
 //
 // The Severity is mutated in place to SeverityInfo when (and only when):
-//   - The specialist is "docs" or "testing" (other specialists have their
-//     own rhetoric and aren't covered by this rule).
+//   - The specialist's registry spec carries GateActionability with a
+//     deficiencyPattern (built-ins: docs and testing; other specialists have
+//     their own rhetoric and aren't covered by this rule). This is the
+//     registry consultation that replaced the hard-coded docs/testing switch.
 //   - The current severity is warning or error (info / critical untouched —
 //     critical is reserved for security and never produced by docs/testing
 //     in practice; demoting info is a no-op).
-//   - The comment matches a bare-deficiency pattern (see deficiencyRe).
+//   - The comment matches the spec's bare-deficiency pattern (docs vs testing
+//     regex, selected declaratively via the spec).
 //   - The comment carries no proposed wording (no quoted text spans of
 //     usable length, no "should be", no "rename to", no "→", no colon
 //     followed by substantive replacement text).
@@ -32,13 +35,14 @@ import (
 //
 // Returns the same slice for ergonomics.
 func validateActionability(specialist string, findings []Finding) []Finding {
-	specialist = strings.ToLower(strings.TrimSpace(specialist))
-	if specialist != SpecDocs && specialist != SpecTesting {
+	spec, ok := lookupSpec(specialist)
+	if !ok || !spec.hasGate(GateActionability) || spec.deficiencyPattern == nil {
 		return findings
 	}
 	for i := range findings {
 		f := &findings[i]
-		if !looksLikeBareDeficiency(specialist, *f) {
+		body := strings.TrimSpace(f.Comment)
+		if body == "" || !spec.deficiencyPattern.MatchString(body) {
 			continue
 		}
 		if strings.TrimSpace(f.Suggestion) != "" {
@@ -64,21 +68,17 @@ var docsDeficiencyRe = regexp.MustCompile(`(?i)\b(lacks?|missing|no|needs?|requi
 // testingDeficiencyRe matches "lacks a test", "missing tests", "needs unit
 // tests", "should be tested", etc. Mirrors docsDeficiencyRe but for the
 // testing specialist's typical bare-deficiency comments.
+//
+// docsDeficiencyRe and testingDeficiencyRe are wired into the docs and testing
+// specs' deficiencyPattern in registry.go; validateActionability selects the
+// right one via the spec rather than a name switch.
 var testingDeficiencyRe = regexp.MustCompile(`(?i)\b(lacks?|missing|no|needs?|requires?|should\s+have|should\s+be|untested)\b[^.\n]{0,80}\b(test|tests|coverage|unit\s+test|integration\s+test|spec|specs)\b`)
 
-func looksLikeBareDeficiency(specialist string, f Finding) bool {
-	body := strings.TrimSpace(f.Comment)
-	if body == "" {
-		return false
-	}
-	if specialist == SpecDocs {
-		return docsDeficiencyRe.MatchString(body)
-	}
-	if specialist == SpecTesting {
-		return testingDeficiencyRe.MatchString(body)
-	}
-	return false
-}
+// combinedDeficiencyRe matches either the docs or the testing bare-deficiency
+// phrasing. It is the pattern given to a user-defined specialist that opts into
+// GateActionability (registry_user.go), since a custom lane may cover either
+// concern; the built-in docs/testing specs use their own narrower patterns.
+var combinedDeficiencyRe = regexp.MustCompile(`(?i)\b(lacks?|missing|no|needs?|requires?|should\s+have|should\s+be|undocumented|untested)\b[^.\n]{0,80}\b(comment|comments|doc|docs|documentation|docstring|godoc|jsdoc|description|explanation|test|tests|coverage|unit\s+test|integration\s+test|spec|specs)\b`)
 
 // proposedWordingMarkers are short phrases that strongly indicate the comment
 // has moved past "X is missing" into "here is what to add / change". When any

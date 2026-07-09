@@ -1,0 +1,16 @@
+diff --git a/cache/cache.go b/cache/cache.go
+new file mode 100644
+--- /dev/null
++++ b/cache/cache.go
+@@ -0,0 +1,3 @@
++package cache
++
++func New() {}
+diff --git a/go.mod b/go.mod
+--- a/go.mod
++++ b/go.mod
+@@ -3,3 +3,3 @@ module acme/app
+ go 1.25
+ 
+-require github.com/redis/go-redis/v9 v9.5.0
++require github.com/redis/go-redis/v9 v9.7.0

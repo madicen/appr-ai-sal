@@ -327,14 +327,14 @@ func TestExcerptRelocatableWhenShort(t *testing.T) {
 		excerpt string
 		want    bool
 	}{
-		{"memory: 717M", true},  // key: value
-		{"replicas = 3", true},  // key = value
-		{"port 8080", true},     // bare numeric literal
-		{"}", false},            // closing brace
-		{"})", false},           // closing brace
-		{"return nil", false},   // code but no value/digit
-		{"", false},             // blank
-		{"// note", false},      // comment-only
+		{"memory: 717M", true}, // key: value
+		{"replicas = 3", true}, // key = value
+		{"port 8080", true},    // bare numeric literal
+		{"}", false},           // closing brace
+		{"})", false},          // closing brace
+		{"return nil", false},  // code but no value/digit
+		{"", false},            // blank
+		{"// note", false},     // comment-only
 	}
 	for _, tc := range cases {
 		if got := excerptRelocatableWhenShort(tc.excerpt); got != tc.want {

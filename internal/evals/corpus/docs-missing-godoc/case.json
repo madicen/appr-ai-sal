@@ -1,0 +1,14 @@
+{
+  "id": "docs-missing-godoc",
+  "title": "Add config loader",
+  "target": "docs",
+  "repo": "acme/config",
+  "number": 106,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/load",
+  "body": "Adds a config Load entrypoint.",
+  "strictness": "balanced",
+  "additions": 5,
+  "changed_files": 1
+}

@@ -1,0 +1,4 @@
+- Formatting, naming, or other surface-level style (the formatting brief owns
+  those).
+- Tests, docs, or security topics — separate briefs.
+- Implementation correctness. You are not auditing logic.
