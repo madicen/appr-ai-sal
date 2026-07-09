@@ -465,6 +465,19 @@ type Model struct {
 	// running view shows total elapsed time relative to this; per-agent timers
 	// show each specialist's duration after it finishes.
 	runStartedAt time.Time
+	// prepStatus is a one-line label for early runner stages (checkout, diff,
+	// repo context) that complete before any Context-injection row updates.
+	// Without this the running view shows 0/N agents for tens of seconds while
+	// git/gh work is in flight.
+	prepStatus string
+	// prepActive tracks in-flight bootstrap legs so parallel fetch-pr / checkout /
+	// diff work is visible instead of a generic "Preparing…" placeholder.
+	prepFetchPR  bool
+	prepCheckout bool
+	prepDiff     bool
+	// runErr is set when the runner aborts before Stage="done" (e.g. fetch-pr
+	// GraphQL failure). Surfaced prominently so the overlay doesn't look hung.
+	runErr error
 	// runUsage is the latest aggregated inference usage/cost snapshot the
 	// runner emitted (Stage="usage" running totals, then the Stage="done"
 	// final). Nil until the first metered call reports (or in demo/test runs

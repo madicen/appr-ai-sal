@@ -154,18 +154,39 @@ func (m *Model) usageLine() string {
 func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 	switch p.Stage {
 	case "checkout":
-		if p.Err != nil {
+		switch {
+		case p.Detail == "start":
+			m.prepCheckout = true
+			m.refreshPrepStatus()
+		case p.Err != nil:
+			m.prepCheckout = false
+			m.runErr = p.Err
 			m.log = append(m.log, "checkout: "+p.Err.Error())
-		} else {
+		default:
+			m.prepCheckout = false
+			m.prepStatus = "Checked out worktree · " + p.Detail
 			m.log = append(m.log, "worktree: "+p.Detail)
 		}
 	case "diff":
-		if p.Err != nil {
+		switch {
+		case p.Detail == "start":
+			m.prepDiff = true
+			m.refreshPrepStatus()
+		case p.Err != nil:
+			m.prepDiff = false
+			m.runErr = p.Err
 			m.log = append(m.log, "diff: "+p.Err.Error())
-		} else {
+		default:
+			m.prepDiff = false
+			if strings.HasPrefix(p.Detail, "reused cached view") {
+				m.prepStatus = "Diff · " + p.Detail
+			} else {
+				m.prepStatus = "Fetched diff · " + p.Detail
+			}
 			m.log = append(m.log, "diff: "+p.Detail)
 		}
 	case "repo-context":
+		m.prepStatus = "Built repo context · " + p.Detail
 		m.log = append(m.log, "repo context: "+p.Detail)
 	case "context-summary":
 		m.log = append(m.log, "context vs change: "+p.Detail)
@@ -209,8 +230,22 @@ func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 		// runner emits Detail = "start" / "done" / "skipped".
 		m.applyAgentDetail(p.Stage, p.Detail, p)
 	case "fetch-pr":
-		if p.Err != nil {
+		switch {
+		case p.Detail == "start":
+			m.prepFetchPR = true
+			m.refreshPrepStatus()
+		case p.Err != nil:
+			m.prepFetchPR = false
+			m.runErr = p.Err
 			m.log = append(m.log, "fetch PR: "+p.Err.Error())
+		case p.Detail == "done" || strings.HasPrefix(p.Detail, "reused cached view"):
+			m.prepFetchPR = false
+			if strings.HasPrefix(p.Detail, "reused cached view") {
+				m.prepStatus = "PR metadata · " + p.Detail
+			}
+			if p.Detail != "" && p.Detail != "done" {
+				m.log = append(m.log, "fetch PR: "+p.Detail)
+			}
 		}
 	case "circuit-breaker":
 		// R4: the run's circuit breaker tripped; remaining stages are skipped.
@@ -242,6 +277,33 @@ func (m *Model) mergeProgress(p review.Progress) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// OnRunClosed marks the overlay when the runner's progress channel closes
+// without a Stage="done" event (e.g. fetch-pr GraphQL failure). Without this
+// the running view keeps showing every agent as queued indefinitely.
+func (m *Model) OnRunClosed() {
+	if m.done || m.runErr != nil {
+		return
+	}
+	m.runErr = fmt.Errorf("review stopped before completing")
+}
+
+func (m *Model) refreshPrepStatus() {
+	var parts []string
+	if m.prepFetchPR {
+		parts = append(parts, "fetching PR metadata")
+	}
+	if m.prepCheckout {
+		parts = append(parts, "checking out worktree")
+	}
+	if m.prepDiff {
+		parts = append(parts, "fetching diff")
+	}
+	if len(parts) == 0 {
+		return
+	}
+	m.prepStatus = "Preparing · " + strings.Join(parts, " · ")
 }
 
 // applyAgentDetail handles the "start", "done", and "retry N (...)" sub-states

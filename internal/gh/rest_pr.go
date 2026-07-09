@@ -50,9 +50,11 @@ func getPRViaGraphQL(ctx context.Context, ref Ref) (*PR, error) {
       }
       reviewRequests(first: 20) {
         nodes {
-          __typename
-          ... on User { login }
-          ... on Team { slug }
+          requestedReviewer {
+            __typename
+            ... on User { login }
+            ... on Team { slug }
+          }
         }
       }
       commits(last: 1) {
@@ -108,9 +110,11 @@ func getPRViaGraphQL(ctx context.Context, ref Ref) (*PR, error) {
 				} `json:"latestReviews"`
 				ReviewRequests struct {
 					Nodes []struct {
-						Typename string `json:"__typename"`
-						Login    string `json:"login"`
-						Slug     string `json:"slug"`
+						RequestedReviewer struct {
+							Typename string `json:"__typename"`
+							Login    string `json:"login"`
+							Slug     string `json:"slug"`
+						} `json:"requestedReviewer"`
 					} `json:"nodes"`
 				} `json:"reviewRequests"`
 				Commits struct {
@@ -152,11 +156,11 @@ func getPRViaGraphQL(ctx context.Context, ref Ref) (*PR, error) {
 	}
 	requests := make([]ReviewRequest, 0, len(raw.ReviewRequests.Nodes))
 	for _, rr := range raw.ReviewRequests.Nodes {
-		switch rr.Typename {
+		switch rr.RequestedReviewer.Typename {
 		case "User":
-			requests = append(requests, ReviewRequest{Login: rr.Login})
+			requests = append(requests, ReviewRequest{Login: rr.RequestedReviewer.Login})
 		case "Team":
-			requests = append(requests, ReviewRequest{TeamSlug: rr.Slug})
+			requests = append(requests, ReviewRequest{TeamSlug: rr.RequestedReviewer.Slug})
 		}
 	}
 

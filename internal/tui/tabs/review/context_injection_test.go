@@ -178,3 +178,20 @@ func TestCountInjectedItems(t *testing.T) {
 		}
 	}
 }
+
+func TestMergeProgressFetchPRErrSurfacesRunFailure(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil, false)
+	err := errors.New(`GraphQL: Fragment on User can't be spread inside ReviewRequest`)
+	ro.mergeProgress(review.Progress{Stage: "fetch-pr", Err: err})
+	if ro.runErr != err {
+		t.Fatalf("runErr = %v, want %v", ro.runErr, err)
+	}
+	body := ro.renderRunningBody()
+	if !strings.Contains(body, "Run failed:") {
+		t.Fatalf("running body should surface run failure:\n%s", body)
+	}
+	ro.OnRunClosed()
+	if ro.runErr == nil {
+		t.Fatal("OnRunClosed should not clear an existing runErr")
+	}
+}

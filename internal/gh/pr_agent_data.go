@@ -103,7 +103,6 @@ const graphqlPRAgentDataQuery = `query($owner: String!, $name: String!, $number:
               path
               line
               originalLine
-              diffSide
               author { login }
             }
           }
@@ -146,7 +145,7 @@ const graphqlPRAgentDataQuery = `query($owner: String!, $name: String!, $number:
                     startedAt
                     completedAt
                     detailsUrl
-                    isRequired
+                    isRequired(pullRequestNumber: $number)
                     title
                     summary
                     checkSuite { app { name } }
@@ -163,7 +162,7 @@ const graphqlPRAgentDataQuery = `query($owner: String!, $name: String!, $number:
                   ... on StatusContext {
                     context
                     state
-                    isRequired
+                    isRequired(pullRequestNumber: $number)
                     description
                     targetUrl
                     createdAt

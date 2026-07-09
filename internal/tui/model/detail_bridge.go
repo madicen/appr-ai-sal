@@ -76,7 +76,10 @@ func (m *Model) SetStrictness(level aiconfig.ReviewStrictness) {
 }
 
 func (m *Model) BackToList() {
+	m.dismissAllOverlaysSilent()
+	m.blurPanelInputs()
 	m.mode = modeList
+	delete(m.tabs, modeList) // root-native; must never hold a tab adapter
 	m.relayout()
 }
 

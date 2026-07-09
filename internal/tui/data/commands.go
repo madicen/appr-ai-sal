@@ -138,17 +138,17 @@ func loadPRDetailMsg(b Backend, ref gh.Ref) tea.Msg {
 // In demo mode the channel comes from demo.SyntheticReviewProgress, which
 // emits a scripted sequence of stages with realistic delays so the
 // review-overlay UI replays a believable run for VHS recording.
-func StartReviewCmd(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, demoMode bool) tea.Cmd {
+func StartReviewCmd(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, demoMode bool, boot review.Bootstrap) tea.Cmd {
 	b := selectBackend(demoMode)
 	snap := cfg.Clone()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return func() tea.Msg { return startReviewMsg(ctx, b, ref, snap) }
+	return func() tea.Msg { return startReviewMsg(ctx, b, ref, snap, boot) }
 }
 
-func startReviewMsg(ctx context.Context, b Backend, ref gh.Ref, cfg *aiconfig.Config) tea.Msg {
-	ch, err := b.StartReview(ctx, ref, cfg)
+func startReviewMsg(ctx context.Context, b Backend, ref gh.Ref, cfg *aiconfig.Config, boot review.Bootstrap) tea.Msg {
+	ch, err := b.StartReview(ctx, ref, cfg, boot)
 	if err != nil {
 		return ErrMsg{err}
 	}
@@ -172,7 +172,7 @@ func StartQueueReviewCmd(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, 
 }
 
 func startQueueReviewMsg(ctx context.Context, b Backend, ref gh.Ref, cfg *aiconfig.Config) tea.Msg {
-	ch, err := b.StartReview(ctx, ref, cfg)
+	ch, err := b.StartReview(ctx, ref, cfg, review.Bootstrap{})
 	if err != nil {
 		return QueueReviewErrMsg{Ref: ref, Err: err}
 	}
