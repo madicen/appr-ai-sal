@@ -15,16 +15,16 @@
 
   Markdown body GitHub will publish (scroll with wheel or ↑/↓):
 
-      appr-ai-sal summary
+      appr-ai-sal summary — 🔴 Request changes
 
-      │ AI disclosure: This summary was produced by appr-ai-sal (automated AI tools) to assist the human
-      │ reviewer. Line-level feedback appears as inline comments on the diff where agents cited paths and
-      │ lines. This top-level comment summarises that feedback and offers optional paste-ready AI
-      │ instructions
-      │ for the author.
+      Solid plumbing for the demo recording path. The synthetic progress generator is a clean way to keep
+      VHS reproducible without coupling the TUI to a real AI provider, and the dry-run-by-default behaviour
+      prevents an accidental real post during a tape session.
 
-      │ [!CAUTION] The review is still manually performed by the person using appr-ai-sal — any approve,
-      │ request-changes, or comment signal represents that individual's own review and judgement, not an
-      │ automated decision. It is not a replacement for manual review.
+      Two things worth tightening before merge:
+
+      1. The demo bool parameter pattern is starting to multiply across
+      internal/tui/data. Now's a reasonable inflection point to introduce
+      a small interface so the production path doesn't accumulate flags
 
   y post summary · a approve only · R refresh PR · n skip · q abort · ↑/↓ scroll preview · wheel

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/madicen/appr-ai-sal/internal/review"
@@ -182,22 +183,26 @@ func writeResult(w io.Writer, fl *reviewFlags, draft *review.Draft, post *postRe
 
 func writeHumanSummary(w io.Writer, res reviewResultJSON) {
 	fmt.Fprintf(w, "Review of %s\n", res.Ref)
-	fmt.Fprintf(w, "Verdict: %s (post event %s)\n", verdictLabel(res.Verdict), res.PostEvent)
+	verdict := verdictLabel(res.Verdict)
+	if em := review.VerdictEmoji(review.NormalizeVibeVerdict(res.Verdict)); em != "" {
+		verdict = em + " " + verdict
+	}
+	fmt.Fprintf(w, "Verdict: %s → GitHub event %s\n", verdict, res.PostEvent)
 	if res.Summary != "" {
 		fmt.Fprintf(w, "\n%s\n", res.Summary)
 	}
 	if len(res.Findings) > 0 {
-		fmt.Fprintf(w, "\nFindings (%d):\n", len(res.Findings))
+		fmt.Fprintf(w, "\nFindings: %s\n", severityCounts(res.Findings))
 		for _, f := range res.Findings {
 			loc := "(PR-wide)"
 			if f.Inline {
 				loc = fmt.Sprintf("%s:%d", f.Path, f.Line)
 			}
-			fmt.Fprintf(w, "  [%s] %s %s — %s\n", strings.ToUpper(f.Severity), f.Specialist, loc, firstLine(f.Comment))
+			fmt.Fprintf(w, "  [%s] %s · %s — %s\n", strings.ToUpper(f.Severity), f.Specialist, loc, firstLine(f.Comment))
 		}
 	}
 	if len(res.Degraded) > 0 {
-		fmt.Fprintf(w, "\nDegraded stages: %s\n", strings.Join(res.Degraded, ", "))
+		fmt.Fprintf(w, "\n⚠ Partial review — degraded stages: %s\n", strings.Join(res.Degraded, ", "))
 	}
 	if res.Post != nil {
 		if res.Post.DryRun {
@@ -207,6 +212,41 @@ func writeHumanSummary(w io.Writer, res reviewResultJSON) {
 				res.Post.Posted, res.Post.Replies, res.Post.BodyPost, res.Post.Event, res.Post.Failed)
 		}
 	}
+}
+
+// severityCounts renders "1 critical · 2 error · 3 warning · 1 info" in fixed
+// severity order, skipping empty buckets, so the findings header reads as a
+// triage summary instead of a bare total.
+func severityCounts(findings []findingJSON) string {
+	counts := map[string]int{}
+	for _, f := range findings {
+		counts[strings.ToLower(strings.TrimSpace(f.Severity))]++
+	}
+	var parts []string
+	for _, sev := range []string{"critical", "error", "warning", "info"} {
+		if n := counts[sev]; n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, sev))
+			delete(counts, sev)
+		}
+	}
+	// Unknown severities still get counted rather than silently dropped;
+	// sorted so the line is deterministic.
+	var rest []string
+	for sev := range counts {
+		rest = append(rest, sev)
+	}
+	sort.Strings(rest)
+	for _, sev := range rest {
+		label := sev
+		if label == "" {
+			label = "unrated"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", counts[sev], label))
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("%d", len(findings))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func firstLine(s string) string {

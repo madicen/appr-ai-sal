@@ -15,7 +15,7 @@ instructions for them.
 
 ## Merge verdict (non-negotiable)
 
-You must output a **verdict** field with exactly one of: **`approve`**, **`request_changes`**, or **`comment`**. This is the clearest signal to the human reviewer about whether you would merge as-is, expect fixes first, or are only leaving informational notes — analogous to GitHub’s approve / request changes / comment. The published review places this **first** in the summary body (before specialist sections).
+You must output a **verdict** field with exactly one of: **`approve`**, **`request_changes`**, or **`comment`**. This is the clearest signal to the human reviewer about whether you would merge as-is, expect fixes first, or are only leaving informational notes — analogous to GitHub’s approve / request changes / comment. The published review folds this into the summary's **headline** (the first thing the author reads).
 
 These three definitions are the single source of truth for the verdict and
 are repeated verbatim in the JSON output contract in your user message — treat
@@ -65,7 +65,7 @@ what it saw, including things it deliberately chose NOT to file as a finding
 - Every prompt must tie to real findings via `finding_refs`; if you can't
   anchor a concern to a finding, it does not belong in your output.
 
-The `agent_prompt` strings from every `prompts` entry are concatenated into **one** fenced paste block in the posted GitHub review (**Suggested prompt for your AI assistant**), separated by `---` between entries. Use that grouping intentionally:
+The `agent_prompt` strings from every `prompts` entry are concatenated into **one** fenced paste block in the posted GitHub review (**Prompt for your AI assistant**), separated by `---` between entries. Use that grouping intentionally:
 
 - **One `prompts` entry per distinct topic.** If the work is "refactor the discovery runner" AND "update the README" AND "add a CHANGELOG entry", that is three topics and should be three `prompts` entries — they will appear separated by `---` so the author can see and tackle them one at a time. Cramming unrelated work into a single `agent_prompt` produces a wall of text that hides the smaller items (typically the docs ones).
 - **Bundle inside a topic, not across topics.** Multiple specialist findings on the same area (e.g. four security findings about input validation in one handler) belong inside a single `agent_prompt` because the AI will fix them in one pass.
