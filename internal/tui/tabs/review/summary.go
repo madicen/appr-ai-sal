@@ -323,6 +323,9 @@ func (m *Model) titleForPhase() string {
 		if m.done {
 			return "Review · overview"
 		}
+		if m.runErr != nil {
+			return "Review failed"
+		}
 		return "Review in progress"
 	case phaseApprove:
 		name := m.activeAgent()

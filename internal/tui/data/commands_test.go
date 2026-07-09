@@ -67,7 +67,7 @@ func (f *fakeBackend) Diff(_ context.Context, ref gh.Ref) (string, error) {
 	f.diffRef = ref
 	return f.diff, f.diffErr
 }
-func (f *fakeBackend) StartReview(ctx context.Context, _ gh.Ref, _ *aiconfig.Config) (<-chan review.Progress, error) {
+func (f *fakeBackend) StartReview(ctx context.Context, _ gh.Ref, _ *aiconfig.Config, _ review.Bootstrap) (<-chan review.Progress, error) {
 	f.startCtx = ctx
 	return f.startCh, f.startErr
 }
@@ -224,12 +224,12 @@ func TestExistingCommentsMsg(t *testing.T) {
 func TestStartReviewMsg(t *testing.T) {
 	ch := make(chan review.Progress)
 	b := &fakeBackend{startCh: ch}
-	msg := startReviewMsg(context.Background(), b, ref(), nil)
+	msg := startReviewMsg(context.Background(), b, ref(), nil, review.Bootstrap{})
 	if _, ok := msg.(ReviewStartedMsg); !ok {
 		t.Fatalf("got %T want ReviewStartedMsg", msg)
 	}
 
-	if _, ok := startReviewMsg(context.Background(), &fakeBackend{startErr: errors.New("x")}, ref(), nil).(ErrMsg); !ok {
+	if _, ok := startReviewMsg(context.Background(), &fakeBackend{startErr: errors.New("x")}, ref(), nil, review.Bootstrap{}).(ErrMsg); !ok {
 		t.Fatalf("start error should surface ErrMsg")
 	}
 }
@@ -243,7 +243,7 @@ func TestStartReviewThreadsCancellableContext(t *testing.T) {
 	b := &fakeBackend{startCh: ch}
 	ctx, cancel := context.WithCancel(context.Background())
 
-	if _, ok := startReviewMsg(ctx, b, ref(), nil).(ReviewStartedMsg); !ok {
+	if _, ok := startReviewMsg(ctx, b, ref(), nil, review.Bootstrap{}).(ReviewStartedMsg); !ok {
 		t.Fatal("expected ReviewStartedMsg")
 	}
 	if b.startCtx == nil {

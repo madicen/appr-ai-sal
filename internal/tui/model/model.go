@@ -210,8 +210,13 @@ func (m *Model) routeToActiveTab(msg tea.Msg) (tea.Cmd, bool) {
 			return m.overlayStack.Update(msg), true
 		}
 	}
+	// Remember which mode routed this message. Detail's esc/q → BackToList()
+	// flips m.mode to modeList inside tab.Update; storing the returned tab
+	// under m.mode after that would park the detail adapter on modeList and
+	// steal every subsequent list keystroke/mouse event.
+	activeMode := m.mode
 	updated, cmd := tab.Update(msg)
-	m.tabs[m.mode] = updated
+	m.tabs[activeMode] = updated
 	return cmd, true
 }
 
@@ -313,16 +318,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case reviewtab.CloseMsg:
-		_, c := m.overlayStack.Pop()
+		var cmds []tea.Cmd
+		for m.reviewOverlayOnTop() != nil {
+			_, c := m.overlayStack.Pop()
+			if c != nil {
+				cmds = append(cmds, c)
+			}
+		}
 		m.currentReviewOverlay = nil
-		// Phase 5 item 3: closing the review overlay cancels the run's
-		// context so the runner goroutine stops instead of leaking behind a
-		// dismissed overlay.
 		m.cancelReview()
 		if m.mode == modeDetail {
 			m.refreshDetailViews()
 		}
-		return m, c
+		if m.mode == modeList {
+			m.relayout()
+		}
+		cmds = append(cmds, m.reviewCompleteNotifyCmd())
+		return m, tea.Batch(cmds...)
 
 	case reviewOverlayMinimizeRequestMsg:
 		return m, m.minimizeReviewOverlay()
@@ -461,6 +473,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.recomputeTreeRows()
 			m.refreshDetailViews()
 		}
+		if ro := m.reviewOverlayOnTop(); ro != nil {
+			ro.OnRunClosed()
+		}
 		// Phase 5 item 3: the run finished — ring the bell + fire an OSC-9
 		// desktop notification so a reviewer who backgrounded the terminal
 		// while the multi-minute run churned gets pinged. The terminal
@@ -572,6 +587,9 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg.(type) {
 	case tea.KeyMsg, tea.MouseMsg:
+		if m.mode == modeList {
+			m.dismissStaleOverlaysSilent()
+		}
 		// Status-bar hint clicks are dispatched before mode/tab routing
 		// so the always-present quit segment (and the list/detail hint
 		// buttons) fire even when a tab otherwise owns the event stream.

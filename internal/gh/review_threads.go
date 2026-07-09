@@ -169,7 +169,6 @@ const graphqlReviewThreadsQuery = `query($owner: String!, $name: String!, $numbe
               path
               line
               originalLine
-              diffSide
               author { login }
             }
           }

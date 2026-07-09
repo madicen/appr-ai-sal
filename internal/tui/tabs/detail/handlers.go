@@ -298,6 +298,9 @@ func (m *Model) toggleParallelPRAgents() error {
 // detailBackToList returns from the PR detail view to the list. The
 // relayout call is load-bearing — see the inline note.
 func (m *Model) detailBackToList() {
+	if m.controlsProfileDD != nil {
+		m.controlsProfileDD.Clear()
+	}
 	m.centerView = centerDiff
 	m.diffOnly = false
 	m.host.BackToList()

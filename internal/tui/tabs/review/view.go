@@ -649,6 +649,14 @@ func (m *Model) renderRunningBody() string {
 		headline += "  ·  " + styles.ErrStyle.Render(fmt.Sprintf("%d failed", failedN))
 	}
 	b.WriteString(headline + "\n")
+	if m.runErr != nil {
+		b.WriteString(styles.ErrStyle.Render("Run failed: "+m.runErr.Error()) + "\n")
+		b.WriteString(styles.DimStyle.Render("Press q to close · scroll down for recent log") + "\n")
+	} else if doneN == 0 && runningN == 0 && strings.TrimSpace(m.prepStatus) != "" {
+		b.WriteString(styles.DimStyle.Render(m.prepStatus) + "\n")
+	} else if doneN == 0 && runningN == 0 {
+		b.WriteString(styles.DimStyle.Render("Preparing worktree and fetching PR data…") + "\n")
+	}
 	b.WriteString(renderProgressBar(doneN, totalN, max(20, rowW/2)) + "\n")
 	if ul := m.usageLine(); ul != "" {
 		b.WriteString(ul + "\n")

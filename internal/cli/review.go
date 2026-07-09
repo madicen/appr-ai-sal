@@ -58,7 +58,7 @@ const (
 type reviewDeps struct {
 	loadConfig func() (*aiconfig.Config, error)
 	checkAuth  func() error
-	run        func(context.Context, gh.Ref, *aiconfig.Config) (<-chan review.Progress, error)
+	run        func(context.Context, gh.Ref, *aiconfig.Config, review.Bootstrap) (<-chan review.Progress, error)
 	poster     poster
 }
 
@@ -78,7 +78,9 @@ func defaultReviewDeps() reviewDeps {
 	return reviewDeps{
 		loadConfig: aiconfig.Load,
 		checkAuth:  gh.CheckAuth,
-		run:        review.Run,
+		run: func(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot review.Bootstrap) (<-chan review.Progress, error) {
+			return review.Run(ctx, ref, cfg, boot)
+		},
 		poster:     ghPoster{},
 	}
 }
@@ -267,7 +269,7 @@ func resolveConfig(fl *reviewFlags, stderr io.Writer, deps reviewDeps) (*aiconfi
 // when the run produced no final draft (a fatal early-stage error). Fatal
 // stage errors are also written to stderr as NDJSON so CI logs capture them.
 func drainReview(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, stderr io.Writer, deps reviewDeps) (*review.Draft, bool) {
-	ch, err := deps.run(ctx, ref, cfg)
+	ch, err := deps.run(ctx, ref, cfg, review.Bootstrap{})
 	if err != nil {
 		emitProgress(stderr, review.Progress{Stage: "fetch-pr", Err: err})
 		fmt.Fprintf(stderr, "appr-ai-sal: review failed to start: %v\n", err)

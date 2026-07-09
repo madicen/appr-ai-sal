@@ -87,7 +87,7 @@ func perStageBudget(cfg *aiconfig.Config) time.Duration {
 // The runner does NOT wrap ctx in a single deadline — long stages no longer
 // starve downstream stages. Each AI stage gets its own per-stage budget and
 // stage-level retry; the user can abort the run from the TUI overlay.
-func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress, error) {
+func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap) (<-chan Progress, error) {
 	if cfg == nil {
 		cfg = aiconfig.DefaultConfig()
 	}
@@ -133,27 +133,13 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan Progress
 			out <- Progress{Stage: "activity", Activity: &StreamActivity{Stage: r.Stage, Tokens: r.Tokens}}
 		})
 
-		pr, err := gh.GetPR(ctx, ref)
+		b, err := runBootstrap(ctx, ref, boot, strictnessSummaryForProgress(runCfg.ReviewStrictness), out)
 		if err != nil {
-			applog.Error("review stage failed", "stage", "fetch-pr", "ref", ref.String(), "err", err.Error())
-			out <- Progress{Stage: "fetch-pr", Err: fmt.Errorf("fetch PR: %w", err)}
 			return
 		}
-
-		worktree, err := prepareWorktree(ctx, ref)
-		if err != nil {
-			applog.Error("review stage failed", "stage", "checkout", "ref", ref.String(), "err", err.Error())
-			out <- Progress{Stage: "checkout", Err: fmt.Errorf("prepare worktree: %w", err)}
-			return
-		}
-		out <- Progress{Stage: "checkout", Detail: fmt.Sprintf("%s · review %s", worktree, strictnessSummaryForProgress(runCfg.ReviewStrictness))}
-
-		diff, err := gh.GetDiff(ctx, ref)
-		if err != nil {
-			out <- Progress{Stage: "diff", Err: fmt.Errorf("fetch diff: %w", err)}
-			return
-		}
-		out <- Progress{Stage: "diff", Detail: fmt.Sprintf("%d bytes", len(diff))}
+		pr := b.pr
+		worktree := b.worktree
+		diff := b.diff
 
 		// B2: incremental re-review. When a prior review of this PR (an earlier
 		// head SHA) is cached, plan carries the interdiff (which files changed),

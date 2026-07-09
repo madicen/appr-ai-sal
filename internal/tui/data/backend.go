@@ -24,7 +24,8 @@ type Backend interface {
 	// returned by PRDetail so the demo fixture's fallback diff aligns.
 	Diff(ctx context.Context, ref gh.Ref) (string, error)
 	// StartReview kicks off a review run and returns its progress channel.
-	StartReview(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan review.Progress, error)
+	// boot carries optional PR/diff the caller already loaded (TUI detail view).
+	StartReview(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot review.Bootstrap) (<-chan review.Progress, error)
 	// ExistingComments returns inline comments already on the PR plus the
 	// viewer login and prior-activity summary (errors are packed into the
 	// result so a partial fetch still yields a usable banner).
@@ -93,8 +94,8 @@ func (ghBackend) Diff(ctx context.Context, ref gh.Ref) (string, error) {
 	return gh.GetDiff(ctx, ref)
 }
 
-func (ghBackend) StartReview(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan review.Progress, error) {
-	return review.Run(ctx, ref, cfg)
+func (ghBackend) StartReview(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot review.Bootstrap) (<-chan review.Progress, error) {
+	return review.Run(ctx, ref, cfg, boot)
 }
 
 func (ghBackend) ExistingComments(ctx context.Context, ref gh.Ref) ExistingComments {
@@ -178,7 +179,7 @@ func (demoBackend) Diff(ctx context.Context, ref gh.Ref) (string, error) {
 	return demo.DemoDiff(ref), nil
 }
 
-func (demoBackend) StartReview(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config) (<-chan review.Progress, error) {
+func (demoBackend) StartReview(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot review.Bootstrap) (<-chan review.Progress, error) {
 	return demo.SyntheticReviewProgress(ctx, ref, cfg), nil
 }
 

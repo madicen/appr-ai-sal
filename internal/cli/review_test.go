@@ -59,8 +59,8 @@ func (p *fakePoster) ReplyToThread(_ context.Context, _ gh.Ref, threadID, _ stri
 
 // fakeRun returns a review.Run stand-in that streams the given progress events
 // then a final "done" event carrying draft.
-func fakeRun(events []review.Progress, draft *review.Draft) func(context.Context, gh.Ref, *aiconfig.Config) (<-chan review.Progress, error) {
-	return func(context.Context, gh.Ref, *aiconfig.Config) (<-chan review.Progress, error) {
+func fakeRun(events []review.Progress, draft *review.Draft) func(context.Context, gh.Ref, *aiconfig.Config, review.Bootstrap) (<-chan review.Progress, error) {
+	return func(context.Context, gh.Ref, *aiconfig.Config, review.Bootstrap) (<-chan review.Progress, error) {
 		ch := make(chan review.Progress, len(events)+1)
 		for _, e := range events {
 			ch <- e
@@ -366,7 +366,7 @@ func TestReviewAuthFailure(t *testing.T) {
 }
 
 func TestReviewNoFinalDraftIsOperationalError(t *testing.T) {
-	runNoFinal := func(context.Context, gh.Ref, *aiconfig.Config) (<-chan review.Progress, error) {
+	runNoFinal := func(context.Context, gh.Ref, *aiconfig.Config, review.Bootstrap) (<-chan review.Progress, error) {
 		ch := make(chan review.Progress, 1)
 		ch <- review.Progress{Stage: "fetch-pr", Err: errFake("boom")}
 		close(ch)

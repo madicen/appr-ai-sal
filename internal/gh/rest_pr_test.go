@@ -51,7 +51,7 @@ func TestGetPRViaGraphQL(t *testing.T) {
         "author": {"login": "bob"},
         "reviewDecision": "REVIEW_REQUIRED",
         "latestReviews": {"nodes": []},
-        "reviewRequests": {"nodes": [{"__typename": "User", "login": "alice"}]},
+        "reviewRequests": {"nodes": [{"requestedReviewer": {"__typename": "User", "login": "alice"}}]},
         "commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"pageInfo": {"hasNextPage": false}, "nodes": [{"__typename": "CheckRun", "status": "COMPLETED", "conclusion": "SUCCESS"}]}}}}]}
       }
     }

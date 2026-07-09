@@ -265,7 +265,7 @@ const graphqlChecksQuery = `query($owner: String!, $name: String!, $number: Int!
                     startedAt
                     completedAt
                     detailsUrl
-                    isRequired
+                    isRequired(pullRequestNumber: $number)
                     title
                     summary
                     checkSuite { app { name } }
@@ -282,7 +282,7 @@ const graphqlChecksQuery = `query($owner: String!, $name: String!, $number: Int!
                   ... on StatusContext {
                     context
                     state
-                    isRequired
+                    isRequired(pullRequestNumber: $number)
                     description
                     targetUrl
                     createdAt

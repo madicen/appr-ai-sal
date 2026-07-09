@@ -20,7 +20,7 @@ func (m *Model) startReviewOverlay() tea.Cmd {
 	}
 	ref := gh.Ref{Owner: m.currentPR.Owner, Repo: m.currentPR.Repo, Number: m.currentPR.Number}
 	m.draft = nil
-	m.cancelReview()
+	m.dismissReviewOverlaysSilent()
 	ctx, cancel := context.WithCancel(context.Background())
 	m.reviewCancel = cancel
 	if dt := m.detailTab(); dt != nil {
@@ -43,7 +43,10 @@ func (m *Model) startReviewOverlay() tea.Cmd {
 	if startMinimized {
 		prep = tea.Sequence(prep, func() tea.Msg { return reviewOverlayMinimizeRequestMsg{} })
 	}
-	return tea.Batch(prep, data.StartReviewCmd(ctx, ref, m.opts.AIConfig, m.opts.Demo))
+	return tea.Batch(prep, data.StartReviewCmd(ctx, ref, m.opts.AIConfig, m.opts.Demo, review.Bootstrap{
+		PR:   m.currentPR,
+		Diff: m.diff,
+	}))
 }
 
 type reviewOverlayMinimizeRequestMsg struct{}
@@ -81,6 +84,61 @@ func reviewWindowConfig() overlay.OverlayConfig {
 	cfg.WindowChrome.MinHeight = 14
 	cfg.WindowChrome.ShowMinimizeButton = true
 	return cfg
+}
+
+// dismissStaleOverlaysSilent removes abandoned modals (review, error, posted,
+// resume) from the top of the stack. Intentional overlays the user opened
+// (help, palette, …) are left alone so toggles still work.
+func (m *Model) dismissStaleOverlaysSilent() {
+	for m.overlayStack.Depth() > 0 {
+		switch m.overlayStack.Top().(type) {
+		case *reviewtab.Model:
+			m.overlayStack.Pop()
+		case overlays.ErrorOverlay:
+			m.err = nil
+			m.overlayStack.Pop()
+		case overlays.PostedOverlay:
+			m.overlayStack.Pop()
+		case overlays.ResumeOverlay:
+			m.pendingResume = nil
+			m.overlayStack.Pop()
+		default:
+			return
+		}
+	}
+	m.currentReviewOverlay = nil
+	m.cancelReview()
+}
+
+// dismissAllOverlaysSilent removes every modal on the stack without running
+// OnOverlayClose side effects. Keyboard and mouse are routed to the stack
+// whenever it is non-empty, so any overlay left behind after navigating
+// back to the PR list silently eats all input even though the list is
+// visible underneath.
+func (m *Model) dismissAllOverlaysSilent() {
+	for m.overlayStack.Depth() > 0 {
+		switch m.overlayStack.Top().(type) {
+		case overlays.ErrorOverlay:
+			m.err = nil
+		case overlays.ResumeOverlay:
+			m.pendingResume = nil
+		case *reviewtab.Model:
+			m.currentReviewOverlay = nil
+		}
+		m.overlayStack.Pop() // discard OnOverlayClose cmds; CloseMsg handler idempotently clears state
+	}
+	m.currentReviewOverlay = nil
+	m.cancelReview()
+}
+
+// dismissReviewOverlaysSilent removes only review overlays from the stack.
+// Prefer dismissAllOverlaysSilent when leaving the detail view entirely.
+func (m *Model) dismissReviewOverlaysSilent() {
+	for m.reviewOverlayOnTop() != nil {
+		m.overlayStack.Pop()
+	}
+	m.currentReviewOverlay = nil
+	m.cancelReview()
 }
 
 func (m *Model) maybeOfferResumeCmd() tea.Cmd {
@@ -144,6 +202,7 @@ func (m *Model) reopenApproval() tea.Cmd {
 	if m.draft == nil {
 		return nil
 	}
+	m.dismissReviewOverlaysSilent()
 	parallelSpec, parallelRE, _ := repoParallelExecutionFlags()
 	ro := reviewtab.New(m.width, m.height, m.opts.DryRun, parallelSpec, parallelRE, m.opts.AIConfig, m.opts.Demo)
 	adoptCmd := ro.AdoptDraft(m.draft)

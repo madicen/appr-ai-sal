@@ -1,6 +1,21 @@
 package gh
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+func TestGraphQLChecksQueryPassesPRNumberToIsRequired(t *testing.T) {
+	if !strings.Contains(graphqlChecksQuery, "isRequired(pullRequestNumber: $number)") {
+		t.Fatal("graphqlChecksQuery must pass pullRequestNumber to isRequired on check contexts")
+	}
+}
+
+func TestGraphQLReviewThreadsQueryOmitsInvalidDiffSide(t *testing.T) {
+	if strings.Contains(graphqlReviewThreadsQuery, "diffSide") {
+		t.Fatal("graphqlReviewThreadsQuery must not request diffSide — GitHub's PullRequestReviewComment type has no such field")
+	}
+}
 
 func TestCollapseChecksRollup(t *testing.T) {
 	cases := []struct {
