@@ -11,21 +11,7 @@ Usage · 14 calls · 182k in / 21k out · ~$0.43 · 6m12s
 
 Markdown body GitHub will publish (scroll with wheel or ↑/↓):
 
-    appr-ai-sal summary
-
-    │ AI disclosure: This summary was produced by appr-ai-sal (automated AI tools) to assist the human
-    │ reviewer. Line-level feedback appears as inline comments on the diff where agents cited paths and
-    │ lines. This top-level comment summarises that feedback and offers optional paste-ready AI
-    │ instructions
-    │ for the author.
-
-    │ [!CAUTION] The review is still manually performed by the person using appr-ai-sal — any approve,
-    │ request-changes, or comment signal represents that individual's own review and judgement, not an
-    │ automated decision. It is not a replacement for manual review.
-
-    Merge recommendation (AI agent: vibe-coach)
-
-    Verdict: Request changes
+    appr-ai-sal summary — 🔴 Request changes
 
     Solid plumbing for the demo recording path. The synthetic progress generator is a clean way to keep
     VHS reproducible without coupling the TUI to a real AI provider, and the dry-run-by-default behaviour
@@ -45,13 +31,20 @@ Markdown body GitHub will publish (scroll with wheel or ↑/↓):
     Verdict: request changes — minor, but the env-leak in particular is worth fixing now while the seam is
     fresh.
 
-    This is guidance for reviewers; it does not submit GitHub Approve or Request changes automatically.
+    │ [!CAUTION] This summary was produced by appr-ai-sal (automated AI tools) to assist the human
+    reviewer
+    │ —
+    │ it is not a replacement for manual review. Any approve, request-changes, or comment signal on this
+    PR
+    │ represents that reviewer's own judgement.
 
-    Repo expert panel (arbiter over per-specialist briefs)
+    5 inline comments on the diff
+
+    Repo expert panel
 
     Repo arbiter agrees with the specialist panel; one demote applied (testing/docs convention witness
     flagged a non-divergent claim).
-
+    Repo-arbiter details
     Rationale:
 
     • Convention witness saw 'congruent' for the docs finding on api.md; demote one rank.

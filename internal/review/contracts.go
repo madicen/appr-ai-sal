@@ -349,7 +349,7 @@ Verdict (required — human reviewer-facing merge recommendation, analogous to G
 - "request_changes" — At least one substantive issue (severity, design, security, tests, or docs) should be addressed before merge, or follow-up prompts are needed for non-trivial fixes.
 - "comment" — Feedback is informational only; no strong merge gate from this pass (use sparingly).
 
-The published review body leads with **Merge recommendation** (verdict heading + short summary) then **one combined suggested prompt** for the author's AI (if any). The "summary" must stay executive — no specialist-by-specialist recap.
+The published review body folds the verdict into its headline, immediately followed by your "summary" as the TL;DR, then **one combined suggested prompt** for the author's AI (if any). The "summary" must stay executive — no specialist-by-specialist recap.
 
 Verdict vs prompts (critical):
 

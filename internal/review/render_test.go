@@ -1,12 +1,52 @@
 package review
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/madicen/appr-ai-sal/internal/gh"
 	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
 )
+
+// TestRenderBodyOverhauledLayout locks in the concise summary shape: exactly
+// one merged CAUTION callout (not two stacked disclosure blockquotes), a
+// one-line stats strip under it, and process metadata collapsed inside a
+// <details> block instead of competing with the findings.
+func TestRenderBodyOverhauledLayout(t *testing.T) {
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{
+			{Specialist: "design", Findings: []Finding{
+				{Path: "a.go", Line: 1, Comment: "nit", Severity: SeverityInfo},
+			}},
+			{Specialist: "security", Err: errors.New("boom"), Outcome: OutcomeFailed},
+			{Specialist: "docs", Findings: []Finding{
+				{Path: "", Line: 0, Comment: "readme gap", Severity: SeverityWarning},
+			}},
+		},
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictComment, Summary: "Mostly fine."},
+	}
+	body := d.RenderBody()
+	if strings.Count(body, "> [!CAUTION]") != 1 {
+		t.Fatalf("want exactly one CAUTION callout:\n%s", body)
+	}
+	if strings.Contains(body, "**AI disclosure:**") {
+		t.Fatalf("old separate disclosure blockquote should be gone:\n%s", body)
+	}
+	if !strings.HasPrefix(body, "## appr-ai-sal summary — 💬 Comment only") {
+		t.Fatalf("verdict should be folded into the headline:\n%s", body)
+	}
+	if !strings.Contains(body, "**1 inline comment** on the diff · **1 PR-wide note** below · ⚠️ **1 review stage degraded** — partial review") {
+		t.Fatalf("missing stats line:\n%s", body)
+	}
+	if !strings.Contains(body, "<details>\n<summary>⚙️ Review process details — 1 agent failed</summary>") {
+		t.Fatalf("process metadata should be collapsed in a details block:\n%s", body)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(body), "</details>") {
+		t.Fatalf("details block should close cleanly:\n%s", body)
+	}
+}
 
 func TestReviewCommentBodyAIAndAgent(t *testing.T) {
 	body := ReviewCommentBody("formatting", Finding{
@@ -27,7 +67,7 @@ func TestReviewCommentBodyOmitsBadSuggestion(t *testing.T) {
 	}
 }
 
-func TestRenderBodyLeadsWithMergeRecommendation(t *testing.T) {
+func TestRenderBodyLeadsWithVerdictHeadline(t *testing.T) {
 	d := &Draft{
 		PR: &gh.PR{HeadSHA: "abc"},
 		Specialists: []SpecialistResult{{
@@ -46,22 +86,24 @@ func TestRenderBodyLeadsWithMergeRecommendation(t *testing.T) {
 		},
 	}
 	body := d.RenderBody()
-	iMerge := strings.Index(body, "### Merge recommendation")
-	iPrompts := strings.Index(body, "### Suggested prompt for your AI assistant")
-	if iMerge < 0 {
-		t.Fatal("missing merge recommendation section")
+	// The verdict is folded into the H2 headline — the very first thing the
+	// author reads — followed by the TL;DR, then the paste-ready prompt.
+	if !strings.HasPrefix(body, "## appr-ai-sal summary — 🔴 Request changes") {
+		t.Fatalf("body should lead with the verdict headline: %s", body)
+	}
+	iSummary := strings.Index(body, "Fix the handler validation before merge.")
+	iPrompts := strings.Index(body, "### 🤖 Prompt for your AI assistant")
+	if iSummary < 0 {
+		t.Fatal("missing vibe-coach TL;DR")
 	}
 	if iPrompts < 0 {
 		t.Fatal("missing suggested prompt section")
 	}
-	if !(iMerge < iPrompts) {
-		t.Fatal("expected merge recommendation before suggested prompt")
+	if !(iSummary < iPrompts) {
+		t.Fatal("expected TL;DR before suggested prompt")
 	}
 	if strings.Contains(body, "### formatting") {
 		t.Fatal("inline-only specialists must not get per-agent headings in the body")
-	}
-	if !strings.Contains(body, "## Verdict: Request changes") {
-		t.Fatalf("body should contain verdict heading: %s", body)
 	}
 	if strings.Count(body, "```text") != 1 {
 		t.Fatalf("expected exactly one fenced prompt block, body: %s", body)
@@ -246,11 +288,41 @@ func TestRenderBodyReviewerChoicesDisclosure(t *testing.T) {
 		VibeCoach:        &VibeCoachResult{Verdict: VibeVerdictApprove, Summary: "ok"},
 	}
 	body := d.RenderBody()
+	if !strings.Contains(body, "<details>\n<summary>⚙️ Review process details — 2 suggestions skipped by reviewer</summary>") {
+		t.Fatalf("reviewer choices should live in a collapsed process-details block:\n%s", body)
+	}
 	if !strings.Contains(body, "### Reviewer choices") {
 		t.Fatalf("missing section: %s", body)
 	}
 	if !strings.Contains(body, "2 inline suggestions skipped") {
 		t.Fatalf("expected plural disclosure: %s", body)
+	}
+}
+
+func TestRenderBodyRepoArbiterDetailsCollapsible(t *testing.T) {
+	d := &Draft{
+		PR:        &gh.PR{HeadSHA: "abc"},
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictComment, Summary: "ok"},
+		RepoArbiter: &RepoArbiterResult{
+			UserSummary:      "Visible summary.",
+			RationaleBullets: []string{"reason one"},
+			Suppressed: []SuppressedFindingRef{
+				{Specialist: SpecDocs, Path: "a.go", Line: 1, Reason: "dup"},
+			},
+		},
+	}
+	body := d.RenderBody()
+	if !strings.Contains(body, "<details>\n<summary>Repo-arbiter details — 1 inline comment not posted</summary>") {
+		t.Fatalf("repo arbiter secondary content should be in a details block:\n%s", body)
+	}
+	if !strings.Contains(body, "**Rationale:**") {
+		t.Fatalf("rationale should be inside details:\n%s", body)
+	}
+	if !strings.Contains(body, "Visible summary.") {
+		t.Fatalf("user summary should stay visible outside details:\n%s", body)
+	}
+	if strings.Index(body, "Visible summary.") > strings.Index(body, "<details>") {
+		t.Fatalf("user summary should precede collapsed details:\n%s", body)
 	}
 }
 
@@ -356,11 +428,11 @@ func TestRenderBodyShowsReconciliationNoteAfterDowngrade(t *testing.T) {
 		},
 	}
 	body := d.RenderBody()
-	if !strings.Contains(body, "## Verdict: Comment only") {
-		t.Fatalf("body should display the reconciled verdict (Comment only): %s", body)
+	if !strings.Contains(body, "## appr-ai-sal summary — 💬 Comment only") {
+		t.Fatalf("headline should display the reconciled verdict (Comment only): %s", body)
 	}
-	if strings.Contains(body, "## Verdict: Request changes") {
-		t.Fatalf("body should not still claim Request changes after downgrade: %s", body)
+	if strings.Contains(body, "— 🔴 Request changes") {
+		t.Fatalf("headline should not still claim Request changes after downgrade: %s", body)
 	}
 	if !strings.Contains(body, "Verdict downgraded from Request changes to Comment only") {
 		t.Fatalf("body should explain the downgrade: %s", body)
@@ -403,10 +475,10 @@ func TestRenderBodyVerdictHeadlineMatchesArbiterPanel(t *testing.T) {
 	body := d.RenderBody()
 	rcLabel := VibeVerdictShortLabel(VibeVerdictRequestChanges)
 	apLabel := VibeVerdictShortLabel(VibeVerdictApprove)
-	if !strings.Contains(body, "## Verdict: "+rcLabel) {
+	if !strings.Contains(body, "## appr-ai-sal summary — 🔴 "+rcLabel) {
 		t.Fatalf("headline should be %q:\n%s", rcLabel, body)
 	}
-	if strings.Contains(body, "## Verdict: "+apLabel) {
+	if strings.Contains(body, "— ✅ "+apLabel) {
 		t.Fatalf("headline must not show the clamped Approve override:\n%s", body)
 	}
 	if !strings.Contains(body, "stays **"+rcLabel+"**") {

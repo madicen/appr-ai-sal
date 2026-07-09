@@ -105,41 +105,71 @@ func countNonEmptyPrompts(prompts []AuthorPrompt) int {
 	return n
 }
 
-// vibeCoachMergeSection renders the verdict + summary block. verdictNote is
-// an optional one-liner shown right below the verdict heading (used when the
-// reconciler downgraded the verdict because user skips removed every
-// blocker — see VerdictReconciliationNote).
-func vibeCoachMergeSection(vc *VibeCoachResult, verdictNote string) string {
-	if vc == nil {
+// VerdictEmoji maps a canonical verdict to the emoji used in the body
+// headline and the CLI summary. Empty for unknown verdicts so callers degrade
+// to plain text.
+func VerdictEmoji(canonical string) string {
+	switch canonical {
+	case VibeVerdictApprove:
+		return "✅"
+	case VibeVerdictRequestChanges:
+		return "🔴"
+	case VibeVerdictComment:
+		return "💬"
+	default:
 		return ""
 	}
-	v := NormalizeVibeVerdict(vc.Verdict)
-	hasSummary := strings.TrimSpace(vc.Summary) != ""
-	hasPrompts := len(vc.Prompts) > 0
-	hasNote := strings.TrimSpace(verdictNote) != ""
-	if v == "" && !hasSummary && !hasPrompts && !hasNote {
-		return ""
-	}
-	var b strings.Builder
-	b.WriteString("### Merge recommendation _(AI agent: vibe-coach)_\n\n")
-	if lbl := VibeVerdictShortLabel(v); lbl != "" {
-		b.WriteString("## Verdict: " + lbl + "\n\n")
-	}
-	if hasNote {
-		b.WriteString("> " + strings.TrimSpace(verdictNote) + "\n\n")
-	}
-	if hasSummary {
-		b.WriteString(vc.Summary)
-		b.WriteString("\n\n")
-	}
-	if vc.RequestChangesWithoutPrompts {
-		b.WriteString("**Warning:** Verdict is **request changes**, but no paste-ready AI prompts were returned. Rely on **inline comments on the diff** and PR-wide notes below (if any).\n\n")
-	}
-	b.WriteString("_This is guidance for reviewers; it does not submit GitHub **Approve** or **Request changes** automatically._\n\n")
-	return b.String()
 }
 
-// vibeCoachSuggestedPromptsSection renders one combined fenced prompt (after merge recommendation).
+// bodyHeadline renders the H2 title line. The verdict is folded straight into
+// the headline ("## appr-ai-sal summary — 🔴 Request changes") so the author
+// sees the outcome first, without a separate "Merge recommendation" section
+// and duplicate "Verdict:" heading. The word "summary" (not "review") is
+// deliberate — see RenderBody's framing comment.
+func bodyHeadline(canonicalVerdict string) string {
+	h := "## appr-ai-sal summary"
+	if lbl := VibeVerdictShortLabel(canonicalVerdict); lbl != "" {
+		if em := VerdictEmoji(canonicalVerdict); em != "" {
+			h += " — " + em + " " + lbl
+		} else {
+			h += " — " + lbl
+		}
+	}
+	return h + "\n\n"
+}
+
+// bodyCaution is the single merged AI-disclosure + human-review warning.
+// It replaces the previous two stacked callouts (a disclosure blockquote plus
+// a CAUTION alert) with one compact CAUTION.
+//
+// The `produced by **appr-ai-sal**` substring is the marker used by
+// gh.DetectPriorAprrAISalActivity to recognise tool-authored bodies on
+// re-runs; keep it intact when editing.
+const bodyCaution = "> [!CAUTION]\n" +
+	"> This summary was produced by **appr-ai-sal** (automated AI tools) to assist the human reviewer — it is **not** a replacement for manual review. Any approve, request-changes, or comment signal on this PR represents that reviewer's own judgement.\n\n"
+
+// bodyStatsLine is the one-line orientation strip under the caution: where
+// the feedback lives (inline vs PR-wide) and whether the run degraded. It
+// replaces the old paragraph of prose explaining the same thing.
+func bodyStatsLine(inline, prWide, degraded int) string {
+	var parts []string
+	if inline > 0 {
+		parts = append(parts, "**"+countLabel(inline, "1 inline comment", "%d inline comments")+"** on the diff")
+	}
+	if prWide > 0 {
+		parts = append(parts, "**"+countLabel(prWide, "1 PR-wide note", "%d PR-wide notes")+"** below")
+	}
+	if degraded > 0 {
+		parts = append(parts, "⚠️ **"+countLabel(degraded, "1 review stage degraded", "%d review stages degraded")+"** — partial review")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, " · ") + "\n\n"
+}
+
+// vibeCoachSuggestedPromptsSection renders one combined fenced prompt (right
+// below the headline/TL;DR area).
 //
 // Prompts are filtered against the draft: any prompt whose finding_refs are
 // all arbiter-suppressed or user-skipped is dropped, so the rendered review
@@ -168,13 +198,12 @@ func vibeCoachSuggestedPromptsSection(d *Draft, vc *VibeCoachResult) string {
 	var b strings.Builder
 	if combined != "" {
 		topicCount := countNonEmptyPrompts(rendered)
-		b.WriteString("### Suggested prompt for your AI assistant _(AI agent: vibe-coach)_\n\n")
+		b.WriteString("### 🤖 Prompt for your AI assistant\n\n")
 		switch {
 		case topicCount <= 1:
 			b.WriteString("_Paste the fenced block below into your coding assistant (Cursor, Claude Code, etc.)._\n\n")
 		default:
-			fmt.Fprintf(&b, "_Paste the fenced block below into your coding assistant (Cursor, Claude Code, etc.). "+
-				"It contains **%d distinct topics** separated by `---`; the author's AI should address each one._\n\n", topicCount)
+			fmt.Fprintf(&b, "_Paste the fenced block below into your coding assistant (Cursor, Claude Code, etc.) — **%d distinct topics** separated by `---`._\n\n", topicCount)
 		}
 		if len(synthesized) > 0 {
 			fmt.Fprintf(&b, "_%s auto-built from blocking findings the vibe-coach didn't bundle into a paste-ready prompt; the wording is verbatim from the specialist's comment._\n\n",
@@ -248,44 +277,21 @@ func joinQuoted(s []string) string {
 //
 // The `produced by **appr-ai-sal**` substring is the marker used by
 // gh.DetectPriorAprrAISalActivity to recognise tool-authored bodies on
-// re-runs; keep it intact when editing the disclosure below.
+// re-runs; it lives in bodyCaution — keep it intact when editing.
 func (d *Draft) RenderBody() string {
 	if d != nil && d.HasNoFindings() {
-		// The standard disclosure mentions "inline comments on the diff" and a
-		// "written summary" — both nonsensical when the pipeline returned
-		// nothing. Use a tailored body so the GitHub APPROVE we post in this
-		// case explains why instead of looking content-free.
-		return "## appr-ai-sal summary\n\n" +
-			"✅ **No issues found by any agent** — every configured specialist reviewed this diff and produced no actionable feedback to leave on the diff or in a written summary. It recommends Approving this pull request.\n\n" +
+		// The standard sections (stats line, prompt, PR-wide notes) are all
+		// empty when the pipeline returned nothing. Use a tailored body so the
+		// GitHub APPROVE we post in this case explains why instead of looking
+		// content-free.
+		return bodyHeadline(VibeVerdictApprove) +
+			"**No issues found by any agent** — every configured specialist reviewed this diff and produced no actionable feedback to leave on the diff or in a written summary. It recommends Approving this pull request.\n\n" +
 			d.diffTruncationNote() +
-			"> [!CAUTION]\n" +
-			"> The review is still manually performed by the person using appr-ai-sal. It is **not** a replacement for manual review.\n\n" +
-			"> **AI disclosure:** This summary was produced by **appr-ai-sal** (automated AI tools).\n"
-	}
-	var b string
-	b += "## appr-ai-sal summary\n\n"
-	b += d.diffTruncationNote()
-	b += "> **AI disclosure:** This summary was produced by **appr-ai-sal** (automated AI tools) to assist the human reviewer. "
-	b += "**Line-level feedback** appears as **inline comments on the diff** where agents cited paths and lines. "
-	b += "This top-level comment summarises that feedback and offers optional paste-ready AI instructions for the author.\n\n"
-	b += "> [!CAUTION]\n"
-	b += "> The review is still manually performed by the person using appr-ai-sal — any approve, request-changes, or comment signal represents that individual's own review and judgement, not an automated decision. It is **not** a replacement for manual review.\n\n"
-
-	vcDisp := d.effectiveVibeCoach()
-	if vcDisp != nil && vcDisp.Err == nil {
-		if merge := vibeCoachMergeSection(vcDisp, d.VerdictReconciliationNote()); merge != "" {
-			b += merge
-		}
-		if prompts := vibeCoachSuggestedPromptsSection(d, vcDisp); prompts != "" {
-			b += prompts
-		}
-	}
-	if d.RepoArbiter != nil {
-		if panel := repoExpertPanelSection(d); panel != "" {
-			b += panel
-		}
+			bodyCaution
 	}
 
+	// Gather process metadata and PR-wide findings up front so the headline
+	// area can carry an accurate one-line stats strip.
 	type agentErr struct {
 		name string
 		msg  string
@@ -327,32 +333,6 @@ func (d *Draft) RenderBody() string {
 		}
 	}
 
-	if len(failures) > 0 {
-		b += "### Agent failures _(failed after retries)_\n\n"
-		for _, e := range failures {
-			b += "- **" + e.name + ":** _" + e.msg + "_\n"
-		}
-		b += "\n"
-	}
-
-	if len(skippedStages) > 0 {
-		b += "### Stages skipped _(run aborted early)_\n\n"
-		b += "_The run's circuit breaker stopped these agents before they ran, so this review is partial — review the areas they cover manually._\n\n"
-		for _, name := range skippedStages {
-			b += "- **" + name + "**\n"
-		}
-		b += "\n"
-	}
-
-	if len(prWide) > 0 {
-		b += "### PR-wide notes _(no diff anchor)_\n\n"
-		b += "_These could not be tied to a single changed line; every other finding from specialists is in **inline comments on the diff**._\n\n"
-		for _, item := range prWide {
-			b += "- **" + string(item.f.Severity) + " · " + item.specialist + ":** " + item.f.Comment + "\n"
-		}
-		b += "\n"
-	}
-
 	// Demoted PR-wide findings the reviewer opted to include despite the
 	// arbiter demoting them below the strictness floor. Inline demoted
 	// findings post through the opt-in card flow, not here.
@@ -375,26 +355,113 @@ func (d *Draft) RenderBody() string {
 			f          Finding
 		}{ff.Specialist, ff.Finding})
 	}
+
+	vcDisp := d.effectiveVibeCoach()
+	vcOK := vcDisp != nil && vcDisp.Err == nil
+	verdict := ""
+	if vcOK {
+		verdict = NormalizeVibeVerdict(vcDisp.Verdict)
+	}
+
+	var b strings.Builder
+
+	// 1. Headline (verdict folded in), downgrade note, TL;DR.
+	b.WriteString(bodyHeadline(verdict))
+	if vcOK {
+		if note := strings.TrimSpace(d.VerdictReconciliationNote()); note != "" {
+			b.WriteString("> " + note + "\n\n")
+		}
+		if s := strings.TrimSpace(vcDisp.Summary); s != "" {
+			b.WriteString(s + "\n\n")
+		}
+	}
+
+	// 2. Warnings and the merged AI disclosure / human-review caution.
+	b.WriteString(d.diffTruncationNote())
+	b.WriteString(bodyCaution)
+
+	// 3. One-line orientation stats.
+	b.WriteString(bodyStatsLine(
+		len(d.FlatPostableFindingsForPost()),
+		len(prWide)+len(demotedIncluded),
+		len(failures)+len(skippedStages)))
+	if vcOK && vcDisp.RequestChangesWithoutPrompts {
+		b.WriteString("**Warning:** Verdict is **request changes**, but no paste-ready AI prompts were returned — rely on the inline comments on the diff and the PR-wide notes below (if any).\n\n")
+	}
+
+	// 4. The author's main action item: the paste-ready prompt.
+	if vcOK {
+		if prompts := vibeCoachSuggestedPromptsSection(d, vcDisp); prompts != "" {
+			b.WriteString(prompts)
+		}
+	}
+
+	// 5. Substantive findings that live in the body rather than on the diff.
+	if len(prWide) > 0 {
+		b.WriteString("### PR-wide notes\n\n")
+		b.WriteString("_Not tied to a single changed line — all other findings are inline comments on the diff._\n\n")
+		for _, item := range prWide {
+			b.WriteString("- **" + string(item.f.Severity) + " · " + item.specialist + ":** " + item.f.Comment + "\n")
+		}
+		b.WriteString("\n")
+	}
 	if len(demotedIncluded) > 0 {
-		b += "### PR-wide notes — included despite demotion\n\n"
-		b += "_The repo arbiter demoted these below the review threshold; the reviewer chose to surface them anyway._\n\n"
+		b.WriteString("### PR-wide notes — included despite demotion\n\n")
+		b.WriteString("_The repo arbiter demoted these below the review threshold; the reviewer chose to surface them anyway._\n\n")
 		for _, item := range demotedIncluded {
-			b += "- **" + item.specialist + " _(demoted by repo arbiter)_:** " + item.f.Comment + "\n"
+			b.WriteString("- **" + item.specialist + " _(demoted by repo arbiter)_:** " + item.f.Comment + "\n")
 		}
-		b += "\n"
+		b.WriteString("\n")
 	}
 
-	if d != nil && len(d.UserSkipPostKeys) > 0 {
-		n := len(d.UserSkipPostKeys)
-		s := "s"
-		if n == 1 {
-			s = ""
+	// 6. Repo expert panel: short summary + verdict adjustment stay visible,
+	// rationale and suppressed-comment list collapse.
+	if d.RepoArbiter != nil {
+		if panel := repoExpertPanelSection(d); panel != "" {
+			b.WriteString(panel)
 		}
-		b += "### Reviewer choices\n\n"
-		b += fmt.Sprintf("_%d inline suggestion%s skipped during review — not included in this GitHub post._\n\n", n, s)
 	}
 
-	return b
+	// 7. Process metadata, collapsed. The stats line above already flags a
+	// degraded run; the details block carries the specifics without competing
+	// with the findings for the author's attention.
+	userSkips := len(d.UserSkipPostKeys)
+	if len(failures)+len(skippedStages) > 0 || userSkips > 0 {
+		var sum []string
+		if len(failures) > 0 {
+			sum = append(sum, countLabel(len(failures), "1 agent failed", "%d agents failed"))
+		}
+		if len(skippedStages) > 0 {
+			sum = append(sum, countLabel(len(skippedStages), "1 stage skipped", "%d stages skipped"))
+		}
+		if userSkips > 0 {
+			sum = append(sum, countLabel(userSkips, "1 suggestion skipped by reviewer", "%d suggestions skipped by reviewer"))
+		}
+		b.WriteString("<details>\n<summary>⚙️ Review process details — " + strings.Join(sum, " · ") + "</summary>\n\n")
+		if len(failures) > 0 {
+			b.WriteString("### Agent failures _(failed after retries)_\n\n")
+			for _, e := range failures {
+				b.WriteString("- **" + e.name + ":** _" + e.msg + "_\n")
+			}
+			b.WriteString("\n")
+		}
+		if len(skippedStages) > 0 {
+			b.WriteString("### Stages skipped _(run aborted early)_\n\n")
+			b.WriteString("_The run's circuit breaker stopped these agents before they ran, so this review is partial — review the areas they cover manually._\n\n")
+			for _, name := range skippedStages {
+				b.WriteString("- **" + name + "**\n")
+			}
+			b.WriteString("\n")
+		}
+		if userSkips > 0 {
+			b.WriteString("### Reviewer choices\n\n")
+			fmt.Fprintf(&b, "_%s skipped during review — not included in this GitHub post._\n\n",
+				countLabel(userSkips, "1 inline suggestion", "%d inline suggestions"))
+		}
+		b.WriteString("</details>\n")
+	}
+
+	return b.String()
 }
 
 // diffTruncationNote renders the R3 truncation disclosure as a GitHub callout
@@ -421,22 +488,12 @@ func repoExpertPanelSection(d *Draft) string {
 	if ar.Err != nil {
 		return "### Repo expert panel _(failed)_\n\n_" + ar.Err.Error() + "_\n\n"
 	}
-	var b strings.Builder
-	b.WriteString("### Repo expert panel _(arbiter over per-specialist briefs)_\n\n")
-	if strings.TrimSpace(ar.UserSummary) != "" {
-		b.WriteString(strings.TrimSpace(ar.UserSummary))
-		b.WriteString("\n\n")
-	}
-	if len(ar.RationaleBullets) > 0 {
-		b.WriteString("**Rationale:**\n")
-		for _, r := range ar.RationaleBullets {
-			r = strings.TrimSpace(r)
-			if r == "" {
-				continue
-			}
-			b.WriteString("- " + r + "\n")
-		}
-		b.WriteString("\n")
+
+	// Visible part: the arbiter's plain-English summary and any verdict
+	// adjustment (both substantive — the adjustment explains the headline).
+	var vis strings.Builder
+	if s := strings.TrimSpace(ar.UserSummary); s != "" {
+		vis.WriteString(s + "\n\n")
 	}
 	orig := ""
 	if d.VibeCoach != nil {
@@ -450,18 +507,34 @@ func repoExpertPanelSection(d *Draft) string {
 	// request didn't take.
 	eff := NormalizeVibeVerdict(d.ReconciledMergeVerdict())
 	if orig != "" && eff != "" && orig != eff {
-		b.WriteString("**Merge recommendation adjustment:** vibe-coach suggested **" + VibeVerdictShortLabel(orig) +
+		vis.WriteString("**Merge recommendation adjustment:** vibe-coach suggested **" + VibeVerdictShortLabel(orig) +
 			"**; repo experts set effective verdict **" + VibeVerdictShortLabel(eff) + "**.\n\n")
 	} else if want := NormalizeVibeVerdict(ar.VerdictOverride); want != "" && want != eff && verdictRank(want) < verdictRank(eff) {
-		b.WriteString("**Merge recommendation adjustment:** repo experts asked to relax the verdict to **" + VibeVerdictShortLabel(want) +
+		vis.WriteString("**Merge recommendation adjustment:** repo experts asked to relax the verdict to **" + VibeVerdictShortLabel(want) +
 			"**, but blocking findings remain, so it stays **" + VibeVerdictShortLabel(eff) + "** until those are resolved or suppressed.\n\n")
 	}
-	if len(ar.Suppressed) > 0 {
-		fmt.Fprintf(&b, "**Inline comments not posted** (%d; repo arbiter):\n\n", len(ar.Suppressed))
-		for _, s := range ar.Suppressed {
-			fmt.Fprintf(&b, "- **%s** `%s:%d` — %s\n", s.Specialist, s.Path, s.Line, strings.TrimSpace(s.Reason))
+
+	// Collapsed part: rationale bullets and the suppressed-comment list are
+	// reader-facing but secondary — available on click, not competing with
+	// the findings.
+	var det strings.Builder
+	if len(ar.RationaleBullets) > 0 {
+		det.WriteString("**Rationale:**\n")
+		for _, r := range ar.RationaleBullets {
+			r = strings.TrimSpace(r)
+			if r == "" {
+				continue
+			}
+			det.WriteString("- " + r + "\n")
 		}
-		b.WriteString("\n")
+		det.WriteString("\n")
+	}
+	if len(ar.Suppressed) > 0 {
+		fmt.Fprintf(&det, "**Inline comments not posted** (%d; repo arbiter):\n\n", len(ar.Suppressed))
+		for _, s := range ar.Suppressed {
+			fmt.Fprintf(&det, "- **%s** `%s:%d` — %s\n", s.Specialist, s.Path, s.Line, strings.TrimSpace(s.Reason))
+		}
+		det.WriteString("\n")
 	}
 	// The per-finding demotion list and the convention-witness tally are
 	// intentionally NOT rendered in the posted body. A demotion only
@@ -479,9 +552,21 @@ func repoExpertPanelSection(d *Draft) string {
 	// ar.DroppedSuppressions / DroppedDemotions are likewise omitted: they
 	// leak the internal suppression-key shape ("specialist|path|line|side")
 	// and add no actionable information for a human reading the review.
-	out := b.String()
-	if out == "### Repo expert panel _(arbiter over per-specialist briefs)_\n\n" {
+
+	if vis.Len() == 0 && det.Len() == 0 {
 		return ""
 	}
-	return out
+	var b strings.Builder
+	b.WriteString("### Repo expert panel\n\n")
+	b.WriteString(vis.String())
+	if det.Len() > 0 {
+		label := "Repo-arbiter details"
+		if n := len(ar.Suppressed); n > 0 {
+			label += " — " + countLabel(n, "1 inline comment not posted", "%d inline comments not posted")
+		}
+		b.WriteString("<details>\n<summary>" + label + "</summary>\n\n")
+		b.WriteString(det.String())
+		b.WriteString("</details>\n\n")
+	}
+	return b.String()
 }
