@@ -27,7 +27,7 @@ func newTallModel(t *testing.T, repos []string) *Model {
 func TestMouseClickSuggestMarksBusy(t *testing.T) {
 	m := newTallModel(t, []string{"a/b"})
 	renderAndScan(m)
-	_ = m.handleMouse(clickCenter(t, ZoneSuggestTech))
+	_ = m.handleMouse(clickCenter(t, m, ZoneSuggestTech))
 	if !m.suggestBusy {
 		t.Fatalf("clicking Suggest should set suggestBusy true")
 	}
@@ -38,7 +38,7 @@ func TestMouseApproveCandidateTogglesState(t *testing.T) {
 	seedCandidates(m)
 	renderAndScan(m)
 
-	_ = m.handleMouse(clickCenter(t, zoneCandApprove("kafka")))
+	_ = m.handleMouse(clickCenter(t, m, zoneCandApprove("kafka")))
 	if !m.candidateApproved["kafka"] {
 		t.Fatalf("approve click should mark kafka approved")
 	}
@@ -48,7 +48,7 @@ func TestMouseApproveCandidateTogglesState(t *testing.T) {
 
 	// Deny it again.
 	renderAndScan(m)
-	_ = m.handleMouse(clickCenter(t, zoneCandDeny("kafka")))
+	_ = m.handleMouse(clickCenter(t, m, zoneCandDeny("kafka")))
 	if m.candidateApproved["kafka"] {
 		t.Fatalf("deny click should clear kafka approval")
 	}
@@ -60,7 +60,7 @@ func TestMouseGenerateApprovedDispatchesAndClears(t *testing.T) {
 	m.candidateApproved["kafka"] = true
 	renderAndScan(m)
 
-	cmd := m.handleMouse(clickCenter(t, ZoneGenApproved))
+	cmd := m.handleMouse(clickCenter(t, m, ZoneGenApproved))
 	if cmd == nil {
 		t.Fatalf("Generate approved should return a command")
 	}
@@ -94,7 +94,7 @@ func TestMouseDismissClearsCandidates(t *testing.T) {
 	m := newTallModel(t, []string{"a/b"})
 	seedCandidates(m)
 	renderAndScan(m)
-	_ = m.handleMouse(clickCenter(t, ZoneDismissSuggest))
+	_ = m.handleMouse(clickCenter(t, m, ZoneDismissSuggest))
 	if len(m.candidates) != 0 {
 		t.Fatalf("dismiss should clear candidates")
 	}

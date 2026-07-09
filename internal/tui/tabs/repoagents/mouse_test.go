@@ -17,28 +17,17 @@ import (
 	"github.com/madicen/appr-ai-sal/internal/tui/state"
 )
 
-// TestMain initializes bubblezone once for the whole test binary. Calling
-// zone.NewGlobal() per-test races with the package's async scanner and can
-// drop zones that were just rendered, so we set it up once here.
+// TestMain initializes bubblezone once for the whole test binary. Mouse
+// tests re-scan and poll in clickCenter because bubblezone applies Scan()
+// bounds on a background worker — immediate Get() after Scan can be stale.
 func TestMain(m *testing.M) {
 	zone.NewGlobal()
 	os.Exit(m.Run())
 }
 
-func waitZone(t *testing.T, id string) {
+func clickCenter(t *testing.T, m *Model, id string) tea.MouseMsg {
 	t.Helper()
-	deadline := time.Now().Add(500 * time.Millisecond)
-	for zone.Get(id) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("timeout waiting for zone %q", id)
-		}
-		runtime.Gosched()
-	}
-}
-
-func clickCenter(t *testing.T, id string) tea.MouseMsg {
-	t.Helper()
-	waitZone(t, id)
+	waitClickableZone(t, m, id)
 	z := zone.Get(id)
 	return tea.MouseMsg{
 		X:      (z.StartX + z.EndX) / 2,
@@ -46,6 +35,32 @@ func clickCenter(t *testing.T, id string) tea.MouseMsg {
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
+}
+
+// waitClickableZone blocks until bubblezone's background worker has applied
+// the bounds from the latest Scan. Scan queues zone updates asynchronously;
+// an immediate Get() can return nil or a prior frame's coordinates.
+func waitClickableZone(t *testing.T, m *Model, id string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		zone.Scan(m.View())
+		for i := 0; i < 32; i++ {
+			runtime.Gosched()
+		}
+		if z := zone.Get(id); zoneBoundsReady(z) {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for zone %q", id)
+}
+
+func zoneBoundsReady(z *zone.ZoneInfo) bool {
+	if z == nil {
+		return false
+	}
+	return z.StartX <= z.EndX && z.StartY <= z.EndY
 }
 
 func renderAndScan(m *Model) {
@@ -72,7 +87,7 @@ func newTestModel(t *testing.T, repos []string) *Model {
 func TestMouseClickCloseSendsNavigateMsg(t *testing.T) {
 	m := newTestModel(t, []string{"acme/widget"})
 	renderAndScan(m)
-	msg := clickCenter(t, ZoneClose)
+	msg := clickCenter(t, m, ZoneClose)
 	cmd := m.handleMouse(msg)
 	if cmd == nil {
 		t.Fatalf("expected NavigateMsg cmd from Close click")
@@ -122,7 +137,7 @@ func TestRepoDropdownClickOpensAndSelects(t *testing.T) {
 	m := newTestModel(t, []string{"a/b", "c/d", "e/f"})
 	renderAndScan(m)
 
-	_ = m.handleMouse(clickCenter(t, ZoneRepoDD))
+	_ = m.handleMouse(clickCenter(t, m, ZoneRepoDD))
 	if !m.repoDropdownOpen() {
 		t.Fatal("clicking the repo trigger should open the dropdown panel")
 	}
@@ -140,13 +155,13 @@ func TestRepoDropdownClickOpensAndSelects(t *testing.T) {
 func TestMouseClickAddRepoOpensInputAndSaveAddsRepo(t *testing.T) {
 	m := newTestModel(t, []string{"a/b"})
 	renderAndScan(m)
-	_ = m.handleMouse(clickCenter(t, ZoneAddRepoOpen))
+	_ = m.handleMouse(clickCenter(t, m, ZoneAddRepoOpen))
 	if !m.addingRepo {
 		t.Fatal("expected addingRepo to flip true")
 	}
 	m.addInput.SetValue("globex/engine")
 	renderAndScan(m)
-	cmd := m.handleMouse(clickCenter(t, ZoneAddRepoSave))
+	cmd := m.handleMouse(clickCenter(t, m, ZoneAddRepoSave))
 	if cmd != nil {
 		// commitAddRepo can return a load command; that's fine.
 	}
@@ -168,7 +183,7 @@ func TestMouseClickAddRepoOpensInputAndSaveAddsRepo(t *testing.T) {
 func TestMouseClickAgentRegenerateMarksBusy(t *testing.T) {
 	m := newTestModel(t, []string{"a/b"})
 	renderAndScan(m)
-	cmd := m.handleMouse(clickCenter(t, zoneAgentRegen("testing")))
+	cmd := m.handleMouse(clickCenter(t, m, zoneAgentRegen("testing")))
 	if cmd == nil {
 		t.Fatalf("expected non-nil cmd from regenerate click")
 	}
@@ -186,7 +201,7 @@ func TestMouseClickEditOpensTextarea(t *testing.T) {
 	got, _ := ra.Load("a", "b")
 	m.agents["a/b"] = got
 	renderAndScan(m)
-	_ = m.handleMouse(clickCenter(t, zoneAgentEdit("testing")))
+	_ = m.handleMouse(clickCenter(t, m, zoneAgentEdit("testing")))
 	if !m.editing || m.editSpecialist != "testing" {
 		t.Fatalf("expected editing=testing got editing=%v editSpecialist=%q", m.editing, m.editSpecialist)
 	}
@@ -201,7 +216,7 @@ func TestMouseEditCancelExitsWithoutSaving(t *testing.T) {
 	m.editSpecialist = "design"
 	m.editArea.SetValue("draft body")
 	renderAndScan(m)
-	if cmd := m.handleMouse(clickCenter(t, ZoneEditCancel)); cmd != nil {
+	if cmd := m.handleMouse(clickCenter(t, m, ZoneEditCancel)); cmd != nil {
 		t.Fatalf("Cancel click should not emit a command, got %T", cmd())
 	}
 	if m.editing {

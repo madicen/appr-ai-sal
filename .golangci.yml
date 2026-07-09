@@ -2,7 +2,6 @@
 #
 # Modest, non-breaking starting set (grow later — see docs/IMPROVEMENT_PLAN.md
 # Phase 0.1). govet / staticcheck / unused / errcheck / ineffassign / misspell.
-version: "2"
 
 linters:
   enable:
