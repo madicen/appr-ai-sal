@@ -89,16 +89,6 @@ func (p *themePanel) openSwatchIndex() int {
 	return -1
 }
 
-// indexForKey returns the swatch index for k, or -1 if k is unknown.
-func (p *themePanel) indexForKey(k theme.Key) int {
-	for i, sw := range p.swatches {
-		if sw.key == k {
-			return i
-		}
-	}
-	return -1
-}
-
 // advanceFocus moves the focused swatch by delta (wrapping). The focus
 // indicator is the SwatchPicker's bright arrow when SetFocused(true).
 func (p *themePanel) advanceFocus(delta int) {

@@ -12,29 +12,8 @@ import (
 
 	"github.com/madicen/appr-ai-sal/internal/tui/keys"
 	"github.com/madicen/appr-ai-sal/internal/tui/styles"
-	"github.com/madicen/appr-ai-sal/internal/tui/util"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
-
-// renderDescriptionPane renders the PR description as the centre pane's
-// full content. Body is treated as markdown — GitHub PR descriptions
-// always are — and run through glamour so headings, lists, code fences,
-// and links render with proper styling instead of as raw `# foo` text.
-// An empty body falls back to a dim hint so the user knows the PR has no
-// description rather than thinking the pane failed to load.
-func renderDescriptionPane(body string, width int) string {
-	width = max(8, width)
-	var b strings.Builder
-	b.WriteString(styles.BoldStyle.Render("Description") + "  " +
-		zone.Mark(zones.DescriptionToggle, styles.DimStyle.Render(" hide (g) ")) + "\n\n")
-	body = strings.TrimSpace(body)
-	if body == "" {
-		b.WriteString(styles.DimStyle.Render("(this PR has no description)"))
-		return b.String()
-	}
-	b.WriteString(util.RenderMarkdownIndented(body, width, 0))
-	return b.String()
-}
 
 func (m *Model) View() string {
 	if m.width == 0 || m.height == 0 {
@@ -276,21 +255,6 @@ func humanSince(t time.Time) string {
 	default:
 		return t.Format("2006-01-02")
 	}
-}
-
-// truncWidth truncates by byte length (not terminal cells). Safe only for plain
-// ASCII; strings with ANSI or wide runes need ansi.Truncate.
-func truncWidth(s string, w int) string {
-	if w <= 0 {
-		return ""
-	}
-	if len(s) <= w {
-		return s
-	}
-	if w <= 1 {
-		return "…"
-	}
-	return s[:w-1] + "…"
 }
 
 func max(a, b int) int {

@@ -614,20 +614,14 @@ func countTSExports(lines []string) (int, int) {
 }
 
 func hasJSDocAbove(lines []string, i int) bool {
-	for j := i - 1; j >= 0; j-- {
-		t := strings.TrimSpace(lines[j])
-		if t == "" {
-			return false
-		}
-		if strings.HasPrefix(t, "//") {
-			return true
-		}
-		if strings.HasPrefix(t, "*") || strings.HasPrefix(t, "*/") || strings.HasPrefix(t, "/**") || strings.HasPrefix(t, "/*") {
-			return true
-		}
+	if i <= 0 {
 		return false
 	}
-	return false
+	t := strings.TrimSpace(lines[i-1])
+	if strings.HasPrefix(t, "//") {
+		return true
+	}
+	return strings.HasPrefix(t, "*") || strings.HasPrefix(t, "*/") || strings.HasPrefix(t, "/**") || strings.HasPrefix(t, "/*")
 }
 
 func firstIdentifier(s string) string {
@@ -718,7 +712,7 @@ func BuildRepoWideEvidence(ctx context.Context, opts RepoWideEvidenceOptions) (*
 		}
 		visited++
 		ev.DirsSampled++
-		var sources, tests, docs []string
+		var sources, tests []string
 		hasDocGo := false
 		hasReadme := false
 		for _, e := range ents {
@@ -736,7 +730,6 @@ func BuildRepoWideEvidence(ctx context.Context, opts RepoWideEvidenceOptions) (*
 				tests = append(tests, rp)
 				ev.TotalTestFilesSampled++
 			case isDocName(name):
-				docs = append(docs, rp)
 				ev.TotalDocFilesSampled++
 				if isReadmeName(name) {
 					hasReadme = true

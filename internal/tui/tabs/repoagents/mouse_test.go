@@ -162,9 +162,7 @@ func TestMouseClickAddRepoOpensInputAndSaveAddsRepo(t *testing.T) {
 	m.addInput.SetValue("globex/engine")
 	renderAndScan(m)
 	cmd := m.handleMouse(clickCenter(t, m, ZoneAddRepoSave))
-	if cmd != nil {
-		// commitAddRepo can return a load command; that's fine.
-	}
+	_ = cmd // commitAddRepo can return a load command; that's fine.
 	if m.addingRepo {
 		t.Fatal("addingRepo should be reset after save click")
 	}

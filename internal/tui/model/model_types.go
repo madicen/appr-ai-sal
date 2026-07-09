@@ -180,11 +180,6 @@ type Model struct {
 	listClickAt        time.Time
 	listDoubleClickWin time.Duration
 
-	// Tree: same single-click-to-select / double-click-to-emphasise pattern as the list.
-	treeClickArmed bool
-	treeClickIndex int
-	treeClickAt    time.Time
-
 	// repoAgentsFreshnessCache backs the ctrl+b chip / status hint colouring
 	// so the renderer doesn't os.ReadFile on every frame. Entries are TTL'd
 	// (see repoAgentsFreshnessCacheTTL); the cache is also dropped wholesale

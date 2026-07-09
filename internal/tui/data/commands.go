@@ -262,14 +262,7 @@ func existingCommentsMsg(b Backend, ref gh.Ref) tea.Msg {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ec := b.ExistingComments(ctx, ref)
-	return ExistingPRCommentsMsg{
-		Comments:  ec.Comments,
-		Threads:   ec.Threads,
-		Viewer:    ec.Viewer,
-		Prior:     ec.Prior,
-		ListErr:   ec.ListErr,
-		ViewerErr: ec.ViewerErr,
-	}
+	return ExistingPRCommentsMsg(ec)
 }
 
 // PostReviewCmd posts the full draft review when dryRun is false; otherwise

@@ -120,7 +120,9 @@ func TestStaleScan(t *testing.T) {
 }
 
 func TestSourceHashStableAndSensitive(t *testing.T) {
-	if SourceHash("a", "b") != SourceHash("a", "b") {
+	a := SourceHash("a", "b")
+	b := SourceHash("a", "b")
+	if a != b {
 		t.Fatalf("SourceHash not stable")
 	}
 	if SourceHash("a", "b") == SourceHash("ab") {

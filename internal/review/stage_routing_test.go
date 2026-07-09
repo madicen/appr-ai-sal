@@ -60,11 +60,6 @@ func sequentialRepoConfig() *repoconfig.Config {
 	return rc
 }
 
-func drainProgress(out chan Progress) {
-	for range out {
-	}
-}
-
 // TestPerStageModelRouting is the Q7 per-stage routing acceptance test: with
 // stage_models {security: opus, default: haiku}, security routes to opus and
 // every other specialist to haiku.

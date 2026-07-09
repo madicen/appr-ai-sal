@@ -2,8 +2,6 @@
 package detail
 
 import (
-	"time"
-
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -86,10 +84,6 @@ type Model struct {
 	controlsProfileDD    *dropdown.Host
 	controlsProfileDDRow int
 	controlsProfileDDCol int
-
-	treeClickArmed bool
-	treeClickIndex int
-	treeClickAt    time.Time
 }
 
 // New constructs the detail tab wired to the root host.

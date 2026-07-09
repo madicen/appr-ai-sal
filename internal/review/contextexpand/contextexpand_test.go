@@ -158,7 +158,7 @@ func TestExpandEmptyInputs(t *testing.T) {
 	if Expand(context.Background(), Options{}).HasContent() {
 		t.Error("zero Options should yield no content")
 	}
-	if Expand(nil, Options{Worktree: "/nope", Changed: nil}).HasContent() {
+	if Expand(context.TODO(), Options{Worktree: "/nope", Changed: nil}).HasContent() {
 		t.Error("no changed files should yield no content")
 	}
 }

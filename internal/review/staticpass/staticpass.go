@@ -143,20 +143,6 @@ func (r Result) FormatterCleanFiles() map[string]bool {
 	return out
 }
 
-// ranTools / cleanTools / unavailableTools drive the prompt sections.
-func (r Result) ranWithFindings() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, t := range r.Tools {
-		if t.Ran && len(t.Annotations) > 0 && !seen[t.Tool] {
-			seen[t.Tool] = true
-			out = append(out, t.Tool)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
 func (r Result) ranClean() []string {
 	var out []string
 	for _, t := range r.Tools {

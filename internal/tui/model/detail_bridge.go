@@ -273,10 +273,6 @@ func (m *Model) detailToggleControls() {
 	}
 }
 
-func (m *Model) reopenApprovalIfPossible() (tea.Model, tea.Cmd) {
-	return m, m.reopenApproval()
-}
-
 func (m *Model) toggleParallelSpecialists() error {
 	cfg, err := repoconfig.Load()
 	if err != nil {

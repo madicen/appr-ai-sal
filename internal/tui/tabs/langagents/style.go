@@ -31,10 +31,6 @@ var (
 				Background(theme.Adaptive(theme.RoleSelectionBg)).
 				Foreground(theme.Adaptive(theme.RoleSelectionFg))
 
-	chipBundled = lipgloss.NewStyle().
-			Foreground(theme.Adaptive(theme.RoleSuccess)).
-			Bold(true)
-
 	chipCached = lipgloss.NewStyle().
 			Foreground(theme.Adaptive(theme.RoleInfo))
 

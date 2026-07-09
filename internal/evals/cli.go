@@ -122,10 +122,6 @@ func runWithPromptDir(ctx context.Context, cfg *aiconfig.Config, cases []Case, l
 // and why. A provider explicitly selected via env/flag that then fails
 // validation is still a skip (not an error) so CI stays green without a model.
 func skipReason(cfg *aiconfig.Config) (string, bool) {
-	if os.Getenv("APPR_AI_SAL_AI_PROVIDER") == "" && cfg.Provider == aiconfig.ProviderClaude && cfg.Model == "" {
-		// The default (claude, no explicit selection) — only run if the CLI is
-		// actually present; ValidateForProvider covers that below.
-	}
 	if err := cfg.ValidateForProvider(); err != nil {
 		return "provider not configured: " + err.Error(), true
 	}

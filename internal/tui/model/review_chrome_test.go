@@ -255,7 +255,6 @@ func TestReviewOverlayClickThroughChromeDeliversMouseToContent(t *testing.T) {
 	m.overlayStack.Update(tea.MouseMsg{
 		X:      clickX,
 		Y:      clickY,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	})

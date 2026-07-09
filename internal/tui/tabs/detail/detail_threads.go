@@ -41,19 +41,6 @@ func (m *Model) ensureThreadsCmd() tea.Cmd {
 	return data.FetchThreadsCmd(m.currentRef(), m.host.Demo())
 }
 
-// applyThreadsLoaded stores fetched inline comments + threads on the model
-// (Phase 5 item 8) and refreshes the diff so any newly-toggled comment
-// annotations appear. Called from the root ThreadsLoadedMsg handler.
-func (m *Model) applyThreadsLoaded(msg data.ThreadsLoadedMsg) {
-	m.prComments = msg.Comments
-	m.prThreads = msg.Threads
-	m.threadsLoaded = true
-	m.threadsLoading = false
-	if true {
-		m.refreshDetailViews()
-	}
-}
-
 // toggleThreads flips inline-comment rendering in the diff and lazily fetches
 // the comment data on first enable.
 func (m *Model) toggleThreads() tea.Cmd {
@@ -178,18 +165,6 @@ func (m *Model) handleReplyKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	m.replyInput, cmd = m.replyInput.Update(msg)
 	m.refreshDetailViews()
 	return m, cmd
-}
-
-// applyThreadReply records the outcome of a reply post (Phase 5 item 8.3).
-func (m *Model) applyThreadReply(msg data.ThreadReplyPostedMsg) {
-	if msg.Err != nil {
-		m.replyStatus = "reply failed: " + msg.Err.Error()
-	} else {
-		m.replyStatus = "reply posted"
-	}
-	if true {
-		m.refreshDetailViews()
-	}
 }
 
 // renderHistoryPane renders the browsable review-history pane: a list of the

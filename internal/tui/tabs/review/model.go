@@ -1090,15 +1090,6 @@ func (m *Model) routeCardsToThreads() {
 	}
 }
 
-func (m *Model) firstPendingCardIndex() int {
-	for i := range m.cards {
-		if m.cards[i].state == cardPending {
-			return i
-		}
-	}
-	return len(m.cards)
-}
-
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:

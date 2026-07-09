@@ -56,7 +56,8 @@ var ModalChrome = lipgloss.NewStyle().
 // a sane lower/upper bound) so lipgloss layout matches bubblezone.Scan
 // (both walk the same string).
 func ModalFrameSized(outerWidth int) lipgloss.Style {
-	return ModalChrome.Copy().Width(util.Clamp(outerWidth, 40, 120))
+	s := ModalChrome
+	return s.Width(util.Clamp(outerWidth, 40, 120))
 }
 
 // bulkYesKeys / bulkNoKeys are the keyboard answers for the bulk-post

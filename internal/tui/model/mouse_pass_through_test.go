@@ -191,7 +191,6 @@ func TestReviewOverlayBodyClickReachesReviewModelViaFullUpdate(t *testing.T) {
 	clickMsg := tea.MouseMsg{
 		X:      clickX,
 		Y:      clickY,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
@@ -238,7 +237,6 @@ func TestReviewOverlayBodyClickReachesReviewModelViaFullUpdate(t *testing.T) {
 	secondClick := tea.MouseMsg{
 		X:      (secondZone.StartX + secondZone.EndX) / 2,
 		Y:      (secondZone.StartY + secondZone.EndY) / 2,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
@@ -282,7 +280,6 @@ func TestReviewOverlayBodyClickAfterMinimizeRestore(t *testing.T) {
 	minimizeClick := tea.MouseMsg{
 		X:      leftPos + regs.MinimizeX + regs.MinimizeW/2,
 		Y:      topPos + regs.MinimizeY,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
@@ -304,7 +301,6 @@ func TestReviewOverlayBodyClickAfterMinimizeRestore(t *testing.T) {
 	restoreClick := tea.MouseMsg{
 		X:      leftPos + regs.MinimizeX + regs.MinimizeW/2,
 		Y:      topPos + regs.MinimizeY,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}
@@ -325,7 +321,6 @@ func TestReviewOverlayBodyClickAfterMinimizeRestore(t *testing.T) {
 	bodyClick := tea.MouseMsg{
 		X:      (target.StartX + target.EndX) / 2,
 		Y:      (target.StartY + target.EndY) / 2,
-		Type:   tea.MouseLeft,
 		Action: tea.MouseActionPress,
 		Button: tea.MouseButtonLeft,
 	}

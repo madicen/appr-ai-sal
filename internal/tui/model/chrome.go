@@ -4,16 +4,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-func clampInt(v, lo, hi int) int {
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
 func (m *Model) relayout() {
 	if m.width == 0 || m.height == 0 {
 		return

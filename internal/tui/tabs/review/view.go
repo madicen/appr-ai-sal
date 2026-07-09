@@ -178,7 +178,7 @@ func (m *Model) renderTabBar(width int) string {
 	widths := make([]int, len(m.tabs))
 	for i, t := range m.tabs {
 		label := m.tabStatusGlyph(t) + " " + tabShortLabel(t)
-		styled := " " + label + " "
+		var styled string
 		if i == m.activeTab {
 			styled = styles.BoldStyle.Render("[" + label + "]")
 		} else {

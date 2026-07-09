@@ -432,10 +432,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = msg.Err
 			return m, nil
 		}
-		merged := append([]string{}, m.repos...)
-		for _, r := range msg.Repos {
-			merged = append(merged, r)
-		}
+		merged := append(append([]string{}, m.repos...), msg.Repos...)
 		m.repos = sanitizeRepos(merged)
 		// Re-apply the initial focus, if any. sanitizeRepos re-sorts the
 		// merged list alphabetically, so the numeric repoIdx that was

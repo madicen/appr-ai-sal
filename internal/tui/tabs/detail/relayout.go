@@ -48,16 +48,12 @@ func (m *Model) relayout() {
 		m.focusedPane = paneDiff
 	}
 
-	diffOuterW := w - treeW
+	diffAvail := w - treeW
 	if showControls {
-		diffOuterW = w - treeW - controlsOuterW
+		diffAvail -= controlsOuterW
 	}
-	if diffOuterW < 12 {
+	if diffAvail < 12 {
 		treeW = 12
-		diffOuterW = w - treeW
-		if showControls {
-			diffOuterW -= controlsOuterW
-		}
 	}
 	m.treeView.Width = max(8, treeW-phs)
 	treeOuter := m.treeView.Width + phs
