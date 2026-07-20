@@ -1,6 +1,7 @@
 package detail
 
 import (
+	"fmt"
 	"runtime"
 	"strings"
 	"testing"
@@ -192,5 +193,60 @@ func TestDetailMouseBottomDiffPaneFocusesDiff(t *testing.T) {
 	m2 := out.(*Model)
 	if m2.focusedPane != paneDiff {
 		t.Fatalf("focusedPane got %v want paneDiff", m2.focusedPane)
+	}
+}
+
+// tallDiff is tall enough that the diff viewport can scroll (many added lines).
+func tallDiff(n int) string {
+	var b strings.Builder
+	b.WriteString("diff --git a/big.go b/big.go\n--- /dev/null\n+++ b/big.go\n")
+	fmt.Fprintf(&b, "@@ -0,0 +1,%d @@\n", n)
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&b, "+line %d\n", i)
+	}
+	return b.String()
+}
+
+// Wheel over the diff pane must scroll via Model.Update — the root routes
+// mouse through Update, which used to hardcode wheel=false and silently
+// drop every wheel tick (large diffs could not be scrolled with the mouse).
+func TestDetailMouseWheelScrollsDiffViaUpdate(t *testing.T) {
+	zone.NewGlobal()
+	host := newTestHost(160, 42)
+	host.pr = &gh.PR{
+		Repository: "o/r", Number: 1, Title: "title", Author: "a",
+		BaseRef: "main", HeadRef: "feat", URL: "https://example.com", HeadSHA: "abc",
+	}
+	host.diff = review.ParseDiff(tallDiff(80))
+	m := New(host, keys.Default())
+	m.Resize(host.Width(), host.ChromeBodyHeight())
+	m.OnPRLoaded(host.diff, nil)
+	if len(m.treeRows) == 0 {
+		t.Fatal("expected tree rows")
+	}
+	m.selectedFilePath = m.treeRows[0].Path
+	m.focusedPane = paneDiff
+	m.RefreshViews()
+	_ = zone.Scan(m.View())
+	waitBubbleZone(t, zones.PaneDiff)
+
+	if m.diffView.TotalLineCount() <= m.diffView.Height {
+		t.Fatalf("precondition: diff must be taller than viewport (lines=%d height=%d)",
+			m.diffView.TotalLineCount(), m.diffView.Height)
+	}
+	before := m.diffView.YOffset
+
+	z := zone.Get(zones.PaneDiff)
+	msg := tea.MouseMsg{
+		X:      (z.StartX + z.EndX) / 2,
+		Y:      (z.StartY + z.EndY) / 2,
+		Action: tea.MouseActionPress,
+		Button: tea.MouseButtonWheelDown,
+	}
+	out, _ := m.Update(msg)
+	m2 := out.(*Model)
+	if m2.diffView.YOffset <= before {
+		t.Fatalf("wheel down via Update should increase YOffset; before=%d after=%d",
+			before, m2.diffView.YOffset)
 	}
 }
