@@ -67,13 +67,17 @@ func seedGoldenFixtures(t *testing.T) {
 	t.Setenv("APPR_AI_SAL_CACHE_DIR", cacheDir)
 	t.Setenv("APPR_AI_SAL_CONFIG_DIR", cfgDir)
 
-	generatedAt := time.Date(2026, 5, 13, 22, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
+	// Repo agents: older than repoagents.DefaultStaleAfter (30d) → "stale".
+	repoGeneratedAt := now.Add(-45 * 24 * time.Hour)
+	// Lang brief: younger than langagents.DefaultStaleAfter (60d) → "fresh".
+	langGeneratedAt := now.Add(-time.Hour)
 	agents := map[string]repoagentsstore.Agent{}
 	for _, sp := range repoagentsstore.Specialists {
 		agents[sp] = repoagentsstore.Agent{
 			Specialist:  sp,
 			Context:     "# " + sp + " brief\n",
-			GeneratedAt: generatedAt,
+			GeneratedAt: repoGeneratedAt,
 			Model:       "demo",
 			Provider:    "demo",
 		}
@@ -88,7 +92,7 @@ func seedGoldenFixtures(t *testing.T) {
 			"go": {
 				Language:    "go",
 				Context:     "# Go language brief\n",
-				GeneratedAt: generatedAt,
+				GeneratedAt: langGeneratedAt,
 				Model:       "demo",
 				Provider:    "demo",
 			},

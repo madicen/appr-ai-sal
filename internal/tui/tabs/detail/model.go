@@ -116,7 +116,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		_, cmd := m.handleKey(msg)
 		return m, cmd
 	case tea.MouseMsg:
-		_, cmd := m.handleMouse(msg, false)
+		_, cmd := m.handleMouse(msg, tea.MouseEvent(msg).IsWheel())
 		return m, cmd
 	case tea.WindowSizeMsg:
 		m.Resize(msg.Width, 0)
