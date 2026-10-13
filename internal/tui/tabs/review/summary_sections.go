@@ -94,6 +94,25 @@ func collapsedSectionPreview(md string, width int) string {
 	return strings.Join(out, "\n")
 }
 
+// expandedSectionBody renders effective markdown as raw text: each source line
+// is prefixed with indentCols spaces and hard-wrapped to rowW (no glamour).
+func expandedSectionBody(md string, rowW, indentCols int) string {
+	prefix := strings.Repeat(" ", indentCols)
+	var b strings.Builder
+	for i, ln := range strings.Split(md, "\n") {
+		if i > 0 {
+			b.WriteByte('\n')
+		}
+		for j, wl := range strings.Split(util.WrapForViewport(prefix+ln, rowW), "\n") {
+			if j > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(wl)
+		}
+	}
+	return b.String()
+}
+
 // renderSummarySectionCard renders one section card. idx is its position in
 // m.summarySections (used for the focus marker).
 func (m *Model) renderSummarySectionCard(idx int, s review.BodySection, rowW int) string {
@@ -144,7 +163,7 @@ func (m *Model) renderSummarySectionCard(idx int, s review.BodySection, rowW int
 	b.WriteString(row + "\n")
 	md := m.effectiveSectionMarkdown(s)
 	if expanded {
-		body := util.RenderMarkdownIndented(md, rowW, 4)
+		body := expandedSectionBody(md, rowW, 4)
 		if !included {
 			body = styles.DimStyle.Render(body)
 		}

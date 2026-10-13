@@ -146,6 +146,13 @@ func TestRenderSummaryBodyShowsSectionCards(t *testing.T) {
 	if !strings.Contains(out, "line4") || !strings.Contains(out, "▾") {
 		t.Errorf("expanded card should show full edited body:\n%s", out)
 	}
+
+	// Expanded headline shows raw markdown markers, not glamour-rendered text.
+	ro.summaryExpanded["headline"] = true
+	out = ro.renderSummaryBody()
+	if !strings.Contains(out, "## ") {
+		t.Errorf("expanded section should show raw markdown (## headline):\n%s", out)
+	}
 }
 
 func TestHelpForPhaseSummaryListsSectionKeys(t *testing.T) {

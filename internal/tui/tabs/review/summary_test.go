@@ -31,10 +31,9 @@ func TestReviewOverlaySummaryPhaseShowsFullMarkdownBody(t *testing.T) {
 	if strings.Contains(out, "more lines") {
 		t.Fatal("summary preview should not truncate with a line budget cap")
 	}
-	// Glamour word-wraps the markdown so a single phrase can break across
-	// lines; assert on a short substring that won't get split, and on a high
-	// occurrence count so we know the full body — not just the first chunk —
-	// reached the preview.
+	// Raw markdown is hard-wrapped to the row width; assert on a short
+	// substring and a high occurrence count so the full body — not just the
+	// first chunk — reached the preview.
 	if !strings.Contains(out, "Review") {
 		t.Fatal("expected body text to appear in preview")
 	}
