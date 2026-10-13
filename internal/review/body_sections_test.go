@@ -123,3 +123,140 @@ func TestComposeBodyPromptTopics(t *testing.T) {
 		t.Fatalf("no topics should omit heading/fence:\n%s", got)
 	}
 }
+
+func TestComposeBodyExcludesPromptTopic(t *testing.T) {
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{{
+			Specialist: "docs",
+			Findings:   []Finding{{Path: "a.go", Line: 1, Comment: "x", Severity: SeverityError}},
+		}},
+		VibeCoach: &VibeCoachResult{
+			Verdict: VibeVerdictRequestChanges,
+			Summary: "Needs work.",
+			Prompts: []AuthorPrompt{
+				{Title: "One", AgentPrompt: "do one"},
+				{Title: "Two", AgentPrompt: "do two"},
+			},
+		},
+	}
+	sections := d.BodySections()
+	var promptIDs []string
+	for _, s := range sections {
+		if s.Kind == BodySectionPromptTopic {
+			promptIDs = append(promptIDs, s.ID)
+		}
+	}
+	if len(promptIDs) < 2 {
+		t.Fatalf("need 2 prompt topics, got %v", promptIDs)
+	}
+	ov := map[string]BodySectionOverride{
+		promptIDs[0]: {Included: false},
+	}
+	body := ComposeBody(sections, ov)
+	if strings.Contains(body, "do one") {
+		t.Fatalf("excluded topic still present:\n%s", body)
+	}
+	if !strings.Contains(body, "do two") {
+		t.Fatalf("kept topic missing:\n%s", body)
+	}
+	if !strings.Contains(body, "### 🤖 Prompt for your AI assistant") {
+		t.Fatalf("prompt wrapper missing:\n%s", body)
+	}
+}
+
+func TestComposeBodyExcludesAllPromptTopicsOmitsWrapper(t *testing.T) {
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{{
+			Specialist: "docs",
+			Findings:   []Finding{{Path: "a.go", Line: 1, Comment: "x", Severity: SeverityError}},
+		}},
+		VibeCoach: &VibeCoachResult{
+			Verdict: VibeVerdictRequestChanges,
+			Summary: "Needs work.",
+			Prompts: []AuthorPrompt{
+				{Title: "One", AgentPrompt: "do one"},
+				{Title: "Two", AgentPrompt: "do two"},
+			},
+		},
+	}
+	sections := d.BodySections()
+	ov := map[string]BodySectionOverride{}
+	for _, s := range sections {
+		if s.Kind == BodySectionPromptTopic {
+			ov[s.ID] = BodySectionOverride{Included: false}
+		}
+	}
+	body := ComposeBody(sections, ov)
+	if strings.Contains(body, "### 🤖 Prompt for your AI assistant") {
+		t.Fatalf("prompt heading should be omitted:\n%s", body)
+	}
+	if strings.Contains(body, "```text") {
+		t.Fatalf("prompt fence should be omitted:\n%s", body)
+	}
+	if strings.Contains(body, "do one") || strings.Contains(body, "do two") {
+		t.Fatalf("excluded topics still present:\n%s", body)
+	}
+}
+
+func TestComposeBodyExcludesPRWideNote(t *testing.T) {
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{{
+			Specialist: "docs",
+			Findings: []Finding{
+				{Comment: "first gap", Severity: SeverityWarning},
+				{Comment: "second gap", Severity: SeverityWarning},
+			},
+		}},
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictComment, Summary: "Mostly fine."},
+	}
+	sections := d.BodySections()
+	body := ComposeBody(sections, map[string]BodySectionOverride{
+		"prwide:docs:0": {Included: false},
+	})
+	if !strings.Contains(body, "### PR-wide notes") {
+		t.Fatalf("heading should remain:\n%s", body)
+	}
+	if strings.Contains(body, "first gap") {
+		t.Fatalf("excluded bullet still present:\n%s", body)
+	}
+	if !strings.Contains(body, "second gap") {
+		t.Fatalf("kept bullet missing:\n%s", body)
+	}
+}
+
+func TestComposeBodyEditOverride(t *testing.T) {
+	d := &Draft{
+		PR:          &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{{Specialist: "docs", Findings: []Finding{{Path: "a.go", Line: 1, Comment: "x", Severity: SeverityInfo}}}},
+		VibeCoach:   &VibeCoachResult{Verdict: VibeVerdictComment, Summary: "Original summary."},
+	}
+	sections := d.BodySections()
+	ov := map[string]BodySectionOverride{
+		"headline": {Included: true, Edited: "## appr-ai-sal summary — 💬 Comment only\n\nEdited TL;DR.\n\n"},
+	}
+	body := ComposeBody(sections, ov)
+	if !strings.Contains(body, "Edited TL;DR.") || strings.Contains(body, "Original summary.") {
+		t.Fatalf("edit not applied:\n%s", body)
+	}
+}
+
+func TestComposeBodyCautionAlwaysIncluded(t *testing.T) {
+	d := &Draft{
+		PR:          &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{{Specialist: "docs", Findings: []Finding{{Path: "a.go", Line: 1, Comment: "x", Severity: SeverityInfo}}}},
+		VibeCoach:   &VibeCoachResult{Verdict: VibeVerdictComment, Summary: "S"},
+	}
+	ov := map[string]BodySectionOverride{
+		"caution": {Included: false, Edited: "nope"},
+	}
+	body := ComposeBody(d.BodySections(), ov)
+	if !strings.Contains(body, "> [!CAUTION]") || !strings.Contains(body, "produced by **appr-ai-sal**") {
+		t.Fatalf("caution must remain:\n%s", body)
+	}
+	if strings.Contains(body, "nope") {
+		t.Fatalf("caution edit must be ignored:\n%s", body)
+	}
+}
