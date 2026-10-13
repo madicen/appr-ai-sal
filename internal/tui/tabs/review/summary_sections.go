@@ -28,13 +28,17 @@ func (m *Model) syncSummarySections() {
 		return
 	}
 	next := m.draft.BodySections()
-	alive := make(map[string]struct{}, len(next))
+	alive := make(map[string]string, len(next))
 	for _, s := range next {
-		alive[s.ID] = struct{}{}
+		alive[s.ID] = s.Markdown
 	}
 	if m.summaryOverrides != nil {
-		for id := range m.summaryOverrides {
-			if _, ok := alive[id]; !ok {
+		for id, ov := range m.summaryOverrides {
+			md, ok := alive[id]
+			// Drop overrides whose section vanished or whose generated
+			// content changed since the override was made (positional IDs can
+			// be reused for different content after a re-sync).
+			if !ok || (ov.BaseMarkdown != "" && ov.BaseMarkdown != md) {
 				delete(m.summaryOverrides, id)
 			}
 		}
@@ -50,13 +54,9 @@ func (m *Model) syncSummarySections() {
 	}
 }
 
-// resetSummaryEdits drops every reviewer summary-section edit and clears the
-// draft's posted-body override so a composed body cannot leak into a later
-// post (leaving the overlay, adopting a new draft).
+// resetSummaryEdits drops every reviewer summary-section edit (session UI
+// state) when leaving the overlay or adopting a new draft.
 func (m *Model) resetSummaryEdits() {
-	if m.draft != nil {
-		m.draft.PostedBodyOverride = ""
-	}
 	m.summarySections = nil
 	m.summaryOverrides = nil
 	m.summaryExpanded = nil
@@ -277,6 +277,7 @@ func (m *Model) toggleSummaryInclude(idx int) {
 	}
 	ov := m.summaryOverrides[s.ID]
 	ov.Included = !m.sectionIncluded(s)
+	ov.BaseMarkdown = s.Markdown
 	if m.summaryOverrides == nil {
 		m.summaryOverrides = map[string]review.BodySectionOverride{}
 	}
@@ -338,10 +339,18 @@ func (m *Model) closeSummaryEditor() (tea.Model, tea.Cmd) {
 			if m.summaryOverrides == nil {
 				m.summaryOverrides = map[string]review.BodySectionOverride{}
 			}
-			m.summaryOverrides[s.ID] = review.BodySectionOverride{
-				Included: m.sectionIncluded(s),
-				Edited:   m.summaryInput.Value(),
+			ov := review.BodySectionOverride{
+				Included:     m.sectionIncluded(s),
+				Edited:       m.summaryInput.Value(),
+				BaseMarkdown: s.Markdown,
 			}
+			// Saving an empty textarea means "publish nothing for this
+			// section": exclude it rather than reverting to the original.
+			if strings.TrimSpace(ov.Edited) == "" {
+				ov.Included = false
+				ov.Edited = ""
+			}
+			m.summaryOverrides[s.ID] = ov
 			break
 		}
 	}

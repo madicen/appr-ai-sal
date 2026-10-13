@@ -260,3 +260,23 @@ func TestComposeBodyCautionAlwaysIncluded(t *testing.T) {
 		t.Fatalf("caution edit must be ignored:\n%s", body)
 	}
 }
+
+func TestBodySectionsPRWideIDsArePerSpecialist(t *testing.T) {
+	d := &Draft{
+		PR: &gh.PR{HeadSHA: "abc"},
+		Specialists: []SpecialistResult{
+			{Specialist: "docs", Findings: []Finding{{Comment: "d0", Severity: SeverityWarning}}},
+			{Specialist: "design", Findings: []Finding{{Comment: "g0", Severity: SeverityWarning}, {Comment: "g1", Severity: SeverityWarning}}},
+		},
+		VibeCoach: &VibeCoachResult{Verdict: VibeVerdictComment, Summary: "ok"},
+	}
+	ids := map[string]bool{}
+	for _, s := range d.BodySections() {
+		ids[s.ID] = true
+	}
+	for _, id := range []string{"prwide:docs:0", "prwide:design:0", "prwide:design:1"} {
+		if !ids[id] {
+			t.Errorf("missing per-specialist id %q in %v", id, ids)
+		}
+	}
+}

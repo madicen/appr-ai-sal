@@ -41,6 +41,12 @@ type BodySection struct {
 type BodySectionOverride struct {
 	Included bool
 	Edited   string // empty means use section.Markdown
+
+	// BaseMarkdown is the section's generated Markdown when the override was
+	// created. The TUI drops the override once the live section's Markdown no
+	// longer matches, so positional IDs can't carry edits onto different
+	// content after a re-sync. Empty means "not tracked" (never dropped).
+	BaseMarkdown string
 }
 
 const (
@@ -226,7 +232,12 @@ func (d *Draft) BodySections() []BodySection {
 	}
 
 	// 5. Substantive findings that live in the body rather than on the diff.
-	for i, item := range prWide {
+	// Indices are per specialist so one specialist's findings changing does
+	// not shift the IDs (and thus reviewer overrides) of another's.
+	prWideIdx := map[string]int{}
+	for _, item := range prWide {
+		i := prWideIdx[item.specialist]
+		prWideIdx[item.specialist]++
 		out = append(out, BodySection{
 			ID:       "prwide:" + item.specialist + ":" + strconv.Itoa(i),
 			Kind:     BodySectionPRWideNote,
@@ -234,7 +245,10 @@ func (d *Draft) BodySections() []BodySection {
 			Markdown: "- **" + string(item.f.Severity) + " · " + item.specialist + ":** " + item.f.Comment + "\n",
 		})
 	}
-	for i, item := range demotedIncluded {
+	demotedIdx := map[string]int{}
+	for _, item := range demotedIncluded {
+		i := demotedIdx[item.specialist]
+		demotedIdx[item.specialist]++
 		out = append(out, BodySection{
 			ID:       "demoted:" + item.specialist + ":" + strconv.Itoa(i),
 			Kind:     BodySectionDemotedNote,

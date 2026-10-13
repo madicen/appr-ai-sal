@@ -467,27 +467,100 @@ func TestActPostSummaryUsesComposedBody(t *testing.T) {
 	}
 }
 
-func TestAdoptDraftClearsPostedBodyOverride(t *testing.T) {
+func TestAdoptDraftResetsSummaryOverrides(t *testing.T) {
 	ro := New(120, 44, true, false, false, nil, false)
 	d := newDeferTestDraft(t)
-	d.PostedBodyOverride = "stale"
 	ro.summaryOverrides = map[string]review.BodySectionOverride{"x": {}}
 	ro.AdoptDraft(d)
-	if d.PostedBodyOverride != "" {
-		t.Errorf("AdoptDraft should clear PostedBodyOverride, got %q", d.PostedBodyOverride)
-	}
 	if len(ro.summaryOverrides) != 0 {
 		t.Errorf("AdoptDraft should reset summary overrides")
 	}
 }
 
-func TestCloseCmdClearsPostedBodyOverride(t *testing.T) {
+func TestCloseCmdResetsSummaryOverrides(t *testing.T) {
 	ro := New(120, 44, true, false, false, nil, true)
-	d := newDeferTestDraft(t)
-	ro.AdoptDraft(d)
-	d.PostedBodyOverride = "stale"
+	ro.AdoptDraft(newDeferTestDraft(t))
+	ro.summaryOverrides = map[string]review.BodySectionOverride{"x": {}}
 	ro.closeCmd()
-	if d.PostedBodyOverride != "" {
-		t.Errorf("closeCmd should clear PostedBodyOverride, got %q", d.PostedBodyOverride)
+	if len(ro.summaryOverrides) != 0 {
+		t.Errorf("closeCmd should reset summary overrides")
 	}
+}
+
+func TestActPostSummaryDoesNotMutateSharedDraft(t *testing.T) {
+	ro := New(120, 44, true, false, false, nil, false)
+	d := newDeferTestDraft(t)
+	d.VibeCoach.Prompts = []review.AuthorPrompt{{Title: "One", AgentPrompt: "do one"}}
+	ro.AdoptDraft(d)
+	ro.phase = phaseSummary
+	ro.syncSummarySections()
+	if _, cmd := ro.actPostSummary(); cmd == nil {
+		t.Fatal("expected a post cmd")
+	}
+	if d.PostedBodyOverride != "" {
+		t.Errorf("actPostSummary must not set PostedBodyOverride on the live draft, got %q", d.PostedBodyOverride)
+	}
+}
+
+func TestSyncSummarySectionsDropsOverrideWhenContentChanges(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil, false)
+	d := newDeferTestDraft(t)
+	d.VibeCoach.Prompts = []review.AuthorPrompt{
+		{Title: "One", AgentPrompt: "do one"},
+		{Title: "Two", AgentPrompt: "do two"},
+	}
+	ro.AdoptDraft(d)
+	ro.syncSummarySections()
+
+	// Exclude prompt:0 through the real toggle path so BaseMarkdown is stored.
+	ro.toggleSummaryInclude(indexOfSection(t, ro, "prompt:0"))
+	if ro.sectionIncluded(ro.summarySections[indexOfSection(t, ro, "prompt:0")]) {
+		t.Fatal("prompt:0 should be excluded")
+	}
+
+	// Re-sync with unchanged content keeps the override.
+	ro.syncSummarySections()
+	if _, ok := ro.summaryOverrides["prompt:0"]; !ok {
+		t.Fatal("override should survive a re-sync with unchanged content")
+	}
+
+	// Content at prompt:0 changes; the stale exclusion must not apply.
+	d.VibeCoach.Prompts[0] = review.AuthorPrompt{Title: "Different", AgentPrompt: "do different"}
+	ro.syncSummarySections()
+	if _, ok := ro.summaryOverrides["prompt:0"]; ok {
+		t.Errorf("override should be dropped when prompt:0 content changed")
+	}
+	if !strings.Contains(ro.composedSummaryBody(), "do different") {
+		t.Errorf("new prompt:0 content should be included:\n%s", ro.composedSummaryBody())
+	}
+}
+
+func TestCloseSummaryEditorEmptyExcludesSection(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil, false)
+	d := newDeferTestDraft(t)
+	d.VibeCoach.Prompts = []review.AuthorPrompt{{Title: "One", AgentPrompt: "do one"}}
+	ro.AdoptDraft(d)
+	ro.syncSummarySections()
+	idx := indexOfSection(t, ro, "prompt:0")
+	ro.openSummaryEditor(idx)
+	ro.summaryInput.SetValue("  \n ")
+	ro.closeSummaryEditor()
+	ov := ro.summaryOverrides["prompt:0"]
+	if ov.Included || ov.Edited != "" {
+		t.Errorf("empty save should exclude with empty Edited, got %+v", ov)
+	}
+	if strings.Contains(ro.composedSummaryBody(), "do one") {
+		t.Errorf("emptied section leaked into body")
+	}
+}
+
+func indexOfSection(t *testing.T, ro *Model, id string) int {
+	t.Helper()
+	for i, s := range ro.summarySections {
+		if s.ID == id {
+			return i
+		}
+	}
+	t.Fatalf("section %q not found", id)
+	return -1
 }

@@ -498,9 +498,11 @@ func (m *Model) actPostSummary() (tea.Model, tea.Cmd) {
 	// (REQUEST_CHANGES or COMMENT). The approve verdict is handled by
 	// actPostApprove which lives in its own phase. The body is the reviewer's
 	// composed section view (exclusions/edits applied); RenderBody and
-	// EffectiveReviewEventAndBody honour PostedBodyOverride.
-	m.draft.PostedBodyOverride = m.composedSummaryBody()
-	return m, data.PostReviewWithVerdictCmd(m.draft.Ref, m.draft, m.dryRun, m.demoMode, "")
+	// EffectiveReviewEventAndBody honour PostedBodyOverride. Post from a
+	// snapshot so the async cmd never reads state the UI may reset meanwhile.
+	dc := *m.draft
+	dc.PostedBodyOverride = m.composedSummaryBody()
+	return m, data.PostReviewWithVerdictCmd(m.draft.Ref, &dc, m.dryRun, m.demoMode, "")
 }
 
 // actPostApprove posts a GitHub review with event=APPROVE and an empty body.
