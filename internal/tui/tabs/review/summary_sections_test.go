@@ -104,3 +104,56 @@ func TestEnterSummarySyncsSections(t *testing.T) {
 		t.Fatalf("enterSummary should populate summarySections")
 	}
 }
+
+func TestRenderSummaryBodyShowsSectionCards(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil, false)
+	d := newDeferTestDraft(t)
+	d.VibeCoach.Prompts = []review.AuthorPrompt{
+		{Title: "One", AgentPrompt: "do one"},
+		{Title: "Two", AgentPrompt: "do two"},
+	}
+	ro.AdoptDraft(d)
+	ro.phase = phaseSummary
+	ro.rebuildBody()
+
+	out := ro.renderSummaryBody()
+	for _, want := range []string{"Headline & summary", "[x]", "AI disclosure", "Edit", "▸"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected %q in summary cards:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Markdown body GitHub will publish") {
+		t.Errorf("old glamour blob label should be gone:\n%s", out)
+	}
+	if !strings.Contains(out, "Post summary (y)") {
+		t.Errorf("footer buttons missing:\n%s", out)
+	}
+
+	// Exclude a section: its checkbox flips and the card is still listed.
+	ro.summaryOverrides["prompt:0"] = review.BodySectionOverride{Included: false}
+	out = ro.renderSummaryBody()
+	if !strings.Contains(out, "[ ]") {
+		t.Errorf("excluded section should show an empty checkbox:\n%s", out)
+	}
+
+	// Expanding shows full effective (edited) markdown.
+	ro.summaryOverrides["prompt:1"] = review.BodySectionOverride{Included: true, Edited: "EDITED-TWO-BODY\nline2\nline3\nline4"}
+	if strings.Contains(ro.renderSummaryBody(), "line4") {
+		t.Errorf("collapsed card should truncate body")
+	}
+	ro.summaryExpanded["prompt:1"] = true
+	out = ro.renderSummaryBody()
+	if !strings.Contains(out, "line4") || !strings.Contains(out, "▾") {
+		t.Errorf("expanded card should show full edited body:\n%s", out)
+	}
+}
+
+func TestHelpForPhaseSummaryListsSectionKeys(t *testing.T) {
+	ro := New(120, 44, false, false, false, nil, false)
+	ro.AdoptDraft(newDeferTestDraft(t))
+	ro.phase = phaseSummary
+	h := ro.helpForPhase()
+	if !strings.Contains(h, "space include") || !strings.Contains(h, "enter expand") || !strings.Contains(h, "e edit") {
+		t.Errorf("help line = %q", h)
+	}
+}

@@ -23,6 +23,10 @@ func TestReviewOverlaySummaryPhaseShowsFullMarkdownBody(t *testing.T) {
 	}
 	ro.phase = phaseSummary
 	ro.rebuildBody()
+	// Section cards are collapsed by default; expand the headline to see the
+	// full body.
+	ro.syncSummarySections()
+	ro.summaryExpanded["headline"] = true
 	out := ro.renderSummaryBody()
 	if strings.Contains(out, "more lines") {
 		t.Fatal("summary preview should not truncate with a line budget cap")

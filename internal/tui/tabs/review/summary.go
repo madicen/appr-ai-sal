@@ -107,15 +107,8 @@ func (m *Model) renderSummaryBody() string {
 		b.WriteString(styles.ErrStyle.Render("(no draft loaded)") + "\n")
 		return b.String()
 	}
-	body := m.draft.RenderBody()
-	b.WriteString(styles.DimStyle.Render("Markdown body GitHub will publish (scroll with wheel or ↑/↓):") + "\n")
-	b.WriteString("\n")
-	// The body is markdown that's about to be POSTed to GitHub as-is; render
-	// it through glamour so the reviewer previews approximately what the PR
-	// author will see (headings, lists, fenced code blocks) rather than the
-	// raw source. The 2-column extra indent keeps it visually grouped under
-	// the header line above.
-	b.WriteString(util.RenderMarkdownIndented(body, rowW, 2) + "\n")
+	m.syncSummarySections()
+	b.WriteString(m.renderSummarySectionCards(rowW))
 
 	if m.summaryDryMsg != "" {
 		b.WriteString("\n" + styles.OkStyle.Render("✓ "+m.summaryDryMsg) + "\n")
@@ -372,9 +365,9 @@ func (m *Model) helpForPhase() string {
 		// suggestive variant ("approve without summary") is reserved for
 		// the case where we also surface the contextual nudge paragraph.
 		if m.summaryPhaseOfferApproveWithoutSummary() {
-			return "y post summary · a approve without summary · R refresh PR · n skip · q abort · ↑/↓ scroll · wheel"
+			return "↑/↓ focus · space include · enter expand · e edit · y post · a approve without summary · R refresh · n skip · q abort · wheel"
 		}
-		return "y post summary · a approve only · R refresh PR · n skip · q abort · ↑/↓ scroll preview · wheel"
+		return "↑/↓ focus · space include · enter expand · e edit · y post · a approve · R refresh · n skip · q abort · wheel"
 	case phaseConfirmApprove:
 		if m.noFindingsApprove {
 			return "y APPROVE with body · a APPROVE without body · R refresh PR · q abort"
