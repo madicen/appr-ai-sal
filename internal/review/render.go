@@ -91,20 +91,6 @@ func combineAuthorPrompts(prompts []AuthorPrompt) string {
 	return strings.Join(segments, "\n\n---\n\n")
 }
 
-// countNonEmptyPrompts returns the number of prompts that contribute a
-// non-empty agent_prompt body to the rendered fenced block. Used by the
-// renderer to size the "It contains N distinct topics" disclosure so the
-// number always matches what the reader sees in the fence.
-func countNonEmptyPrompts(prompts []AuthorPrompt) int {
-	n := 0
-	for _, p := range prompts {
-		if strings.TrimSpace(p.AgentPromptText()) != "" {
-			n++
-		}
-	}
-	return n
-}
-
 // VerdictEmoji maps a canonical verdict to the emoji used in the body
 // headline and the CLI summary. Empty for unknown verdicts so callers degrade
 // to plain text.
@@ -168,73 +154,6 @@ func bodyStatsLine(inline, prWide, degraded int) string {
 	return strings.Join(parts, " · ") + "\n\n"
 }
 
-// vibeCoachSuggestedPromptsSection renders one combined fenced prompt (right
-// below the headline/TL;DR area).
-//
-// Prompts are filtered against the draft: any prompt whose finding_refs are
-// all arbiter-suppressed or user-skipped is dropped, so the rendered review
-// only suggests AI prompts for findings that actually made it through to
-// GitHub. Legacy / general prompts (no finding_refs) are kept unconditionally
-// — those don't tie to a specific anchor.
-//
-// After filtering, if there are still error/critical-severity findings the
-// vibe-coach didn't cover (typical failure: a PR-wide testing/docs error
-// the model forgot to bundle, or a single bundled prompt that got dropped
-// because its only inline ref was suppressed), synthesizeFallbackPrompts
-// builds one fallback AuthorPrompt per uncovered finding so the author
-// always has a paste-ready instruction for every blocker.
-func vibeCoachSuggestedPromptsSection(d *Draft, vc *VibeCoachResult) string {
-	if vc == nil || vc.Err != nil {
-		return ""
-	}
-	kept, droppedTitles := filterAuthorPrompts(d, vc.Prompts)
-	synthesized := synthesizeFallbackPrompts(d, kept)
-	rendered := append([]AuthorPrompt(nil), kept...)
-	rendered = append(rendered, synthesized...)
-	if len(rendered) == 0 && len(droppedTitles) == 0 {
-		return ""
-	}
-	combined := strings.TrimSpace(combineAuthorPrompts(rendered))
-	var b strings.Builder
-	if combined != "" {
-		topicCount := countNonEmptyPrompts(rendered)
-		b.WriteString("### 🤖 Prompt for your AI assistant\n\n")
-		switch {
-		case topicCount <= 1:
-			b.WriteString("_Paste the fenced block below into your coding assistant (Cursor, Claude Code, etc.)._\n\n")
-		default:
-			fmt.Fprintf(&b, "_Paste the fenced block below into your coding assistant (Cursor, Claude Code, etc.) — **%d distinct topics** separated by `---`._\n\n", topicCount)
-		}
-		if len(synthesized) > 0 {
-			fmt.Fprintf(&b, "_%s auto-built from blocking findings the vibe-coach didn't bundle into a paste-ready prompt; the wording is verbatim from the specialist's comment._\n\n",
-				countLabel(len(synthesized), "1 topic was", "%d topics were"))
-		}
-		b.WriteString("```text\n")
-		b.WriteString(combined)
-		b.WriteString("\n```\n\n")
-	}
-	// Disclosure: the human reader needs to know that some follow-up
-	// prompts were silently dropped because every inline finding they
-	// bundled was suppressed or skipped — otherwise the verdict / summary
-	// above can look mismatched ("request changes" + zero prompts). The
-	// wording is deliberately scoped to "inline findings the prompt
-	// pointed to" so the reader doesn't conclude that *every* finding was
-	// dropped (PR-wide notes, repo-expert panel content, and general
-	// findings can't be suppressed and still appear below).
-	switch {
-	case len(droppedTitles) == 0:
-		// nothing dropped, no note.
-	case combined == "":
-		fmt.Fprintf(&b, "_%s dropped because the inline findings they pointed to were all suppressed by the repo arbiter or skipped during review. The verdict above is based on the broader review (PR-wide notes and repo-expert panel below, if any), not just those inline findings._\n\n",
-			countLabel(len(droppedTitles), "The 1 paste-ready follow-up prompt was", "All %d paste-ready follow-up prompts were"))
-	default:
-		fmt.Fprintf(&b, "_%s dropped because the inline findings they pointed to were all suppressed or skipped: %s._\n\n",
-			countLabel(len(droppedTitles), "1 paste-ready follow-up prompt was", "%d paste-ready follow-up prompts were"),
-			joinQuoted(droppedTitles))
-	}
-	return b.String()
-}
-
 // countLabel returns one of two phrasings depending on whether n == 1.
 // The plural template may use a single %d placeholder for the count; the
 // singular template is taken verbatim.
@@ -279,6 +198,9 @@ func joinQuoted(s []string) string {
 // gh.DetectPriorAprrAISalActivity to recognise tool-authored bodies on
 // re-runs; it lives in bodyCaution — keep it intact when editing.
 func (d *Draft) RenderBody() string {
+	if d != nil && strings.TrimSpace(d.PostedBodyOverride) != "" {
+		return d.PostedBodyOverride
+	}
 	if d != nil && d.HasNoFindings() {
 		// The standard sections (stats line, prompt, PR-wide notes) are all
 		// empty when the pipeline returned nothing. Use a tailored body so the
@@ -289,179 +211,7 @@ func (d *Draft) RenderBody() string {
 			d.diffTruncationNote() +
 			bodyCaution
 	}
-
-	// Gather process metadata and PR-wide findings up front so the headline
-	// area can carry an accurate one-line stats strip.
-	type agentErr struct {
-		name string
-		msg  string
-	}
-	var failures []agentErr
-	var skippedStages []string
-	var prWide []struct {
-		specialist string
-		f          Finding
-	}
-
-	for _, s := range d.Specialists {
-		switch s.EffectiveOutcome() {
-		case OutcomeSkipped:
-			// Never ran (circuit breaker aborted the remaining stages). Listed
-			// separately from failures so the reader knows the review is
-			// partial rather than that the agent errored.
-			skippedStages = append(skippedStages, s.Specialist)
-			continue
-		case OutcomeFailed:
-			msg := "failed after retries"
-			if s.Err != nil {
-				msg = s.Err.Error()
-			}
-			failures = append(failures, agentErr{s.Specialist, msg})
-			continue
-		}
-		if len(s.Findings) == 0 {
-			continue
-		}
-		for _, f := range generalFindings(s.Findings) {
-			if d.generalFindingSuppressed(s.Specialist, f) {
-				continue
-			}
-			prWide = append(prWide, struct {
-				specialist string
-				f          Finding
-			}{s.Specialist, f})
-		}
-	}
-
-	// Demoted PR-wide findings the reviewer opted to include despite the
-	// arbiter demoting them below the strictness floor. Inline demoted
-	// findings post through the opt-in card flow, not here.
-	var demotedIncluded []struct {
-		specialist string
-		f          Finding
-	}
-	for _, ff := range d.DemotedHidden {
-		if findingIsInlinePostable(ff.Finding) {
-			continue
-		}
-		if strings.TrimSpace(ff.Finding.Comment) == "" {
-			continue
-		}
-		if !d.DemotedPostingEnabled(ff.Specialist, ff.Finding) {
-			continue
-		}
-		demotedIncluded = append(demotedIncluded, struct {
-			specialist string
-			f          Finding
-		}{ff.Specialist, ff.Finding})
-	}
-
-	vcDisp := d.effectiveVibeCoach()
-	vcOK := vcDisp != nil && vcDisp.Err == nil
-	verdict := ""
-	if vcOK {
-		verdict = NormalizeVibeVerdict(vcDisp.Verdict)
-	}
-
-	var b strings.Builder
-
-	// 1. Headline (verdict folded in), downgrade note, TL;DR.
-	b.WriteString(bodyHeadline(verdict))
-	if vcOK {
-		if note := strings.TrimSpace(d.VerdictReconciliationNote()); note != "" {
-			b.WriteString("> " + note + "\n\n")
-		}
-		if s := strings.TrimSpace(vcDisp.Summary); s != "" {
-			b.WriteString(s + "\n\n")
-		}
-	}
-
-	// 2. Warnings and the merged AI disclosure / human-review caution.
-	b.WriteString(d.diffTruncationNote())
-	b.WriteString(bodyCaution)
-
-	// 3. One-line orientation stats.
-	b.WriteString(bodyStatsLine(
-		len(d.FlatPostableFindingsForPost()),
-		len(prWide)+len(demotedIncluded),
-		len(failures)+len(skippedStages)))
-	if vcOK && vcDisp.RequestChangesWithoutPrompts {
-		b.WriteString("**Warning:** Verdict is **request changes**, but no paste-ready AI prompts were returned — rely on the inline comments on the diff and the PR-wide notes below (if any).\n\n")
-	}
-
-	// 4. The author's main action item: the paste-ready prompt.
-	if vcOK {
-		if prompts := vibeCoachSuggestedPromptsSection(d, vcDisp); prompts != "" {
-			b.WriteString(prompts)
-		}
-	}
-
-	// 5. Substantive findings that live in the body rather than on the diff.
-	if len(prWide) > 0 {
-		b.WriteString("### PR-wide notes\n\n")
-		b.WriteString("_Not tied to a single changed line — all other findings are inline comments on the diff._\n\n")
-		for _, item := range prWide {
-			b.WriteString("- **" + string(item.f.Severity) + " · " + item.specialist + ":** " + item.f.Comment + "\n")
-		}
-		b.WriteString("\n")
-	}
-	if len(demotedIncluded) > 0 {
-		b.WriteString("### PR-wide notes — included despite demotion\n\n")
-		b.WriteString("_The repo arbiter demoted these below the review threshold; the reviewer chose to surface them anyway._\n\n")
-		for _, item := range demotedIncluded {
-			b.WriteString("- **" + item.specialist + " _(demoted by repo arbiter)_:** " + item.f.Comment + "\n")
-		}
-		b.WriteString("\n")
-	}
-
-	// 6. Repo expert panel: short summary + verdict adjustment stay visible,
-	// rationale and suppressed-comment list collapse.
-	if d.RepoArbiter != nil {
-		if panel := repoExpertPanelSection(d); panel != "" {
-			b.WriteString(panel)
-		}
-	}
-
-	// 7. Process metadata, collapsed. The stats line above already flags a
-	// degraded run; the details block carries the specifics without competing
-	// with the findings for the author's attention.
-	userSkips := len(d.UserSkipPostKeys)
-	if len(failures)+len(skippedStages) > 0 || userSkips > 0 {
-		var sum []string
-		if len(failures) > 0 {
-			sum = append(sum, countLabel(len(failures), "1 agent failed", "%d agents failed"))
-		}
-		if len(skippedStages) > 0 {
-			sum = append(sum, countLabel(len(skippedStages), "1 stage skipped", "%d stages skipped"))
-		}
-		if userSkips > 0 {
-			sum = append(sum, countLabel(userSkips, "1 suggestion skipped by reviewer", "%d suggestions skipped by reviewer"))
-		}
-		b.WriteString("<details>\n<summary>⚙️ Review process details — " + strings.Join(sum, " · ") + "</summary>\n\n")
-		if len(failures) > 0 {
-			b.WriteString("### Agent failures _(failed after retries)_\n\n")
-			for _, e := range failures {
-				b.WriteString("- **" + e.name + ":** _" + e.msg + "_\n")
-			}
-			b.WriteString("\n")
-		}
-		if len(skippedStages) > 0 {
-			b.WriteString("### Stages skipped _(run aborted early)_\n\n")
-			b.WriteString("_The run's circuit breaker stopped these agents before they ran, so this review is partial — review the areas they cover manually._\n\n")
-			for _, name := range skippedStages {
-				b.WriteString("- **" + name + "**\n")
-			}
-			b.WriteString("\n")
-		}
-		if userSkips > 0 {
-			b.WriteString("### Reviewer choices\n\n")
-			fmt.Fprintf(&b, "_%s skipped during review — not included in this GitHub post._\n\n",
-				countLabel(userSkips, "1 inline suggestion", "%d inline suggestions"))
-		}
-		b.WriteString("</details>\n")
-	}
-
-	return b.String()
+	return ComposeBody(d.BodySections(), nil)
 }
 
 // diffTruncationNote renders the R3 truncation disclosure as a GitHub callout

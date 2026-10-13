@@ -64,6 +64,7 @@ func skipSetHash(keys map[string]struct{}) string {
 // call repeatedly — coachInFlight guards against double-issue.
 func (m *Model) enterSummary() tea.Cmd {
 	m.syncUserSkipsToDraft()
+	m.syncSummarySections()
 	// First decide whether the summary tab should show its confirm-approve
 	// sub-state instead of the full post-summary form. This subsumes the
 	// old advanceCard routing: no findings at all, an APPROVE verdict, or
@@ -492,10 +493,16 @@ func (m *Model) actPostSummary() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	m.syncUserSkipsToDraft()
+	m.syncSummarySections()
 	// The summary phase posts a body-only review with the verdict event
 	// (REQUEST_CHANGES or COMMENT). The approve verdict is handled by
-	// actPostApprove which lives in its own phase.
-	return m, data.PostReviewWithVerdictCmd(m.draft.Ref, m.draft, m.dryRun, m.demoMode, "")
+	// actPostApprove which lives in its own phase. The body is the reviewer's
+	// composed section view (exclusions/edits applied); RenderBody and
+	// EffectiveReviewEventAndBody honour PostedBodyOverride. Post from a
+	// snapshot so the async cmd never reads state the UI may reset meanwhile.
+	dc := *m.draft
+	dc.PostedBodyOverride = m.composedSummaryBody()
+	return m, data.PostReviewWithVerdictCmd(m.draft.Ref, &dc, m.dryRun, m.demoMode, "")
 }
 
 // actPostApprove posts a GitHub review with event=APPROVE and an empty body.

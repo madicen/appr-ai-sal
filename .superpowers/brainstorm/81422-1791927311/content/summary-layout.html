@@ -1,0 +1,98 @@
+<h2>Which summary-editor layout feels right?</h2>
+<p class="subtitle">Click the option you prefer. This is the phaseSummary screen after sections are broken out.</p>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>Section list + live preview</h3>
+      <p>Left: checklist of sections. Right: composed markdown preview. Space toggles, <code>e</code> opens textarea overlay.</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Review · post summary</div>
+        <div class="mockup-body" style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.45">
+          <div style="display:flex;gap:8px;min-height:220px">
+            <div style="flex:0 0 42%;border-right:1px solid #444;padding-right:8px">
+              <div style="opacity:.6;margin-bottom:6px">SECTIONS</div>
+              <div style="background:#2a3a2a;padding:4px 6px;margin:2px 0">▸ [x] Headline + TL;DR</div>
+              <div style="opacity:.7;padding:4px 6px;margin:2px 0">·· [lock] Caution</div>
+              <div style="padding:4px 6px;margin:2px 0">·· [x] Stats</div>
+              <div style="padding:4px 6px;margin:2px 0">·· [x] Prompt · Add Jira key</div>
+              <div style="padding:4px 6px;margin:2px 0">·· [x] Prompt · Fix Conftest</div>
+              <div style="padding:4px 6px;margin:2px 0">·· [ ] Note · Jira Lint</div>
+              <div style="padding:4px 6px;margin:2px 0">·· [x] Note · Conftest</div>
+              <div style="padding:4px 6px;margin:2px 0">·· [x] Repo expert panel</div>
+            </div>
+            <div style="flex:1;opacity:.85">
+              <div style="opacity:.6;margin-bottom:6px">PREVIEW (will post)</div>
+              <div>## appr-ai-sal summary — Request changes</div>
+              <div style="margin-top:6px;opacity:.75">&gt; [!CAUTION] …</div>
+              <div style="margin-top:6px">### Prompt for your AI assistant</div>
+              <div style="opacity:.7">``` … Add Jira … --- Fix Conftest … ```</div>
+            </div>
+          </div>
+          <div style="margin-top:10px;opacity:.55;border-top:1px solid #444;padding-top:6px">
+            space toggle · e edit · y post · a approve · n skip · q abort
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>Single scroll of section cards</h3>
+      <p>One column: each section is a card with include toggle + Edit. Preview is the cards themselves (collapsed markdown). Familiar, no split pane.</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Review · post summary</div>
+        <div class="mockup-body" style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.45">
+          <div style="border:1px solid #3a5a3a;padding:8px;margin:6px 0;background:#1e2a1e">
+            <div><strong>[x] Headline + TL;DR</strong> <span style="opacity:.5">· e edit</span></div>
+            <div style="opacity:.75;margin-top:4px">PR blocked by failing checks…</div>
+          </div>
+          <div style="border:1px solid #444;padding:8px;margin:6px 0;opacity:.7">
+            <div><strong>[lock] Caution</strong> <span style="opacity:.5">· always included</span></div>
+            <div style="margin-top:4px">&gt; [!CAUTION] produced by appr-ai-sal…</div>
+          </div>
+          <div style="border:1px solid #555;padding:8px;margin:6px 0">
+            <div><strong>[x] Prompt · Add Jira issue key</strong> <span style="opacity:.5">· e edit</span></div>
+            <div style="opacity:.75;margin-top:4px">Add a Jira key to the PR title…</div>
+          </div>
+          <div style="border:1px solid #555;padding:8px;margin:6px 0;opacity:.45">
+            <div><strong>[ ] Note · Jira Lint</strong> <span style="opacity:.5">· excluded</span></div>
+          </div>
+          <div style="margin-top:10px;opacity:.55;border-top:1px solid #444;padding-top:6px">
+            ↑/↓ focus · space toggle · e edit · y post …
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="option" data-choice="c" onclick="toggleSelect(this)">
+    <div class="letter">C</div>
+    <div class="content">
+      <h3>List first, then full preview on demand</h3>
+      <p>Default: compact section checklist (like A’s left pane only). Press <code>p</code> to flip to full composed preview before posting. Least chrome while browsing sections.</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Review · post summary · sections</div>
+        <div class="mockup-body" style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.45">
+          <div style="opacity:.6;margin-bottom:8px">Include what GitHub will publish · 6 of 8 sections</div>
+          <div>▸ [x] Headline + TL;DR</div>
+          <div>·· [lock] Caution</div>
+          <div>·· [x] Stats</div>
+          <div>·· [x] Prompt · Add Jira key</div>
+          <div>·· [x] Prompt · Fix Conftest</div>
+          <div>·· [ ] Note · Jira Lint</div>
+          <div>·· [x] Note · Conftest</div>
+          <div>·· [x] Repo expert panel</div>
+          <div style="margin-top:14px;opacity:.55;border-top:1px solid #444;padding-top:6px">
+            space toggle · e edit · p preview · y post …
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<p class="subtitle" style="margin-top:16px">My lean: <strong>B</strong> — matches the existing single-viewport TUI, no split-pane complexity, and cards already show enough content to decide include/exclude.</p>

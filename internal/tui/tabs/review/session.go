@@ -190,6 +190,7 @@ func (m *Model) clearSession() {
 // the last decision is persisted even if the debounce tick hasn't fired.
 func (m *Model) closeCmd() tea.Cmd {
 	m.persistSession()
+	m.resetSummaryEdits()
 	return func() tea.Msg { return CloseMsg{} }
 }
 

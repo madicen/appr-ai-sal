@@ -57,6 +57,10 @@ type Draft struct {
 	// body despite the arbiter demoting them below the floor. Inline demoted
 	// findings use the opt-in card flow instead and are not tracked here.
 	UserPostDemotedKeys map[string]struct{} `json:"-"`
+	// PostedBodyOverride, when non-blank, replaces the generated summary body
+	// verbatim (e.g. a body composed from reviewer-edited sections). Empty by
+	// default, in which case RenderBody builds the body from BodySections.
+	PostedBodyOverride string `json:"-"`
 	// DiffBudget records how the R3 diff budgeter shaped the diff before it was
 	// inlined into specialist / PR-agent prompts. Nil means the full diff was
 	// reviewed; when non-nil (and Truncated) RenderBody discloses that the

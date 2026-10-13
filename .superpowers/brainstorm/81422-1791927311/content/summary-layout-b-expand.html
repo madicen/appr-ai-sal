@@ -1,0 +1,55 @@
+<h2>Layout B + expand — does this match?</h2>
+<p class="subtitle">Section cards (your pick). Each card can expand to show the full markdown fragment; <code>e</code> still opens the textarea editor. Click to confirm this direction.</p>
+
+<div class="options">
+  <div class="option" data-choice="b-expand" onclick="toggleSelect(this)">
+    <div class="letter">B+</div>
+    <div class="content">
+      <h3>Cards with expand / collapse</h3>
+      <p><code>enter</code> or click header toggles full text. Collapsed shows ~2 lines. Caution stays locked. Excluded cards stay dimmed but can still expand so you can read before re-including.</p>
+      <div class="mockup" style="margin-top:12px">
+        <div class="mockup-header">Review · post summary</div>
+        <div class="mockup-body" style="font-family:ui-monospace,monospace;font-size:12px;line-height:1.45">
+          <div style="border:1px solid #555;padding:8px;margin:6px 0">
+            <div><strong>▾ [x] Headline + TL;DR</strong> <span style="opacity:.5">· enter collapse · e edit</span></div>
+            <div style="margin-top:8px;padding:8px;background:#111;border:1px solid #333;white-space:pre-wrap;opacity:.9">## appr-ai-sal summary — 🔴 Request changes
+
+This PR is blocked by failing automated checks: missing Jira key in PR metadata, and Terraform policy non-compliance in the elasticsearch stack config.
+
+(full section markdown — not truncated)</div>
+          </div>
+
+          <div style="border:1px solid #444;padding:8px;margin:6px 0;opacity:.75">
+            <div><strong>▸ [lock] Caution</strong> <span style="opacity:.5">· enter expand · always included</span></div>
+            <div style="opacity:.6;margin-top:4px">&gt; [!CAUTION] This summary was produced by **appr-ai-sal**…</div>
+          </div>
+
+          <div style="border:1px solid #555;padding:8px;margin:6px 0">
+            <div><strong>▸ [x] Prompt · Add Jira issue key</strong> <span style="opacity:.5">· enter expand · e edit</span></div>
+            <div style="opacity:.65;margin-top:4px">Add a Jira key to the PR title or body…</div>
+          </div>
+
+          <div style="border:1px solid #555;padding:8px;margin:6px 0;opacity:.45">
+            <div><strong>▸ [ ] Note · Jira Lint</strong> <span style="opacity:.5">· excluded · enter expand</span></div>
+            <div style="opacity:.55;margin-top:4px">error · jira-lint: PR title/body missing…</div>
+          </div>
+
+          <div style="margin-top:10px;opacity:.55;border-top:1px solid #444;padding-top:6px">
+            ↑/↓ focus · space include/exclude · enter expand · e edit · y post · a approve · n skip · q abort
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Keys (proposed)</h3>
+  <ul>
+    <li><code>↑/↓</code> — move focus between section cards</li>
+    <li><code>space</code> — include / exclude (no-op on Caution)</li>
+    <li><code>enter</code> — expand / collapse full markdown for focused card</li>
+    <li><code>e</code> — edit focused section in textarea (esc saves &amp; returns)</li>
+    <li><code>y</code> / <code>a</code> / <code>n</code> / <code>q</code> — unchanged post actions</li>
+  </ul>
+</div>

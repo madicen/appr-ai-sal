@@ -616,6 +616,18 @@ type Model struct {
 	editInput   textarea.Model
 	editErr     error
 
+	// Summary-section editor session state (see summary_sections.go).
+	// summarySections mirrors draft.BodySections(); summaryOverrides holds the
+	// reviewer's per-section include/edit choices (missing key = included,
+	// unedited) and survives re-sync for sections whose ID still exists.
+	summarySections  []review.BodySection
+	summaryFocus     int
+	summaryExpanded  map[string]bool
+	summaryOverrides map[string]review.BodySectionOverride
+	summaryEditing   bool
+	summaryEditID    string
+	summaryInput     textarea.Model
+
 	// copyStatus is a brief, transient footer note after a clipboard copy
 	// (Phase 5 item 9): "copied finding", "copy failed: …", etc. Set when a
 	// util.ClipboardCopiedMsg arrives and cleared on the next navigation.
@@ -915,6 +927,7 @@ func (m *Model) hydrateAgentRowsFromDraft(d *review.Draft) {
 }
 
 func (m *Model) AdoptDraft(d *review.Draft) tea.Cmd {
+	m.resetSummaryEdits()
 	m.draft = d
 	m.approveAfterSkipDisagree = false
 	m.noFindingsApprove = false
@@ -1202,6 +1215,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.coachErr = msg.Result.Err
 		}
 		m.lastCoachHash = curHash
+		// The draft's vibe-coach result changed, so its prompt sections did too.
+		m.syncSummarySections()
 		// The refreshed summary belongs on the summary tab. Focus it (no
 		// further vibe-coach re-run is needed now that the cache is warm)
 		// and show the post-summary body.
@@ -1264,6 +1279,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// steal a keystroke. esc/ctrl+s and friends are handled inside it.
 	if m.challengeActive {
 		return m.handleChallengeKey(msg)
+	}
+	// Summary section editor: owns all keyboard input (including tab) until
+	// esc commits and closes it.
+	if m.phase == phaseSummary && m.summaryEditing {
+		return m.handleSummarySectionKey(msg)
 	}
 	// Tab navigation works from every phase: the user can browse the
 	// overview, any finished agent, and (once ready) the summary at will.
@@ -1374,8 +1394,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case phaseSummary:
+		// Section-card keys (focus / include / expand / edit) run before the
+		// viewport scroll fallthrough. enter expands a card; only y posts.
+		if m.summarySectionKeyActive(msg) {
+			return m.handleSummarySectionKey(msg)
+		}
 		switch msg.String() {
-		case "y", "Y", "enter":
+		case "y", "Y":
 			return m.actPostSummary()
 		case "a", "A":
 			if m.summaryPhaseAllowApproveOnly() {
@@ -1492,6 +1517,27 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, m.closeCmd()
 			}
 		case phaseSummary:
+			if m.summaryEditing {
+				return m, nil // swallow card/footer clicks while editing
+			}
+			for i, s := range m.summarySections {
+				if z := zone.Get(zones.SummarySectionCheck(s.ID)); z != nil && z.InBounds(msg) {
+					m.toggleSummaryInclude(i)
+					m.rebuildBody()
+					return m, nil
+				}
+				if z := zone.Get(zones.SummarySectionHeader(s.ID)); z != nil && z.InBounds(msg) {
+					m.summaryFocus = i
+					m.toggleSummaryExpand(i)
+					m.rebuildBody()
+					return m, nil
+				}
+				if !s.Fixed {
+					if z := zone.Get(zones.SummarySectionEdit(s.ID)); z != nil && z.InBounds(msg) {
+						return m.openSummaryEditor(i)
+					}
+				}
+			}
 			if z := zone.Get(zones.StagedSummaryYes); z != nil && z.InBounds(msg) {
 				return m.actPostSummary()
 			}

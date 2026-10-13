@@ -13,18 +13,18 @@
 
   Inline comments: 0 already on PR, 0 posted this session, 0 skipped (5 total)
 
-  Markdown body GitHub will publish (scroll with wheel or ↑/↓):
+  Summary sections — choose what GitHub publishes:
 
-      appr-ai-sal summary — 🔴 Request changes
+  ▌ [x] ▸ Headline & summary  Edit
+        ## appr-ai-sal summary — 🔴 Request changes
+        Solid plumbing for the demo recording path. The synthetic progress
 
-      Solid plumbing for the demo recording path. The synthetic progress generator is a clean way to keep
-      VHS reproducible without coupling the TUI to a real AI provider, and the dry-run-by-default behaviour
-      prevents an accidental real post during a tape session.
+    🔒 ▸ AI disclosure (required) (always included)
+        > [!CAUTION]
+        > This summary was produced by **appr-ai-sal** (automated AI tools) to assist the human reviewer — it i…
 
-      Two things worth tightening before merge:
+    [x] ▸ Stats  Edit
+        **5 inline comments** on the diff
 
-      1. The demo bool parameter pattern is starting to multiply across
-      internal/tui/data. Now's a reasonable inflection point to introduce
-      a small interface so the production path doesn't accumulate flags
 
-  y post summary · a approve only · R refresh PR · n skip · q abort · ↑/↓ scroll preview · wheel
+  ↑/↓ focus · space include · enter expand · e edit · y post · a approve · R refresh · n skip · q abort · wheel

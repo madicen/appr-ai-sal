@@ -38,6 +38,21 @@ func TreeFolder(i int) string {
 	return fmt.Sprintf("zone:tree:folder:%d", i)
 }
 
+// SummarySectionHeader marks the title row of a summary-section card.
+func SummarySectionHeader(id string) string {
+	return "zone:staged:summary:section:" + id + ":header"
+}
+
+// SummarySectionCheck marks the include/exclude checkbox on a summary-section card.
+func SummarySectionCheck(id string) string {
+	return "zone:staged:summary:section:" + id + ":check"
+}
+
+// SummarySectionEdit marks the edit affordance on a summary-section card.
+func SummarySectionEdit(id string) string {
+	return "zone:staged:summary:section:" + id + ":edit"
+}
+
 // bubblezone IDs for clickable regions.
 const (
 	// FilterTeams / FilterExplicit / FilterAuthored mark each filter

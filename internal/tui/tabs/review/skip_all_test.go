@@ -406,7 +406,7 @@ func TestSummaryPhaseAlwaysOffersApproveOnlyButton(t *testing.T) {
 		t.Fatalf("rendered summary body should include the Approve only button: %s", body)
 	}
 	help := ro.helpForPhase()
-	if !strings.Contains(help, "approve only") && !strings.Contains(help, "approve without summary") {
+	if !strings.Contains(help, "a approve") {
 		t.Fatalf("phaseSummary help line should always mention approving: %q", help)
 	}
 }
