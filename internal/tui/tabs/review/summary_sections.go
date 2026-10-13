@@ -50,6 +50,20 @@ func (m *Model) syncSummarySections() {
 	}
 }
 
+// resetSummaryEdits drops every reviewer summary-section edit and clears the
+// draft's posted-body override so a composed body cannot leak into a later
+// post (leaving the overlay, adopting a new draft).
+func (m *Model) resetSummaryEdits() {
+	if m.draft != nil {
+		m.draft.PostedBodyOverride = ""
+	}
+	m.summarySections = nil
+	m.summaryOverrides = nil
+	m.summaryExpanded = nil
+	m.summaryFocus = 0
+	m.summaryEditing = false
+}
+
 // effectiveSectionMarkdown returns the reviewer's edit when set (never for
 // Fixed sections), else the generated markdown.
 func (m *Model) effectiveSectionMarkdown(s review.BodySection) string {

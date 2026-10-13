@@ -927,7 +927,11 @@ func (m *Model) hydrateAgentRowsFromDraft(d *review.Draft) {
 }
 
 func (m *Model) AdoptDraft(d *review.Draft) tea.Cmd {
+	m.resetSummaryEdits()
 	m.draft = d
+	if d != nil {
+		d.PostedBodyOverride = ""
+	}
 	m.approveAfterSkipDisagree = false
 	m.noFindingsApprove = false
 	if d == nil {

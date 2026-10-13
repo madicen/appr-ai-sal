@@ -10,6 +10,7 @@ import (
 	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/review"
+	"github.com/madicen/appr-ai-sal/internal/tui/data"
 	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
@@ -431,5 +432,62 @@ func TestSummarySectionMouseToggleAndExpand(t *testing.T) {
 		if ro.sectionIncluded(os) != before || !ro.summaryEditing {
 			t.Fatalf("clicks while editing must be swallowed")
 		}
+	}
+}
+
+func TestActPostSummaryUsesComposedBody(t *testing.T) {
+	ro := New(120, 44, true /* dryRun */, false, false, nil, false)
+	d := newDeferTestDraft(t)
+	d.VibeCoach.Verdict = review.VibeVerdictRequestChanges
+	d.VibeCoach.Prompts = []review.AuthorPrompt{
+		{Title: "One", AgentPrompt: "do one"},
+		{Title: "Two", AgentPrompt: "do two"},
+	}
+	ro.AdoptDraft(d)
+	ro.phase = phaseSummary
+	ro.syncSummarySections()
+	ro.summaryOverrides["prompt:0"] = review.BodySectionOverride{Included: false}
+
+	_, cmd := ro.actPostSummary()
+	if cmd == nil {
+		t.Fatal("expected a post cmd")
+	}
+	dr, ok := cmd().(data.DryRunPayloadMsg)
+	if !ok {
+		t.Fatalf("dry-run should yield DryRunPayloadMsg")
+	}
+	if strings.Contains(dr.Payload, "do one") {
+		t.Errorf("excluded prompt leaked into payload:\n%s", dr.Payload)
+	}
+	if !strings.Contains(dr.Payload, "do two") {
+		t.Errorf("included prompt missing from payload:\n%s", dr.Payload)
+	}
+	if !strings.Contains(dr.Payload, "CAUTION") {
+		t.Errorf("caution marker missing from payload:\n%s", dr.Payload)
+	}
+}
+
+func TestAdoptDraftClearsPostedBodyOverride(t *testing.T) {
+	ro := New(120, 44, true, false, false, nil, false)
+	d := newDeferTestDraft(t)
+	d.PostedBodyOverride = "stale"
+	ro.summaryOverrides = map[string]review.BodySectionOverride{"x": {}}
+	ro.AdoptDraft(d)
+	if d.PostedBodyOverride != "" {
+		t.Errorf("AdoptDraft should clear PostedBodyOverride, got %q", d.PostedBodyOverride)
+	}
+	if len(ro.summaryOverrides) != 0 {
+		t.Errorf("AdoptDraft should reset summary overrides")
+	}
+}
+
+func TestCloseCmdClearsPostedBodyOverride(t *testing.T) {
+	ro := New(120, 44, true, false, false, nil, true)
+	d := newDeferTestDraft(t)
+	ro.AdoptDraft(d)
+	d.PostedBodyOverride = "stale"
+	ro.closeCmd()
+	if d.PostedBodyOverride != "" {
+		t.Errorf("closeCmd should clear PostedBodyOverride, got %q", d.PostedBodyOverride)
 	}
 }
