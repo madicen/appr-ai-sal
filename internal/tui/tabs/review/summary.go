@@ -360,6 +360,9 @@ func (m *Model) helpForPhase() string {
 	case phaseGeneratingSummary:
 		return "refining summary with your final selections… · q abort"
 	case phaseSummary:
+		if m.summaryEditing {
+			return "esc save & close editor · wheel scroll"
+		}
 		// "a approve only" is always part of the help line at phaseSummary
 		// because the Approve only button is always rendered there. The
 		// suggestive variant ("approve without summary") is reserved for

@@ -165,6 +165,11 @@ func TestHelpForPhaseSummaryListsSectionKeys(t *testing.T) {
 	if !strings.Contains(h, "space include") || !strings.Contains(h, "enter expand") || !strings.Contains(h, "e edit") {
 		t.Errorf("help line = %q", h)
 	}
+	ro.summaryEditing = true
+	h = ro.helpForPhase()
+	if !strings.Contains(h, "esc save") {
+		t.Errorf("editing help line = %q", h)
+	}
 }
 
 func summaryKey(t *testing.T, ro *Model, msg tea.KeyMsg) (*Model, tea.Cmd) {
@@ -268,6 +273,21 @@ func TestSummarySectionKeysToggleExpandEdit(t *testing.T) {
 	if got := ro.summaryInput.Value(); got != sec.Markdown {
 		t.Fatalf("prefill = %q, want %q", got, sec.Markdown)
 	}
+	body := ro.renderSummaryBody()
+	if !strings.Contains(body, "Section markdown:") {
+		t.Fatalf("editing view should show the textarea:\n%s", body)
+	}
+	if val := strings.TrimSpace(ro.summaryInput.Value()); val != "" {
+		first := val
+		if i := strings.Index(first, "\n"); i >= 0 {
+			first = first[:i]
+		}
+		if !strings.Contains(body, strings.TrimSpace(first)) {
+			t.Fatalf("editing view should show textarea content %q:\n%s", first, body)
+		}
+	} else if !strings.Contains(body, "Edit section markdown") {
+		t.Fatalf("empty editor should show placeholder:\n%s", body)
+	}
 
 	// While editing, keys go to the textarea (j must not move focus, y must not post).
 	ro.summaryInput.SetValue("")
@@ -278,6 +298,9 @@ func TestSummarySectionKeysToggleExpandEdit(t *testing.T) {
 	}
 	if !ro.summaryEditing || ro.summaryInput.Value() != "yj" {
 		t.Fatalf("typing: editing=%v value=%q", ro.summaryEditing, ro.summaryInput.Value())
+	}
+	if !strings.Contains(ro.renderSummaryBody(), "yj") {
+		t.Fatalf("editing view should reflect typed text")
 	}
 
 	// esc commits Edited and closes.

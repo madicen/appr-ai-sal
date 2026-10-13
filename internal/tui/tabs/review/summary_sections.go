@@ -163,6 +163,11 @@ func (m *Model) renderSummarySectionCard(idx int, s review.BodySection, rowW int
 
 	var b strings.Builder
 	b.WriteString(row + "\n")
+	if m.summaryEditing && s.ID == m.summaryEditID {
+		b.WriteString(styles.DimStyle.Render("    Section markdown:") + "\n")
+		b.WriteString(m.summaryInput.View() + "\n")
+		return b.String()
+	}
 	md := m.effectiveSectionMarkdown(s)
 	if expanded {
 		body := expandedSectionBody(md, rowW, 4)
@@ -283,6 +288,7 @@ func (m *Model) newSummaryInput() textarea.Model {
 	ta.ShowLineNumbers = false
 	ta.Prompt = ""
 	ta.CharLimit = 20000
+	ta.Placeholder = "Edit section markdown…"
 	ta.SetWidth(max(20, m.vp.Width-2))
 	ta.SetHeight(8)
 	return ta
