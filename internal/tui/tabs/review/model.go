@@ -1516,6 +1516,27 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				return m, m.closeCmd()
 			}
 		case phaseSummary:
+			if m.summaryEditing {
+				return m, nil // swallow card/footer clicks while editing
+			}
+			for i, s := range m.summarySections {
+				if z := zone.Get(zones.SummarySectionCheck(s.ID)); z != nil && z.InBounds(msg) {
+					m.toggleSummaryInclude(i)
+					m.rebuildBody()
+					return m, nil
+				}
+				if z := zone.Get(zones.SummarySectionHeader(s.ID)); z != nil && z.InBounds(msg) {
+					m.summaryFocus = i
+					m.toggleSummaryExpand(i)
+					m.rebuildBody()
+					return m, nil
+				}
+				if !s.Fixed {
+					if z := zone.Get(zones.SummarySectionEdit(s.ID)); z != nil && z.InBounds(msg) {
+						return m.openSummaryEditor(i)
+					}
+				}
+			}
 			if z := zone.Get(zones.StagedSummaryYes); z != nil && z.InBounds(msg) {
 				return m.actPostSummary()
 			}

@@ -1,12 +1,16 @@
 package review
 
 import (
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	zone "github.com/lrstanley/bubblezone"
 
 	"github.com/madicen/appr-ai-sal/internal/review"
+	"github.com/madicen/appr-ai-sal/internal/tui/zones"
 )
 
 func hasSection(secs []review.BodySection, id string) bool {
@@ -345,5 +349,87 @@ func TestSummaryYStillPosts(t *testing.T) {
 	_, cmd := summaryKey(t, ro, runesKey("y"))
 	if cmd == nil {
 		t.Fatalf("y should post the summary")
+	}
+}
+
+// summaryZone renders + scans the overlay and polls (bubblezone registers
+// bounds asynchronously after Scan) until the zone id is available.
+func summaryZone(t *testing.T, ro *Model, id string) *zone.ZoneInfo {
+	t.Helper()
+	zone.Scan(ro.View())
+	deadline := time.Now().Add(time.Second)
+	for zone.Get(id) == nil {
+		if time.Now().After(deadline) {
+			t.Fatalf("zone %q not registered after render", id)
+		}
+		runtime.Gosched()
+	}
+	return zone.Get(id)
+}
+
+func summaryClick(t *testing.T, ro *Model, z *zone.ZoneInfo) *Model {
+	t.Helper()
+	out, _ := ro.handleMouse(tea.MouseMsg{
+		Action: tea.MouseActionPress, Button: tea.MouseButtonLeft,
+		X: z.StartX, Y: z.StartY,
+	})
+	return out.(*Model)
+}
+
+func TestSummarySectionMouseToggleAndExpand(t *testing.T) {
+	ro := summaryKeysModel(t)
+	idx := -1
+	for i, s := range ro.summarySections {
+		if !s.Fixed {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("no editable section")
+	}
+	sec := ro.summarySections[idx]
+
+	// Checkbox click flips Included.
+	ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionCheck(sec.ID)))
+	if ro.sectionIncluded(sec) {
+		t.Fatalf("check click should exclude %q", sec.ID)
+	}
+	ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionCheck(sec.ID)))
+	if !ro.sectionIncluded(sec) {
+		t.Fatalf("second check click should re-include %q", sec.ID)
+	}
+
+	// Header click focuses + toggles expand.
+	ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionHeader(sec.ID)))
+	if !ro.summaryExpanded[sec.ID] || ro.summaryFocus != idx {
+		t.Fatalf("header click: expanded=%v focus=%d want true/%d", ro.summaryExpanded[sec.ID], ro.summaryFocus, idx)
+	}
+	ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionHeader(sec.ID)))
+	if ro.summaryExpanded[sec.ID] {
+		t.Fatalf("second header click should collapse")
+	}
+
+	// Edit click opens the editor.
+	ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionEdit(sec.ID)))
+	if !ro.summaryEditing || ro.summaryEditID != sec.ID {
+		t.Fatalf("edit click: editing=%v id=%q", ro.summaryEditing, ro.summaryEditID)
+	}
+
+	// While editing, card clicks are swallowed.
+	other := -1
+	for i, s := range ro.summarySections {
+		if i != idx && !s.Fixed {
+			other = i
+			break
+		}
+	}
+	if other >= 0 {
+		os := ro.summarySections[other]
+		before := ro.sectionIncluded(os)
+		ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionCheck(os.ID)))
+		if ro.sectionIncluded(os) != before || !ro.summaryEditing {
+			t.Fatalf("clicks while editing must be swallowed")
+		}
 	}
 }
