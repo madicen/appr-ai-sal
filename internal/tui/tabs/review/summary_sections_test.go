@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"github.com/madicen/appr-ai-sal/internal/review"
 )
 
@@ -162,5 +164,163 @@ func TestHelpForPhaseSummaryListsSectionKeys(t *testing.T) {
 	h := ro.helpForPhase()
 	if !strings.Contains(h, "space include") || !strings.Contains(h, "enter expand") || !strings.Contains(h, "e edit") {
 		t.Errorf("help line = %q", h)
+	}
+}
+
+func summaryKey(t *testing.T, ro *Model, msg tea.KeyMsg) (*Model, tea.Cmd) {
+	t.Helper()
+	out, cmd := ro.handleKey(msg)
+	return out.(*Model), cmd
+}
+
+func runesKey(r string) tea.KeyMsg { return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(r)} }
+
+func summaryKeysModel(t *testing.T) *Model {
+	t.Helper()
+	ro := New(120, 44, false, false, false, nil, false)
+	d := newDeferTestDraft(t)
+	d.VibeCoach.Prompts = []review.AuthorPrompt{
+		{Title: "One", AgentPrompt: "do one"},
+		{Title: "Two", AgentPrompt: "do two"},
+	}
+	ro.AdoptDraft(d)
+	ro.syncSummarySections()
+	ro.phase = phaseSummary
+	ro.rebuildBody()
+	if len(ro.summarySections) < 2 {
+		t.Fatalf("need >=2 sections, got %d", len(ro.summarySections))
+	}
+	return ro
+}
+
+func TestSummarySectionKeysToggleExpandEdit(t *testing.T) {
+	ro := summaryKeysModel(t)
+
+	// Focus moves with down/j and up/k, clamped.
+	ro, _ = summaryKey(t, ro, tea.KeyMsg{Type: tea.KeyDown})
+	if ro.summaryFocus != 1 {
+		t.Fatalf("down: focus=%d want 1", ro.summaryFocus)
+	}
+	ro, _ = summaryKey(t, ro, runesKey("k"))
+	if ro.summaryFocus != 0 {
+		t.Fatalf("k: focus=%d want 0", ro.summaryFocus)
+	}
+	ro, _ = summaryKey(t, ro, tea.KeyMsg{Type: tea.KeyUp})
+	if ro.summaryFocus != 0 {
+		t.Fatalf("up at top: focus=%d want 0", ro.summaryFocus)
+	}
+	ro, _ = summaryKey(t, ro, runesKey("j"))
+	if ro.summaryFocus != 1 {
+		t.Fatalf("j: focus=%d want 1", ro.summaryFocus)
+	}
+
+	// Move focus to the first editable (non-fixed) section.
+	idx := -1
+	for i, s := range ro.summarySections {
+		if !s.Fixed {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("no editable section")
+	}
+	for ro.summaryFocus < idx {
+		ro, _ = summaryKey(t, ro, runesKey("j"))
+	}
+	for ro.summaryFocus > idx {
+		ro, _ = summaryKey(t, ro, runesKey("k"))
+	}
+
+	// Space toggles include on the focused (non-fixed) section.
+	sec := ro.summarySections[idx]
+	ro, _ = summaryKey(t, ro, tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	if ov, ok := ro.summaryOverrides[sec.ID]; !ok || ov.Included {
+		t.Fatalf("space: override=%+v ok=%v, want Included=false", ov, ok)
+	}
+	ro, _ = summaryKey(t, ro, tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	if !ro.sectionIncluded(sec) {
+		t.Fatalf("second space should re-include")
+	}
+
+	// Enter expands and must NOT post.
+	phaseBefore := ro.phase
+	ro, cmd := summaryKey(t, ro, tea.KeyMsg{Type: tea.KeyEnter})
+	if !ro.summaryExpanded[sec.ID] {
+		t.Fatalf("enter should expand %q", sec.ID)
+	}
+	if cmd != nil {
+		t.Errorf("enter must not issue a post command")
+	}
+	if ro.phase != phaseBefore || ro.summaryDone {
+		t.Errorf("enter must not post: phase=%v done=%v", ro.phase, ro.summaryDone)
+	}
+	ro, _ = summaryKey(t, ro, tea.KeyMsg{Type: tea.KeyEnter})
+	if ro.summaryExpanded[sec.ID] {
+		t.Fatalf("second enter should collapse")
+	}
+
+	// e opens the editor prefilled with effective markdown.
+	ro, _ = summaryKey(t, ro, runesKey("e"))
+	if !ro.summaryEditing || ro.summaryEditID != sec.ID {
+		t.Fatalf("e: editing=%v id=%q", ro.summaryEditing, ro.summaryEditID)
+	}
+	if got := ro.summaryInput.Value(); got != sec.Markdown {
+		t.Fatalf("prefill = %q, want %q", got, sec.Markdown)
+	}
+
+	// While editing, keys go to the textarea (j must not move focus, y must not post).
+	ro.summaryInput.SetValue("")
+	ro, _ = summaryKey(t, ro, runesKey("y"))
+	ro, _ = summaryKey(t, ro, runesKey("j"))
+	if ro.summaryFocus != idx {
+		t.Errorf("focus moved while editing: %d", ro.summaryFocus)
+	}
+	if !ro.summaryEditing || ro.summaryInput.Value() != "yj" {
+		t.Fatalf("typing: editing=%v value=%q", ro.summaryEditing, ro.summaryInput.Value())
+	}
+
+	// esc commits Edited and closes.
+	ro, _ = summaryKey(t, ro, tea.KeyMsg{Type: tea.KeyEsc})
+	if ro.summaryEditing {
+		t.Fatalf("esc should close the editor")
+	}
+	if ov := ro.summaryOverrides[sec.ID]; ov.Edited != "yj" || !ov.Included {
+		t.Fatalf("override after esc = %+v", ov)
+	}
+	if got := ro.effectiveSectionMarkdown(sec); got != "yj" {
+		t.Fatalf("effective = %q", got)
+	}
+}
+
+func TestSummarySectionKeysFixedSectionNoEdit(t *testing.T) {
+	ro := summaryKeysModel(t)
+	fixed := -1
+	for i, s := range ro.summarySections {
+		if s.Fixed {
+			fixed = i
+			break
+		}
+	}
+	if fixed < 0 {
+		t.Skip("no fixed section")
+	}
+	ro.summaryFocus = fixed
+	id := ro.summarySections[fixed].ID
+	ro, _ = summaryKey(t, ro, runesKey("e"))
+	if ro.summaryEditing {
+		t.Errorf("fixed section must not open editor")
+	}
+	ro, _ = summaryKey(t, ro, tea.KeyMsg{Type: tea.KeySpace, Runes: []rune(" ")})
+	if _, ok := ro.summaryOverrides[id]; ok {
+		t.Errorf("space on fixed section must not create an override")
+	}
+}
+
+func TestSummaryYStillPosts(t *testing.T) {
+	ro := summaryKeysModel(t)
+	_, cmd := summaryKey(t, ro, runesKey("y"))
+	if cmd == nil {
+		t.Fatalf("y should post the summary")
 	}
 }

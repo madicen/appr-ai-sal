@@ -3,6 +3,8 @@ package review
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textarea"
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	zone "github.com/lrstanley/bubblezone"
 
@@ -185,4 +187,147 @@ func (m *Model) renderSummarySectionCards(rowW int) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+// summarySectionKeyActive reports whether a key should be routed to
+// handleSummarySectionKey: always while the editor is open (it owns all
+// input), otherwise only for the section navigation/edit keys.
+func (m *Model) summarySectionKeyActive(msg tea.KeyMsg) bool {
+	if m.summaryEditing {
+		return true
+	}
+	switch msg.String() {
+	case "up", "k", "down", "j", " ", "enter", "e":
+		return true
+	}
+	return false
+}
+
+// handleSummarySectionKey handles the section-card keys in phaseSummary:
+// up/down/j/k focus, space toggles inclusion, enter expands/collapses and e
+// opens the editor. While the editor is open every key except esc goes to the
+// textarea. Callers should gate on summarySectionKeyActive so y/a/n/q/R and
+// scrolling keep their existing meaning.
+func (m *Model) handleSummarySectionKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.summaryEditing {
+		switch msg.String() {
+		case "esc", "ctrl+c":
+			return m.closeSummaryEditor()
+		}
+		var cmd tea.Cmd
+		m.summaryInput, cmd = m.summaryInput.Update(msg)
+		m.rebuildBody()
+		return m, cmd
+	}
+	switch msg.String() {
+	case "up", "k":
+		if m.summaryFocus > 0 {
+			m.summaryFocus--
+			m.rebuildBody()
+		}
+		return m, nil
+	case "down", "j":
+		if m.summaryFocus < len(m.summarySections)-1 {
+			m.summaryFocus++
+			m.rebuildBody()
+		}
+		return m, nil
+	case " ":
+		m.toggleSummaryInclude(m.summaryFocus)
+		m.rebuildBody()
+		return m, nil
+	case "enter":
+		m.toggleSummaryExpand(m.summaryFocus)
+		m.rebuildBody()
+		return m, nil
+	case "e":
+		return m.openSummaryEditor(m.summaryFocus)
+	}
+	return m, nil
+}
+
+// toggleSummaryInclude flips whether section idx is published. Fixed sections
+// and out-of-range indexes are no-ops.
+func (m *Model) toggleSummaryInclude(idx int) {
+	if idx < 0 || idx >= len(m.summarySections) {
+		return
+	}
+	s := m.summarySections[idx]
+	if s.Fixed {
+		return
+	}
+	ov := m.summaryOverrides[s.ID]
+	ov.Included = !m.sectionIncluded(s)
+	if m.summaryOverrides == nil {
+		m.summaryOverrides = map[string]review.BodySectionOverride{}
+	}
+	m.summaryOverrides[s.ID] = ov
+}
+
+// toggleSummaryExpand flips the expanded state of section idx.
+func (m *Model) toggleSummaryExpand(idx int) {
+	if idx < 0 || idx >= len(m.summarySections) {
+		return
+	}
+	if m.summaryExpanded == nil {
+		m.summaryExpanded = map[string]bool{}
+	}
+	id := m.summarySections[idx].ID
+	m.summaryExpanded[id] = !m.summaryExpanded[id]
+}
+
+// newSummaryInput builds the section editor textarea, sized like the
+// challenge input to the current viewport.
+func (m *Model) newSummaryInput() textarea.Model {
+	ta := textarea.New()
+	ta.ShowLineNumbers = false
+	ta.Prompt = ""
+	ta.CharLimit = 20000
+	ta.SetWidth(max(20, m.vp.Width-2))
+	ta.SetHeight(8)
+	return ta
+}
+
+// openSummaryEditor opens the textarea for section idx, prefilled with its
+// effective markdown. A no-op for Fixed or out-of-range sections.
+func (m *Model) openSummaryEditor(idx int) (tea.Model, tea.Cmd) {
+	if idx < 0 || idx >= len(m.summarySections) {
+		return m, nil
+	}
+	s := m.summarySections[idx]
+	if s.Fixed {
+		return m, nil
+	}
+	m.summaryFocus = idx
+	m.summaryEditID = s.ID
+	m.summaryInput = m.newSummaryInput()
+	m.summaryInput.SetValue(m.effectiveSectionMarkdown(s))
+	m.summaryEditing = true
+	m.rebuildBody()
+	return m, m.summaryInput.Focus()
+}
+
+// closeSummaryEditor commits the textarea contents as the section's Edited
+// markdown (keeping its include state) and closes the editor.
+func (m *Model) closeSummaryEditor() (tea.Model, tea.Cmd) {
+	if m.summaryEditing {
+		for _, s := range m.summarySections {
+			if s.ID != m.summaryEditID {
+				continue
+			}
+			if m.summaryOverrides == nil {
+				m.summaryOverrides = map[string]review.BodySectionOverride{}
+			}
+			m.summaryOverrides[s.ID] = review.BodySectionOverride{
+				Included: m.sectionIncluded(s),
+				Edited:   m.summaryInput.Value(),
+			}
+			break
+		}
+	}
+	m.summaryEditing = false
+	m.summaryEditID = ""
+	m.summaryInput.Blur()
+	m.rebuildBody()
+	return m, nil
 }

@@ -1279,6 +1279,11 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.challengeActive {
 		return m.handleChallengeKey(msg)
 	}
+	// Summary section editor: owns all keyboard input (including tab) until
+	// esc commits and closes it.
+	if m.phase == phaseSummary && m.summaryEditing {
+		return m.handleSummarySectionKey(msg)
+	}
 	// Tab navigation works from every phase: the user can browse the
 	// overview, any finished agent, and (once ready) the summary at will.
 	switch msg.String() {
@@ -1388,8 +1393,13 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case phaseSummary:
+		// Section-card keys (focus / include / expand / edit) run before the
+		// viewport scroll fallthrough. enter expands a card; only y posts.
+		if m.summarySectionKeyActive(msg) {
+			return m.handleSummarySectionKey(msg)
+		}
 		switch msg.String() {
-		case "y", "Y", "enter":
+		case "y", "Y":
 			return m.actPostSummary()
 		case "a", "A":
 			if m.summaryPhaseAllowApproveOnly() {
