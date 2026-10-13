@@ -64,6 +64,7 @@ func skipSetHash(keys map[string]struct{}) string {
 // call repeatedly — coachInFlight guards against double-issue.
 func (m *Model) enterSummary() tea.Cmd {
 	m.syncUserSkipsToDraft()
+	m.syncSummarySections()
 	// First decide whether the summary tab should show its confirm-approve
 	// sub-state instead of the full post-summary form. This subsumes the
 	// old advanceCard routing: no findings at all, an APPROVE verdict, or

@@ -616,6 +616,18 @@ type Model struct {
 	editInput   textarea.Model
 	editErr     error
 
+	// Summary-section editor session state (see summary_sections.go).
+	// summarySections mirrors draft.BodySections(); summaryOverrides holds the
+	// reviewer's per-section include/edit choices (missing key = included,
+	// unedited) and survives re-sync for sections whose ID still exists.
+	summarySections  []review.BodySection
+	summaryFocus     int
+	summaryExpanded  map[string]bool
+	summaryOverrides map[string]review.BodySectionOverride
+	summaryEditing   bool
+	summaryEditID    string
+	summaryInput     textarea.Model
+
 	// copyStatus is a brief, transient footer note after a clipboard copy
 	// (Phase 5 item 9): "copied finding", "copy failed: …", etc. Set when a
 	// util.ClipboardCopiedMsg arrives and cleared on the next navigation.
@@ -1202,6 +1214,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.coachErr = msg.Result.Err
 		}
 		m.lastCoachHash = curHash
+		// The draft's vibe-coach result changed, so its prompt sections did too.
+		m.syncSummarySections()
 		// The refreshed summary belongs on the summary tab. Focus it (no
 		// further vibe-coach re-run is needed now that the cache is warm)
 		// and show the post-summary body.
