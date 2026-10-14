@@ -86,12 +86,15 @@ homebrew_casks:
 
       Or use System Settings → Privacy & Security → Open Anyway.
       Prefer `brew install --cask madicen/tap/appr-ai-sal` (cask preflight handles this).
+    # GoReleaser ~> v2 currently resolves to v2.18.x, which accepts raw Ruby
+    # under hooks.pre.install (system_command / #{staged_path}). install_steps
+    # (run / {{ .StagedPath }}) arrives in v2.19 — switch back when CI bumps.
     hooks:
       pre:
-        install_steps: |
-          on_macos do
-            run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ .StagedPath }}/appr-ai-sal"]
-            run "/usr/bin/codesign", args: ["--force", "--sign", "-", "{{ .StagedPath }}/appr-ai-sal"]
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/appr-ai-sal"]
+            system_command "/usr/bin/codesign", args: ["--force", "--sign", "-", "#{staged_path}/appr-ai-sal"]
           end
 
 release:
