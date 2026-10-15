@@ -91,22 +91,24 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if !wheel && msg.Action != tea.MouseActionPress {
 			return m, nil
 		}
-		listTop := m.listBodyOriginY()
-		// Wheel scroll is only meaningful for the list pane and only
-		// when no inline input is focused — otherwise the search /
-		// URL field would silently lose its caret position whenever
-		// the user spun the wheel over the list.
-		if wheel && m.listFocus == focusList && msg.Y >= listTop && msg.Y < listTop+m.list.Height() {
-			switch msg.Button {
-			case tea.MouseButtonWheelDown:
-				m.resetListClickTracking()
-				m.list.CursorDown()
-				return m, nil
-			case tea.MouseButtonWheelUp:
-				m.resetListClickTracking()
-				m.list.CursorUp()
-				return m, nil
+		// Wheel moves the list whenever it owns focus. Do not require the
+		// cursor to sit inside the list widget: some terminals report Y=0
+		// for wheel ticks, and wheeling over the filter strip / status bar
+		// should still scroll the queue. Dropping those events left the
+		// terminal's own scrollback to take over (j/k still worked).
+		// Skip when search/URL is focused so the caret isn't yanked away.
+		if wheel {
+			if m.listFocus == focusList {
+				switch msg.Button {
+				case tea.MouseButtonWheelDown, tea.MouseButtonWheelRight:
+					m.resetListClickTracking()
+					m.list.CursorDown()
+				case tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft:
+					m.resetListClickTracking()
+					m.list.CursorUp()
+				}
 			}
+			return m, nil
 		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			for _, chip := range filterChips {
