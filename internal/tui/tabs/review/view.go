@@ -241,8 +241,12 @@ func (m *Model) renderAgentTab(name string) string {
 	row := &m.agents[i]
 	var b strings.Builder
 
-	// Header: agent tag + status detail.
-	b.WriteString(styles.RenderTag(name) + "  " + agentStatusDetail(row) + "\n")
+	// Header: agent tag + status detail (+ re-run when allowed).
+	header := styles.RenderTag(name) + "  " + m.agentStatusDetail(row)
+	if m.canRerunNamed(name) && row.phase != oaRunning {
+		header += "  " + zone.Mark(zoneOverlayAgentRerun(i), styles.BoldStyle.Render("Re-run (u)"))
+	}
+	b.WriteString(header + "\n")
 	verdict := row.verdict
 	if verdict == "" && name == review.SpecVibeCoach && m.draft != nil && m.draft.VibeCoach != nil {
 		verdict = m.draft.VibeCoach.Verdict
@@ -649,6 +653,13 @@ func (m *Model) renderRunningBody() string {
 		headline += "  ·  " + styles.ErrStyle.Render(fmt.Sprintf("%d failed", failedN))
 	}
 	b.WriteString(headline + "\n")
+	if m.done && m.draft != nil && m.draft.SynthesisStale() {
+		b.WriteString(styles.WarnStyle.Render("Arbiter/vibe out of date — re-run those rows, or continue with stale synthesis.") + "\n")
+	}
+	if m.done && m.rerunAvailable() && m.draft != nil && len(m.draft.FailedAgentNames()) > 0 {
+		btn := zone.Mark(zoneOverlayRerunAllFailed(), styles.BoldStyle.Render(" Re-run all failed (R) "))
+		b.WriteString(btn + "\n")
+	}
 	if m.runErr != nil {
 		b.WriteString(styles.ErrStyle.Render("Run failed: "+m.runErr.Error()) + "\n")
 		b.WriteString(styles.DimStyle.Render("Press q to close · scroll down for recent log") + "\n")
@@ -851,7 +862,7 @@ func (m *Model) renderAgentRow(i int, a *overlayAgentRow, rowW, bodyIndentW int)
 	}
 	icon := agentStatusIcon(a)
 	tag := styles.RenderTag(a.name)
-	right := agentStatusDetail(a)
+	right := m.agentStatusDetail(a)
 	chev := " "
 	if hasExpandableContent(a) {
 		chev = "▶"
@@ -868,6 +879,9 @@ func (m *Model) renderAgentRow(i int, a *overlayAgentRow, rowW, bodyIndentW int)
 		pad = 1
 	}
 	header := prefix + strings.Repeat(" ", pad) + right
+	if m.canRerunNamed(a.name) && a.phase != oaRunning {
+		header += "  " + zone.Mark(zoneOverlayAgentRerun(i), styles.BoldStyle.Render("Re-run"))
+	}
 	hdrLine := lipgloss.NewStyle().Width(rowW).Align(lipgloss.Left).Render(header)
 	if ansi.StringWidth(hdrLine) > rowW {
 		hdrLine = ansi.Truncate(hdrLine, rowW, "")
@@ -926,7 +940,7 @@ func agentStatusIcon(a *overlayAgentRow) string {
 
 // agentStatusDetail renders the right-side detail for the row: elapsed time
 // + result counts when applicable, with retry annotation when present.
-func agentStatusDetail(a *overlayAgentRow) string {
+func (m *Model) agentStatusDetail(a *overlayAgentRow) string {
 	switch a.phase {
 	case oaPending:
 		return styles.DimStyle.Render("queued")
@@ -942,6 +956,10 @@ func agentStatusDetail(a *overlayAgentRow) string {
 		}
 		return base
 	case oaDone:
+		if stale := m.synthesisStaleLabel(a.name); stale != "" {
+			dur := humanElapsed(a.finishedAt.Sub(a.startedAt))
+			return styles.WarnStyle.Render("stale") + styles.DimStyle.Render(" · "+dur)
+		}
 		dur := humanElapsed(a.finishedAt.Sub(a.startedAt))
 		count := ""
 		switch {
@@ -999,6 +1017,23 @@ func agentStatusDetail(a *overlayAgentRow) string {
 			base += styles.DimStyle.Render(" · gave up after " + fmt.Sprintf("%d×", a.retries))
 		}
 		return base
+	}
+	return ""
+}
+
+func (m *Model) synthesisStaleLabel(name string) string {
+	if m == nil || m.draft == nil {
+		return ""
+	}
+	switch name {
+	case overlayAgentRepoArbiter:
+		if m.draft.ArbiterStale {
+			return "stale"
+		}
+	case review.SpecVibeCoach:
+		if m.draft.VibeStale {
+			return "stale"
+		}
 	}
 	return ""
 }

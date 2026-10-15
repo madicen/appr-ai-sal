@@ -401,6 +401,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap) 
 		}
 
 		var prAgents []SpecialistResult
+		var savedPRData PRAgentInput
 		prParallel := prAgentsEnabled && rc != nil && rc.ParallelPRAgents
 		var prWG sync.WaitGroup
 		if prParallel {
@@ -412,6 +413,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap) 
 				if plan != nil {
 					prData.PriorFindingsStatus = plan.priorStatus
 				}
+				savedPRData = prData
 				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
 			}()
 		}
@@ -444,6 +446,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap) 
 			if plan != nil {
 				prData.PriorFindingsStatus = plan.priorStatus
 			}
+			savedPRData = prData
 			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
 		}
 
@@ -478,7 +481,17 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap) 
 			out <- Progress{Stage: "reviewer-memory", Detail: fmt.Sprintf("suppressed %d finding(s) matching repeatedly-skipped patterns", len(memSuppressed))}
 		}
 
+		// Snapshot pre-arbiter specialists for post-run re-runs (before
+		// FinalizeRepoArbiter mutates findings via demote/suppress).
+		preArbiterSpecialists := append([]SpecialistResult(nil), allSpecialists...)
+
 		skipDownstream := !SpecialistsHaveAnyFindings(allSpecialists)
+
+		parallelSpecs := rc != nil && rc.ParallelSpecialists
+		parallelPR := rc != nil && rc.ParallelPRAgents
+		convWitness := rc != nil && rc.ConventionWitness
+		repoPanel := rc != nil && rc.RepoExpertPanel
+		arbDemotions := rc != nil && rc.RepoArbiterDemotions
 
 		final := &Draft{
 			Ref:                        ref,
@@ -491,6 +504,26 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap) 
 			ContextVersusChangeSummary: cvSummary,
 			PRIntent:                   prIntent,
 			MemorySuppressed:           memSuppressed,
+			Rerun: &RerunContext{
+				SpecialistDiff:        specialistDiff,
+				PRAgentDiff:           shapedDiff,
+				PerAgent:              perAgent,
+				PREvidence:            prEvidence,
+				StaticSection:         staticSection,
+				StaticCleanFiles:      staticCleanFiles,
+				LangSection:           langSection,
+				TechSection:           techSection,
+				IntentSection:         intentSection,
+				ExpandedSection:       expandedSection,
+				RejectedMemory:        RejectedPatternsSection(repoMemory),
+				PRAgentInput:          savedPRData,
+				PreArbiterSpecialists: preArbiterSpecialists,
+				ParallelSpecialists:   parallelSpecs,
+				ParallelPRAgents:      parallelPR,
+				ConventionWitness:     convWitness,
+				RepoExpertPanel:       repoPanel,
+				RepoArbiterDemotions:  arbDemotions,
+			},
 		}
 		// B3: on a re-review, carry the prior cached review onto the Draft so
 		// the posting path can leave status replies on the tool's own prior
@@ -936,11 +969,11 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 	// findings get their own identifier-style census evidence (Q6.5).
 	evidence = appendTechConventionEvidence(evidence, worktree, techFindings)
 	evidence = appendFormattingConventionEvidence(evidence, worktree, formattingFindings)
-	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("start (%d findings)", len(inputs))}
+	emitProgress(out, Progress{Stage: "convention-witness", Detail: fmt.Sprintf("start (%d findings)", len(inputs))})
 	// Wrap in stageWithRetry so a transient parse/transport glitch on this
 	// (previously non-retried) path re-runs like every other AI stage.
 	notify := func(attempt int, err error) {
-		out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
+		emitProgress(out, Progress{Stage: "convention-witness", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))})
 	}
 	var res conventionwitness.Result
 	_ = stageWithRetry(ctx, runCfg, "convention-witness", notify, func(sctx context.Context) error {
@@ -952,11 +985,19 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc 
 		return res.Err
 	})
 	if res.Err != nil {
-		out <- Progress{Stage: "convention-witness", Detail: "warning: " + res.Err.Error()}
+		emitProgress(out, Progress{Stage: "convention-witness", Detail: "warning: " + res.Err.Error()})
 		return nil
 	}
-	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("done (%d witnesses)", len(res.Witnesses))}
+	emitProgress(out, Progress{Stage: "convention-witness", Detail: fmt.Sprintf("done (%d witnesses)", len(res.Witnesses))})
 	return res.Witnesses
+}
+
+// emitProgress sends p on out when out is non-nil (manual re-runs pass nil).
+func emitProgress(out chan<- Progress, p Progress) {
+	if out == nil {
+		return
+	}
+	out <- p
 }
 
 // witnessInputsForSpecialists collects the convention-witness inputs from a

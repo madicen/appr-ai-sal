@@ -446,7 +446,7 @@ func TestAgentRowCountReflectsFinalDraftNotStreamed(t *testing.T) {
 	if got := ro.agents[i].findingsN; got != 1 {
 		t.Fatalf("testing row findingsN = %d, want 1 (0 surviving + 1 demoted)", got)
 	}
-	detail := ansi.Strip(agentStatusDetail(&ro.agents[i]))
+	detail := ansi.Strip(ro.agentStatusDetail(&ro.agents[i]))
 	if !strings.Contains(detail, "1 finding(s)") {
 		t.Fatalf("testing row detail should report 1 finding(s), got %q", detail)
 	}
@@ -512,7 +512,7 @@ func TestVibeCoachRowLabelsPromptsNotFindings(t *testing.T) {
 		name: review.SpecVibeCoach, stage: stageGroupVibe, phase: oaDone,
 		findingsN: 3, verdict: review.VibeVerdictRequestChanges,
 	}
-	got := ansi.Strip(agentStatusDetail(row))
+	got := ansi.Strip((&Model{}).agentStatusDetail(row))
 	if strings.Contains(got, "finding") {
 		t.Fatalf("vibe-coach row must not call prompts findings: %q", got)
 	}

@@ -74,6 +74,9 @@ func (m *Model) renderSummaryBody() string {
 	rowW := max(8, m.vp.Width)
 	var b strings.Builder
 	b.WriteString(styles.BoldStyle.Render("Final step — post the review summary") + "\n\n")
+	if m.draft != nil && m.draft.SynthesisStale() {
+		b.WriteString(styles.WarnStyle.Render("Arbiter/vibe out of date — re-run those rows (overview: r/R, agent tab: u/U), or continue with stale synthesis.") + "\n\n")
+	}
 	if banner := formatPriorActivityBanner(m.priorActivity); banner != "" {
 		b.WriteString(banner + "\n\n")
 	}
@@ -348,6 +351,9 @@ func (m *Model) spinnerForPhase() string {
 func (m *Model) helpForPhase() string {
 	switch m.phase {
 	case phaseRunning:
+		if m.done && m.rerunAvailable() {
+			return "tab/[ ] switch tab · j/k focus · r re-run · R re-run failed · space expand · q close · wheel"
+		}
 		return "tab/[ ] switch tab · j/k focus row · space expand · q abort · ↑/↓ scroll · wheel"
 	case phaseApprove:
 		if m.challengeActive {
@@ -356,7 +362,7 @@ func (m *Model) helpForPhase() string {
 		if !m.done {
 			return "tab/[ ] switch tab · ↑/↓ scroll · q abort · wheel"
 		}
-		return "tab/[ ] switch tab · y post · n/s skip · c challenge · x resurface · ←/→ finding · R refresh PR · q abort · wheel"
+		return "tab/[ ] switch tab · y post · n/s skip · c challenge · x resurface · ←/→ finding · u re-run agent · R refresh PR · q abort · wheel"
 	case phaseGeneratingSummary:
 		return "refining summary with your final selections… · q abort"
 	case phaseSummary:
