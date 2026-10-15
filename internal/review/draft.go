@@ -93,6 +93,15 @@ type Draft struct {
 	// which earlier concerns the new commits addressed. Nil keeps the posting
 	// path byte-identical to a first review (no status replies).
 	PriorReview *CachedDraft `json:"-"`
+	// Rerun holds the exact inputs the pipeline used for specialists / PR
+	// agents / arbiter so the TUI can re-run failed agents after the run
+	// finishes. Nil on restored draft-cache sessions (re-run disabled).
+	Rerun *RerunContext `json:"-"`
+	// ArbiterStale / VibeStale are set when a specialist or PR-agent re-run
+	// changes the finding set (or when arbiter re-runs, which dirties vibe).
+	// The TUI shows a soft banner; posting is still allowed.
+	ArbiterStale bool `json:"-"`
+	VibeStale    bool `json:"-"`
 }
 
 // severityFloor returns the strictness floor recorded on the Draft, or

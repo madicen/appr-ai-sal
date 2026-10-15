@@ -1,6 +1,7 @@
 package review
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -579,6 +580,10 @@ type Model struct {
 	// header so the user knows the summary they're seeing may be stale
 	// or missing fix-prompts.
 	coachErr error
+	// rerunInFlight / rerunCancel guard post-pipeline specialist/arbiter/vibe
+	// re-runs started from the overlay (r/R/u or mouse).
+	rerunInFlight bool
+	rerunCancel   context.CancelFunc
 
 	// U2 draft-persistence bookkeeping. sessionDirty flags that a decision
 	// changed since the last write; sessionSaveSeq lets a later debounced save
@@ -652,6 +657,20 @@ type Model struct {
 func zoneOverlayAgent(i int) string {
 	return fmt.Sprintf("zone:overlay:agent:%d", i)
 }
+
+func zoneOverlayAgentRerun(i int) string {
+	return fmt.Sprintf("zone:overlay:agent-rerun:%d", i)
+}
+
+func zoneOverlayRerunAllFailed() string {
+	return "zone:overlay:rerun-all-failed"
+}
+
+// AgentRerunZoneName exports the per-row re-run zone id for tests.
+func AgentRerunZoneName(i int) string { return zoneOverlayAgentRerun(i) }
+
+// RerunAllFailedZoneName exports the batch re-run zone id for tests.
+func RerunAllFailedZoneName() string { return zoneOverlayRerunAllFailed() }
 
 // digitKey reports whether the key message is a single ASCII digit and,
 // if so, its numeric value (1-9, plus 0). Used for jump-to-tab shortcuts.
@@ -1195,6 +1214,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.onClipboardCopied(msg)
 		return m, nil
 
+	case AgentRerunDoneMsg:
+		return m, m.handleAgentRerunDone(msg)
+
+	case AgentRerunBatchDoneMsg:
+		return m, m.handleAgentRerunBatchDone(msg)
+
 	case VibeCoachDoneMsg:
 		m.coachInFlight = false
 		// If the user changed skips again between issue and completion,
@@ -1319,7 +1344,23 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, nil
+		case "r":
+			// Post-pipeline: re-run focused failed agent / arbiter / vibe.
+			// During the initial run this is a no-op (rerunAvailable false).
+			if cmd := m.rerunFocusedAgent(); cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+		case "R":
+			if cmd := m.rerunAllFailed(); cmd != nil {
+				return m, cmd
+			}
+			return m, nil
 		case "q", "esc":
+			if m.rerunInFlight {
+				m.cancelRerun()
+				return m, nil
+			}
 			// Abort: close the overlay even though the runner is still in flight.
 			// The goroutine continues; if it eventually finishes, m.draft on the
 			// root model is populated and the user can press 'a' to reopen
@@ -1365,6 +1406,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.actPrev()
 		case "r", "R":
 			return m.actRefreshPR()
+		case "u":
+			// Agent-tab re-run (r/R already mean refresh PR here).
+			if cmd := m.rerunFocusedAgent(); cmd != nil {
+				return m, cmd
+			}
+			return m, nil
+		case "U":
+			if cmd := m.rerunAllFailed(); cmd != nil {
+				return m, cmd
+			}
+			return m, nil
 		case "F":
 			// File-level fallback: post the current finding as a
 			// subject_type=file comment when its line can't anchor on
@@ -1382,6 +1434,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// anchor (emits JumpToDiffMsg for the root to handle).
 			return m.actJumpToDiff()
 		case "q", "esc":
+			if m.rerunInFlight {
+				m.cancelRerun()
+				return m, nil
+			}
 			return m, m.closeCmd()
 		}
 	case phaseGeneratingSummary:
@@ -1484,7 +1540,20 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 		switch m.phase {
 		case phaseRunning:
+			if z := zone.Get(zoneOverlayRerunAllFailed()); z != nil && z.InBounds(msg) {
+				if cmd := m.rerunAllFailed(); cmd != nil {
+					return m, cmd
+				}
+				return m, nil
+			}
 			for i := range m.agents {
+				if z := zone.Get(zoneOverlayAgentRerun(i)); z != nil && z.InBounds(msg) {
+					m.cursor = i
+					if cmd := m.rerunFocusedAgent(); cmd != nil {
+						return m, cmd
+					}
+					return m, nil
+				}
 				if z := zone.Get(zoneOverlayAgent(i)); z != nil && z.InBounds(msg) {
 					m.cursor = i
 					if hasExpandableContent(&m.agents[i]) {
@@ -1495,6 +1564,13 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 		case phaseApprove:
+			for i := range m.agents {
+				if z := zone.Get(zoneOverlayAgentRerun(i)); z != nil && z.InBounds(msg) {
+					if m.canRerunNamed(m.agents[i].name) {
+						return m, m.startAgentRerun(m.agents[i].name)
+					}
+				}
+			}
 			if z := zone.Get(zones.StagedPost); z != nil && z.InBounds(msg) {
 				return m.actPostCurrent()
 			}

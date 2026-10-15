@@ -353,19 +353,33 @@ func TestSummaryYStillPosts(t *testing.T) {
 	}
 }
 
-// summaryZone renders + scans the overlay and polls (bubblezone registers
-// bounds asynchronously after Scan) until the zone id is available.
+// summaryZone renders + scans the overlay and polls until the zone id is
+// available with valid bounds. bubblezone applies Scan() on a background
+// worker — an immediate Get() can be nil or stale, especially under -race.
+// View() only includes the viewport window, so ids for off-screen cards will
+// never appear; callers must target a zone that is currently painted.
 func summaryZone(t *testing.T, ro *Model, id string) *zone.ZoneInfo {
 	t.Helper()
-	zone.Scan(ro.View())
-	deadline := time.Now().Add(time.Second)
-	for zone.Get(id) == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("zone %q not registered after render", id)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		zone.Scan(ro.View())
+		for i := 0; i < 32; i++ {
+			runtime.Gosched()
 		}
-		runtime.Gosched()
+		if z := zone.Get(id); summaryZoneReady(z) {
+			return z
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
-	return zone.Get(id)
+	t.Fatalf("zone %q not registered after render", id)
+	return nil
+}
+
+func summaryZoneReady(z *zone.ZoneInfo) bool {
+	if z == nil {
+		return false
+	}
+	return z.StartX <= z.EndX && z.StartY <= z.EndY
 }
 
 func summaryClick(t *testing.T, ro *Model, z *zone.ZoneInfo) *Model {
@@ -417,21 +431,14 @@ func TestSummarySectionMouseToggleAndExpand(t *testing.T) {
 		t.Fatalf("edit click: editing=%v id=%q", ro.summaryEditing, ro.summaryEditID)
 	}
 
-	// While editing, card clicks are swallowed.
-	other := -1
-	for i, s := range ro.summarySections {
-		if i != idx && !s.Fixed {
-			other = i
-			break
-		}
-	}
-	if other >= 0 {
-		os := ro.summarySections[other]
-		before := ro.sectionIncluded(os)
-		ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionCheck(os.ID)))
-		if ro.sectionIncluded(os) != before || !ro.summaryEditing {
-			t.Fatalf("clicks while editing must be swallowed")
-		}
+	// While editing, card clicks are swallowed. Click this section's own
+	// check (still on-screen above the textarea) — another section's zone
+	// may have scrolled out of the viewport once the editor opened, and
+	// View() only exposes currently painted markers to bubblezone.
+	before := ro.sectionIncluded(sec)
+	ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionCheck(sec.ID)))
+	if ro.sectionIncluded(sec) != before || !ro.summaryEditing {
+		t.Fatalf("clicks while editing must be swallowed")
 	}
 }
 
