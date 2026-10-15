@@ -103,6 +103,37 @@ func TestControlsProfileDropdownOpensAndSelects(t *testing.T) {
 	}
 }
 
+// Opening the controls profile dropdown must not pad the detail body to the
+// full terminal height. That overflow makes JoinVertical(header, body, status)
+// taller than m.height, the terminal scrolls, and bubblezone Y coords drift
+// from the visible rows.
+func TestControlsProfileDropdownOpenFitsTerminalHeight(t *testing.T) {
+	m := detailFixtureModel(t)
+	m.opts.AIConfig = aiconfig.DefaultConfig()
+	if err := m.opts.AIConfig.AddProfile(aiconfig.Profile{
+		Name:     "fast",
+		Provider: aiconfig.ProviderOllama,
+		Model:    "phi3",
+	}); err != nil {
+		t.Fatalf("AddProfile: %v", err)
+	}
+	m.refreshDetailViews()
+	_ = m.View()
+
+	msg := clickCenterOfZone(t, zones.ControlsProfileDD)
+	out, _ := m.detailHandleMouse(msg, false)
+	m2 := out.(*Model)
+	if !detailState(t, m2).ControlsProfileDropdownOpen() {
+		t.Fatal("clicking the profile trigger should open the dropdown panel")
+	}
+
+	view := m2.View()
+	lines := strings.Split(view, "\n")
+	if got := len(lines); got > m2.height {
+		t.Fatalf("open profile dropdown View() produced %d rows; must not exceed terminal height %d (body padded to host.Height?)", got, m2.height)
+	}
+}
+
 // Clicking the "Start review" button kicks off startReviewOverlay (signaled
 // by the model entering the review overlay path; for unit testing we just
 // assert the click is consumed without a panic and a non-nil command runs).
