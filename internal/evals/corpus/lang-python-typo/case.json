@@ -1,0 +1,11 @@
+{
+  "id": "lang-python-typo",
+  "title": "Add parse_int",
+  "target": "tech",
+  "repo": "acme/py",
+  "number": 207,
+  "strictness": "balanced",
+  "tech_configured": true,
+  "additions": 5,
+  "changed_files": 1
+}

@@ -1,0 +1,10 @@
+package auth
+
+import "errors"
+
+func Login(user, pass string) error {
+	if user == "" {
+		return errors.New("empty user")
+	}
+	return nil
+}

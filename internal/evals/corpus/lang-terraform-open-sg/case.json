@@ -1,0 +1,10 @@
+{
+  "id": "lang-terraform-open-sg",
+  "title": "Add security group",
+  "target": "security",
+  "repo": "acme/infra",
+  "number": 209,
+  "strictness": "balanced",
+  "additions": 10,
+  "changed_files": 1
+}

@@ -1,0 +1,10 @@
+{
+  "id": "crossfile-ident-security",
+  "title": "Wire Login to helper",
+  "target": "security",
+  "repo": "acme/auth",
+  "number": 203,
+  "strictness": "balanced",
+  "additions": 5,
+  "changed_files": 1
+}

@@ -1,0 +1,11 @@
+{
+  "id": "lang-typescript-any",
+  "title": "Add identity",
+  "target": "tech",
+  "repo": "acme/ts",
+  "number": 208,
+  "strictness": "balanced",
+  "tech_configured": true,
+  "additions": 3,
+  "changed_files": 1
+}

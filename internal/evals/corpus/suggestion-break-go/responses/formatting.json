@@ -1,0 +1,14 @@
+{
+  "summary": "Broken suggestion that does not parse.",
+  "findings": [
+    {
+      "path": "calc/sum.go",
+      "line": 4,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Prefer explicit spacing around := for gofmt consistency.",
+      "suggestion": "\tn := {",
+      "anchor_excerpt": "\tn := 0"
+    }
+  ]
+}

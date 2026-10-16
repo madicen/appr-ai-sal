@@ -1,0 +1,21 @@
+{
+  "summary": "Empty user and invented helper.",
+  "findings": [
+    {
+      "path": "auth/login.go",
+      "line": 6,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Empty user returns a generic error; reject empty passwords too before authenticating credentials.",
+      "anchor_excerpt": "\tif user == \"\" {"
+    },
+    {
+      "path": "auth/login.go",
+      "line": 5,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Login should call `ValidateSessionToken` before accepting credentials.",
+      "anchor_excerpt": "func Login(user, pass string) error {"
+    }
+  ]
+}

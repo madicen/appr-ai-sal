@@ -1,0 +1,14 @@
+{
+  "summary": "SSH open to the world.",
+  "findings": [
+    {
+      "path": "infra/sg.tf",
+      "line": 7,
+      "side": "RIGHT",
+      "severity": "error",
+      "comment": "SSH ingress uses `0.0.0.0/0`; restrict the cidr_blocks.",
+      "suggestion": "    cidr_blocks = [\"10.0.0.0/8\"]",
+      "anchor_excerpt": "    cidr_blocks = [\"0.0.0.0/0\"]"
+    }
+  ]
+}

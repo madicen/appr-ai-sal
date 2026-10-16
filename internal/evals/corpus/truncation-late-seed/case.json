@@ -1,0 +1,10 @@
+{
+  "id": "truncation-late-seed",
+  "title": "Bulk helpers plus weak hash",
+  "target": "security",
+  "repo": "acme/bulk",
+  "number": 210,
+  "strictness": "balanced",
+  "additions": 400,
+  "changed_files": 2
+}

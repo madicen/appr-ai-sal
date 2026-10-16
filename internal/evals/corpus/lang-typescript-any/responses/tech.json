@@ -1,0 +1,14 @@
+{
+  "summary": "Prefer unknown over any.",
+  "findings": [
+    {
+      "path": "src/id.ts",
+      "line": 1,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Prefer `unknown` over `any` for the parameter type.",
+      "suggestion": "export function id(x: unknown) {",
+      "anchor_excerpt": "export function id(x: any) {"
+    }
+  ]
+}

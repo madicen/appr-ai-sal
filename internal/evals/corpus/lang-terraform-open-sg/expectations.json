@@ -1,0 +1,11 @@
+{
+  "must_appear": [
+    {
+      "specialist": "security",
+      "pattern": "(?i)0\\.0\\.0\\.0/0|open|cidr",
+      "note": "open SSH"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": { "security": true }
+}

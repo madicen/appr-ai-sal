@@ -1,0 +1,15 @@
+diff --git a/auth/login.go b/auth/login.go
+new file mode 100644
+--- /dev/null
++++ b/auth/login.go
+@@ -0,0 +1,8 @@
++package auth
++
++import "errors"
++
++func Login(user, pass string) error {
++	if user == "" {
++		return errors.New("empty user")
++	}
++	return nil
++}

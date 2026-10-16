@@ -1,0 +1,10 @@
+diff --git a/svc/parse.py b/svc/parse.py
+new file mode 100644
+--- /dev/null
++++ b/svc/parse.py
+@@ -0,0 +1,5 @@
++def parse_int(s):
++    try:
++        return int(s)
++    except:
++        return 0

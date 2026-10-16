@@ -1,0 +1,10 @@
+{
+  "id": "suggestion-break-python",
+  "title": "Add greet",
+  "target": "testing",
+  "repo": "acme/pyapp",
+  "number": 206,
+  "strictness": "balanced",
+  "additions": 4,
+  "changed_files": 1
+}

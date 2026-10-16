@@ -1,0 +1,5 @@
+package auth
+
+func Login(user string) error {
+	return nil
+}

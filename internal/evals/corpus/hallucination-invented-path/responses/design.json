@@ -1,0 +1,21 @@
+{
+  "summary": "Hard-coded return and invented path.",
+  "findings": [
+    {
+      "path": "api/handler.go",
+      "line": 4,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Hard-coded return string \"ok\" should come from a named constant.",
+      "anchor_excerpt": "\treturn \"ok\""
+    },
+    {
+      "path": "api/handler.go",
+      "line": 3,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Handler duplicates logic already in internal/secrets/vault.go; extract a shared helper.",
+      "anchor_excerpt": "func Handler() string {"
+    }
+  ]
+}
