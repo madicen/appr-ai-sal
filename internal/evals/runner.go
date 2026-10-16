@@ -61,22 +61,40 @@ func caseConfig(cfg *aiconfig.Config, c Case) *aiconfig.Config {
 // `make evals`, or a ReplayProvider injected by tests via
 // ai.SetBaseProviderForTest).
 func RunCase(ctx context.Context, cfg *aiconfig.Config, c Case) CaseScore {
-	obs := review.EvalRun(ctx, caseConfig(cfg, c), buildEvalInput(c))
-	return ScoreCase(c, obs)
+	cs, _ := runCase(ctx, cfg, c, "")
+	return cs
+}
+
+func runCase(ctx context.Context, cfg *aiconfig.Config, c Case, dumpDir string) (CaseScore, error) {
+	rc := caseConfig(cfg, c)
+	obs := review.EvalRun(ctx, rc, buildEvalInput(c))
+	cs := ScoreCase(c, obs)
+	// Dump after scoring so a write failure never changes CaseScore.
+	return cs, writeCaseDumps(dumpDir, rc, c, obs)
 }
 
 // RunCorpus runs every case and returns a labelled CorpusScore. label is the
 // A/B slot ("A"/"B") or "" for a single run.
 func RunCorpus(ctx context.Context, cfg *aiconfig.Config, cases []Case, label string) CorpusScore {
+	cs, _ := runCorpus(ctx, cfg, cases, label, "")
+	return cs
+}
+
+func runCorpus(ctx context.Context, cfg *aiconfig.Config, cases []Case, label, dumpDir string) (CorpusScore, error) {
 	out := CorpusScore{
 		Provider: string(cfg.Provider),
 		Model:    cfg.AIModelOrDefault(),
 		Label:    label,
 	}
+	var dumpErr error
 	for _, c := range cases {
-		out.Cases = append(out.Cases, RunCase(ctx, cfg, c))
+		cs, err := runCase(ctx, cfg, c, dumpDir)
+		out.Cases = append(out.Cases, cs)
+		if err != nil && dumpErr == nil {
+			dumpErr = err
+		}
 	}
-	return out
+	return out, dumpErr
 }
 
 // RunCorpusReplay runs every case against its own deterministic
@@ -89,16 +107,28 @@ func RunCorpus(ctx context.Context, cfg *aiconfig.Config, cases []Case, label st
 // and not concurrency-safe, so this runs the corpus sequentially and must not
 // be called from multiple goroutines.
 func RunCorpusReplay(ctx context.Context, cases []Case) CorpusScore {
+	cs, _ := runCorpusReplay(ctx, cases, "")
+	return cs
+}
+
+func runCorpusReplay(ctx context.Context, cases []Case, dumpDir string) (CorpusScore, error) {
 	out := CorpusScore{Provider: "replay", Model: "replay"}
 	cfg := aiconfig.DefaultConfig()
+	cfg.Provider = aiconfig.Provider("replay")
+	cfg.Model = "replay"
+	var dumpErr error
 	for _, c := range cases {
 		restore := ai.SetBaseProviderForTest(func(*aiconfig.Config) (ai.Provider, error) {
 			return NewReplayProvider(c), nil
 		})
-		out.Cases = append(out.Cases, RunCase(ctx, cfg, c))
+		cs, err := runCase(ctx, cfg, c, dumpDir)
+		out.Cases = append(out.Cases, cs)
 		restore()
+		if err != nil && dumpErr == nil {
+			dumpErr = err
+		}
 	}
-	return out
+	return out, dumpErr
 }
 
 func splitRepo(repo string) (owner, name string) {

@@ -84,6 +84,9 @@ type EvalAgentObservation struct {
 	// (the JSON-parse-first-try signal). False when the single call failed to
 	// produce parseable JSON (or otherwise errored).
 	ParsedOK bool
+	// RawText is the model's first-attempt response body (evals --dump-raw).
+	// Empty when the call produced no text.
+	RawText string
 	// RawSuggestionAttempts is how many inline suggestions the model emitted
 	// before the gates ran — the denominator for suggestion-survival and
 	// anchor-hit rates.
@@ -275,6 +278,7 @@ func agentObservation(name string, kind Kind, r SpecialistResult) EvalAgentObser
 		Summary:               r.Summary,
 		Findings:              r.Findings,
 		ParsedOK:              r.Err == nil,
+		RawText:               r.RawOutput,
 		RawSuggestionAttempts: r.RawSuggestionAttempts,
 		Err:                   r.Err,
 	}
