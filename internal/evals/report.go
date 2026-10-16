@@ -81,15 +81,17 @@ var abMetrics = []struct {
 	{"Suggestion survival", func(a SpecialistAggregate) Ratio { return a.Survival() }},
 	{"Anchor-hit rate", func(a SpecialistAggregate) Ratio { return a.Anchor() }},
 	{"JSON parse first-try", func(a SpecialistAggregate) Ratio { return a.FirstTry() }},
+	{"Unsupported-claim rate", func(a SpecialistAggregate) Ratio { return a.Claims() }},
+	{"Suggestion-compile rate", func(a SpecialistAggregate) Ratio { return a.Compile() }},
 }
 
 func specialistTable(aggs []SpecialistAggregate) string {
 	var b strings.Builder
-	b.WriteString("| Specialist | Recall | Precision | Suggestion survival | Anchor-hit | JSON 1st-try |\n")
-	b.WriteString("|---|---|---|---|---|---|\n")
+	b.WriteString("| Specialist | Recall | Precision | Suggestion survival | Anchor-hit | JSON 1st-try | Unsupported-claim | Suggestion-compile |\n")
+	b.WriteString("|---|---|---|---|---|---|---|---|\n")
 	for _, a := range aggs {
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s |\n",
-			a.Specialist, a.Recall(), a.Precision(), a.Survival(), a.Anchor(), a.FirstTry())
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | %s | %s | %s | %s |\n",
+			a.Specialist, a.Recall(), a.Precision(), a.Survival(), a.Anchor(), a.FirstTry(), a.Claims(), a.Compile())
 	}
 	return b.String()
 }

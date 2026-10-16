@@ -1,0 +1,10 @@
+diff --git a/auth/login.go b/auth/login.go
+new file mode 100644
+--- /dev/null
++++ b/auth/login.go
+@@ -0,0 +1,5 @@
++package auth
++
++func Login(user string) error {
++	return nil
++}

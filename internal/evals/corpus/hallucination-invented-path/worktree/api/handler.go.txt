@@ -1,0 +1,5 @@
+package api
+
+func Handler() string {
+	return "ok"
+}

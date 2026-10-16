@@ -1,0 +1,14 @@
+{
+  "summary": "Suggestion that does not compile.",
+  "findings": [
+    {
+      "path": "app/greet.py",
+      "line": 2,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Empty names should raise ValueError instead of returning anon.",
+      "suggestion": "    if not name:\n        raise ValueError(missing",
+      "anchor_excerpt": "    if not name:"
+    }
+  ]
+}

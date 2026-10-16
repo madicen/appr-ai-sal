@@ -1,0 +1,14 @@
+{
+  "summary": "Bare except.",
+  "findings": [
+    {
+      "path": "svc/parse.py",
+      "line": 4,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Avoid bare except; catch Exception explicitly.",
+      "suggestion": "    except Exception:",
+      "anchor_excerpt": "    except:"
+    }
+  ]
+}

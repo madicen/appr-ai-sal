@@ -1,0 +1,6 @@
+package calc
+
+func Sum(xs []int) int {
+	n := 0
+	return n
+}

@@ -1,0 +1,8 @@
+diff --git a/cfg/load.go b/cfg/load.go
+new file mode 100644
+--- /dev/null
++++ b/cfg/load.go
+@@ -0,0 +1,4 @@
++package cfg
++
++func Load() error { return nil }

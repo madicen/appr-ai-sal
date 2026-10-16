@@ -1,0 +1,10 @@
+diff --git a/api/handler.go b/api/handler.go
+new file mode 100644
+--- /dev/null
++++ b/api/handler.go
+@@ -0,0 +1,6 @@
++package api
++
++func Handler() string {
++	return "ok"
++}

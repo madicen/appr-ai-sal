@@ -54,6 +54,21 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Phase 4 suggestion-compile metrics: soft-skip locally when missing;
+      # CI installs tsc + terraform so nightly/manual runs compute full rates.
+      - name: Set up Node (tsc)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install TypeScript
+        run: npm install -g typescript
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
       # Manual dispatch with a provider scores against a live model; the
       # scheduled (or provider-less) run falls back to the offline --replay
       # provider so it always produces a report without a model.

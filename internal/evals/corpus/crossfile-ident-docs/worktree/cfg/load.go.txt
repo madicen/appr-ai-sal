@@ -1,0 +1,3 @@
+package cfg
+
+func Load() error { return nil }

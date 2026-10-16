@@ -75,7 +75,7 @@ func RunCase(ctx context.Context, cfg *aiconfig.Config, c Case) CaseScore {
 	}
 	in.Worktree = dir
 	obs := review.EvalRun(ctx, caseConfig(cfg, c), in)
-	return ScoreCase(c, obs)
+	return ScoreCaseAt(c, obs, dir)
 }
 
 // materializeWorktree writes a case's fixture tree to a temp directory the
@@ -95,6 +95,11 @@ func materializeWorktree(files map[string]string) (string, func(), error) {
 		if rel == "." || rel == "" || strings.HasPrefix(rel, "../") || path.IsAbs(rel) {
 			cleanup()
 			return "", nil, fmt.Errorf("worktree fixture path %q is outside the case tree", rel)
+		}
+		// Corpus stores Go fixtures as *.go.txt so `go test ./...` does not
+		// treat them as packages; materialize restores the real .go name.
+		if strings.HasSuffix(rel, ".go.txt") {
+			rel = strings.TrimSuffix(rel, ".txt")
 		}
 		dst := filepath.Join(dir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {

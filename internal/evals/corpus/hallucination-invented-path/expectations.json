@@ -1,0 +1,14 @@
+{
+  "must_appear": [
+    {
+      "specialist": "design",
+      "path": "api/handler.go",
+      "pattern": "(?i)return|string|hard-?cod",
+      "note": "seeded hard-coded return"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": {
+    "design": true
+  }
+}
