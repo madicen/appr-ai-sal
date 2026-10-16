@@ -95,6 +95,7 @@ func runReviewSpecialist(ctx context.Context, cfg *aiconfig.Config, name string,
 	// registry-derived code-specialist schema (user-defined code specialists
 	// share it). Schema-less JSON providers ignore it and use json_object.
 	out, err := completeJSONWithSchema(ctx, cfg, systemPrompt, userPrompt, worktree, schemaForAgent(name))
+	res.RawOutput = out
 	if err != nil {
 		res.Err = err
 		return res

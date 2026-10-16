@@ -93,6 +93,7 @@ func runPRAgent(ctx context.Context, cfg *aiconfig.Config, name string, worktree
 	// matching the slim prAgentOutputContract; user-defined PR-wide specs share
 	// it via schemaForAgent's Kind check.
 	out, err := completeJSONWithSchema(ctx, cfg, systemPrompt, userPrompt, worktree, schemaForAgent(name))
+	res.RawOutput = out
 	if err != nil {
 		res.Err = err
 		return res
