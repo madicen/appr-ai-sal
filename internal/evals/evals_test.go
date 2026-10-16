@@ -2,6 +2,9 @@ package evals
 
 import (
 	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -33,6 +36,60 @@ func findSpec(cs CaseScore, name string) (SpecialistScore, bool) {
 		}
 	}
 	return SpecialistScore{}, false
+}
+
+// TestDumpRawReplay writes one replay case under --dump-raw and checks that
+// each agent file exists and the raw text matches the canned response.
+func TestDumpRawReplay(t *testing.T) {
+	cases, err := LoadCorpus()
+	if err != nil {
+		t.Fatalf("LoadCorpus: %v", err)
+	}
+	var c Case
+	for _, cand := range cases {
+		if cand.Meta.ID == "security-weak-hash" {
+			c = cand
+			break
+		}
+	}
+	if c.Meta.ID == "" {
+		t.Fatal("security-weak-hash case missing")
+	}
+	dir := t.TempDir()
+	if err := RunCLI(context.Background(), []string{
+		"--replay",
+		"--dump-raw", dir,
+	}); err != nil {
+		t.Fatalf("RunCLI: %v", err)
+	}
+	// Full corpus dumps; check the security agent for this case.
+	path := filepath.Join(dir, c.Meta.ID, "security.json")
+	rawFile, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read dump %s: %v", path, err)
+	}
+	var dump dumpRecord
+	if err := json.Unmarshal(rawFile, &dump); err != nil {
+		t.Fatalf("parse dump JSON: %v\n%s", err, rawFile)
+	}
+	want := c.Responses["security"]
+	if dump.Raw != want {
+		t.Fatalf("raw mismatch:\n got %q\nwant %q", dump.Raw, want)
+	}
+	if !dump.JSONFirstTry {
+		t.Error("json_first_try = false, want true for canned security response")
+	}
+	if dump.Provider == "" || dump.Model == "" {
+		t.Errorf("missing provider/model header fields: %+v", dump)
+	}
+	// At least one dump file under the case directory.
+	entries, err := os.ReadDir(filepath.Join(dir, c.Meta.ID))
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no agent dump files written")
+	}
 }
 
 // TestCorpusLoads asserts the corpus loads, has the promised breadth (>=10
