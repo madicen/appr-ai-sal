@@ -1,0 +1,8 @@
+package blob
+
+import "crypto/md5"
+
+func Checksum(b []byte) []byte {
+	h := md5.Sum(b)
+	return h[:]
+}

@@ -1,0 +1,14 @@
+{
+  "summary": "Weak hash at the end of a large change.",
+  "findings": [
+    {
+      "path": "blob/checksum.go",
+      "line": 6,
+      "side": "RIGHT",
+      "severity": "error",
+      "comment": "MD5 is collision-prone; prefer SHA-256 for Checksum.",
+      "suggestion": "\th := sha256.Sum256(b)",
+      "anchor_excerpt": "\th := md5.Sum(b)"
+    }
+  ]
+}

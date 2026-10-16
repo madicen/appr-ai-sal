@@ -1,0 +1,12 @@
+{
+  "must_appear": [
+    {
+      "specialist": "security",
+      "path": "auth/login.go",
+      "pattern": "(?i)HashToken",
+      "note": "correct cross-file identifier"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": { "security": true }
+}

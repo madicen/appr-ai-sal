@@ -1,0 +1,14 @@
+{
+  "must_appear": [
+    {
+      "specialist": "security",
+      "path": "auth/login.go",
+      "pattern": "(?i)empty user|credential|password",
+      "note": "seeded empty-user check gap"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": {
+    "security": true
+  }
+}

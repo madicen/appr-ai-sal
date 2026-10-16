@@ -1,0 +1,14 @@
+{
+  "summary": "Load needs a godoc that names the default.",
+  "findings": [
+    {
+      "path": "cfg/load.go",
+      "line": 3,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Add a godoc noting Load uses `DefaultTimeout` from cfg/defaults.go when unset.",
+      "suggestion": "// Load reads configuration; unset timeout falls back to DefaultTimeout.\nfunc Load() error { return nil }",
+      "anchor_excerpt": "func Load() error { return nil }"
+    }
+  ]
+}

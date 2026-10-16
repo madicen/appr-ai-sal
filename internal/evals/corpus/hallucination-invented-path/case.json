@@ -1,0 +1,11 @@
+{
+  "id": "hallucination-invented-path",
+  "title": "Add Handler",
+  "target": "design",
+  "repo": "acme/api",
+  "number": 202,
+  "author": "octocat",
+  "strictness": "balanced",
+  "additions": 6,
+  "changed_files": 1
+}
