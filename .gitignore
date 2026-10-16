@@ -26,3 +26,6 @@ coverage.txt
 
 # jj-tui
 .jj-tui.json
+
+# Local live eval reports (Phase 2+)
+/reports/
