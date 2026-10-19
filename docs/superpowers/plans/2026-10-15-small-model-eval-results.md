@@ -100,3 +100,14 @@ Empty case×model (no findings from any agent in that case dir): 3b×security, 3
 
 14b’s must-appear outcomes are **not** “mostly described in different words.” The dominant failure modes are silence on the target specialist, wrong-specialist hits, and one clear wording/pattern miss on 7b testing (`unit test.*divide` order). **Stop before changing any matcher pattern.** Revisit the testing pattern and specialist routing only after Phase 3 fixtures / Phase 4 metrics land.
 
+## Phase 5
+
+Pre-registered plugin treatment gate written 2026-10-19 into:
+
+- `docs/evals/plugin-treatment-gate.json` (immutable machine copy)
+- `docs/evals/plugin-treatment-gate.md` (human summary)
+
+Thresholds (locked): unsupported-claim ↓ ≥10pp with CI excluding zero across 3 reps; suggestion-breakage must not rise; original-12 recall regression ≤2pp; token inflation ≤25%. Outcomes: `measured-helpful` | `measured-no-uplift` | `pending`.
+
+**Current outcome: `pending`.** No control baseline snapshot under `docs/evals/baselines/` yet (Phase 2 grid lacked Phase 4 rates). Next: record three-rep control baselines per model at ctx 32768, then run treatments without editing the gate.
+

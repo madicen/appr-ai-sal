@@ -95,6 +95,17 @@ Each case is a directory under `internal/evals/corpus/<id>/`:
 `suggestion` and `anchor_excerpt`). The `vibe-coach` response uses the
 verdict/prompts shape. Agents with no response file return a clean, empty pass.
 
+## Plugin treatment gate (Phase 5)
+
+Before any naitv-mcp plugin / prompt treatment is certified against this harness,
+the pre-registered gate in [`docs/evals/plugin-treatment-gate.json`](evals/plugin-treatment-gate.json)
+applies (human summary: [`docs/evals/plugin-treatment-gate.md`](evals/plugin-treatment-gate.md)).
+It is modelled on `naitv-mcp-plugins/docs/plan/TESTING.md` §3.
+
+Record a control baseline under `docs/evals/baselines/` before the first
+treatment run. Do **not** edit the gate file after that. Outcomes:
+`measured-helpful`, `measured-no-uplift`, or `pending`.
+
 ## Scoring
 
 For every agent on every case the scorer computes:
@@ -112,6 +123,11 @@ For every agent on every case the scorer computes:
   line (no relocation by the excerpt gate).
 - **JSON-parse-first-try rate** — did the model's output parse on the first
   attempt (evals run each agent once, no retries, to measure this honestly).
+- **Unsupported-claim rate** — findings with ≥1 worktree-unresolvable
+  backtick / path / `path:line` reference (Phase 4; requires a case `worktree/`).
+- **Suggestion-compile rate** — surviving suggestions that still parse/compile
+  after apply (`gofmt -e`, `py_compile`, `tsc`, `terraform validate`; missing
+  tools soft-skip).
 - **Token cost** — calls / input / output tokens / USD, via the review usage
   plumbing.
 
