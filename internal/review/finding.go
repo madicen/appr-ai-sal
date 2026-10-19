@@ -271,6 +271,10 @@ type SpecialistResult struct {
 	// an anchor-hit rate. Zero for the normal review path where it is unread.
 	// Never posted to GitHub.
 	RawSuggestionAttempts int `json:"-"`
+	// RawOutput is the model's first-attempt response text (before parse /
+	// gates). Captured for the evals --dump-raw path only; empty on the
+	// normal review path where it is unread. Never posted to GitHub.
+	RawOutput string `json:"-"`
 }
 
 // EffectiveOutcome resolves the stage's outcome robustly: an explicit Outcome

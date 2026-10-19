@@ -40,6 +40,7 @@ func RunCLI(ctx context.Context, args []string) error {
 		promptsB   = fs.String("prompts-b", "", "config dir with a prompts/ override set for A/B slot B")
 		force      = fs.Bool("force", false, "run even if the provider looks unconfigured (do not skip)")
 		replay     = fs.Bool("replay", false, "run offline against the corpus's canned outputs (deterministic; no provider/network) — exercises the gates + scorer + report")
+		dumpRaw    = fs.String("dump-raw", "", "write per-agent raw model text + findings as DIR/<case-id>/<agent>.json (optional; scoring unchanged when unset)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -56,6 +57,8 @@ func RunCLI(ctx context.Context, args []string) error {
 		return fmt.Errorf("load corpus: %w", err)
 	}
 
+	dumpDir := strings.TrimSpace(*dumpRaw)
+
 	// Offline replay: no provider selection, no skip logic — drive the
 	// pipeline from the corpus's canned outputs and emit the report.
 	if *replay {
@@ -64,7 +67,11 @@ func RunCLI(ctx context.Context, args []string) error {
 			return err
 		}
 		defer closeFn()
-		fmt.Fprint(w, RenderReport(RunCorpusReplay(ctx, cases)))
+		report, dumpErr := runCorpusReplay(ctx, cases, dumpDir)
+		fmt.Fprint(w, RenderReport(report))
+		if dumpErr != nil {
+			return fmt.Errorf("dump-raw: %w", dumpErr)
+		}
 		return nil
 	}
 
@@ -91,21 +98,30 @@ func RunCLI(ctx context.Context, args []string) error {
 	defer closeFn()
 
 	if strings.TrimSpace(*promptsA) != "" && strings.TrimSpace(*promptsB) != "" {
-		runA := runWithPromptDir(ctx, cfg, cases, "A", *promptsA)
-		runB := runWithPromptDir(ctx, cfg, cases, "B", *promptsB)
+		runA, errA := runWithPromptDir(ctx, cfg, cases, "A", *promptsA, dumpDir)
+		runB, errB := runWithPromptDir(ctx, cfg, cases, "B", *promptsB, dumpDir)
 		fmt.Fprint(w, RenderABReport(runA, runB))
+		if errA != nil {
+			return fmt.Errorf("dump-raw A: %w", errA)
+		}
+		if errB != nil {
+			return fmt.Errorf("dump-raw B: %w", errB)
+		}
 		return nil
 	}
 
-	report := RunCorpus(ctx, cfg, cases, "")
+	report, dumpErr := runCorpus(ctx, cfg, cases, "", dumpDir)
 	fmt.Fprint(w, RenderReport(report))
+	if dumpErr != nil {
+		return fmt.Errorf("dump-raw: %w", dumpErr)
+	}
 	return nil
 }
 
 // runWithPromptDir points the prompt-override mechanism at dir (by setting
 // APPR_AI_SAL_CONFIG_DIR) for the duration of one corpus run, then restores the
 // previous value. This is how the A/B mode activates an alternate prompt set.
-func runWithPromptDir(ctx context.Context, cfg *aiconfig.Config, cases []Case, label, dir string) CorpusScore {
+func runWithPromptDir(ctx context.Context, cfg *aiconfig.Config, cases []Case, label, dir, dumpDir string) (CorpusScore, error) {
 	prev, had := os.LookupEnv("APPR_AI_SAL_CONFIG_DIR")
 	_ = os.Setenv("APPR_AI_SAL_CONFIG_DIR", dir)
 	defer func() {
@@ -115,7 +131,7 @@ func runWithPromptDir(ctx context.Context, cfg *aiconfig.Config, cases []Case, l
 			_ = os.Unsetenv("APPR_AI_SAL_CONFIG_DIR")
 		}
 	}()
-	return RunCorpus(ctx, cfg, cases, label)
+	return runCorpus(ctx, cfg, cases, label, dumpDir)
 }
 
 // skipReason reports whether the run should skip for lack of a usable provider,
