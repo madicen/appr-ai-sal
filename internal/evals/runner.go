@@ -2,6 +2,10 @@ package evals
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/madicen/appr-ai-sal/internal/ai"
@@ -61,8 +65,48 @@ func caseConfig(cfg *aiconfig.Config, c Case) *aiconfig.Config {
 // `make evals`, or a ReplayProvider injected by tests via
 // ai.SetBaseProviderForTest).
 func RunCase(ctx context.Context, cfg *aiconfig.Config, c Case) CaseScore {
-	obs := review.EvalRun(ctx, caseConfig(cfg, c), buildEvalInput(c))
+	in := buildEvalInput(c)
+	dir, cleanup, err := materializeWorktree(c.WorktreeFiles)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		return CaseScore{ID: c.Meta.ID, Title: "worktree fixture: " + err.Error()}
+	}
+	in.Worktree = dir
+	obs := review.EvalRun(ctx, caseConfig(cfg, c), in)
 	return ScoreCase(c, obs)
+}
+
+// materializeWorktree writes a case's fixture tree to a temp directory the
+// review gates can read. An empty map returns "", a no-op cleanup, and nil.
+func materializeWorktree(files map[string]string) (string, func(), error) {
+	noop := func() {}
+	if len(files) == 0 {
+		return "", noop, nil
+	}
+	dir, err := os.MkdirTemp("", "evals-worktree-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	for rel, body := range files {
+		rel = path.Clean(rel)
+		if rel == "." || rel == "" || strings.HasPrefix(rel, "../") || path.IsAbs(rel) {
+			cleanup()
+			return "", nil, fmt.Errorf("worktree fixture path %q is outside the case tree", rel)
+		}
+		dst := filepath.Join(dir, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+		if err := os.WriteFile(dst, []byte(body), 0o644); err != nil {
+			cleanup()
+			return "", nil, err
+		}
+	}
+	return dir, cleanup, nil
 }
 
 // RunCorpus runs every case and returns a labelled CorpusScore. label is the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/madicen/appr-ai-sal/internal/ai"
 	"github.com/madicen/appr-ai-sal/internal/aiconfig"
@@ -283,6 +284,65 @@ func TestRenderReport(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("report missing %q\n---\n%s", want, out)
 		}
+	}
+}
+
+// TestReplayCaseReadsWorktreeFixture replays a case whose diff does not name
+// the Terraform resource. The schema gate strips the tags suggestion only
+// when it can read that resource from the case's worktree fixture.
+func TestReplayCaseReadsWorktreeFixture(t *testing.T) {
+	const dir = "corpus/wt-fixture"
+	fsys := fstest.MapFS{
+		dir + "/case.json": &fstest.MapFile{Data: []byte(`{
+			"id": "wt-fixture",
+			"title": "Policy tags from the fixture tree",
+			"target": "tech",
+			"repo": "acme/infra",
+			"number": 1,
+			"tech_configured": true
+		}`)},
+		dir + "/diff.patch": &fstest.MapFile{Data: []byte(`diff --git a/infra/main.tf b/infra/main.tf
+--- a/infra/main.tf
++++ b/infra/main.tf
+@@ -4,1 +4,2 @@
+   bucket = aws_s3_bucket.b.id
++  policy = data.aws_iam_policy_document.b.json
+`)},
+		dir + "/expectations.json": &fstest.MapFile{Data: []byte(`{}`)},
+		dir + "/responses/tech.json": &fstest.MapFile{Data: []byte(`{
+			"summary": "The bucket policy is missing standard tags.",
+			"findings": [{
+				"path": "infra/main.tf",
+				"line": 4,
+				"side": "RIGHT",
+				"severity": "warning",
+				"comment": "This aws_s3_bucket_policy is missing tags; add tags = var.common_tags for cost allocation.",
+				"suggestion": "  bucket = aws_s3_bucket.b.id\n  tags   = var.common_tags",
+				"anchor_excerpt": "  bucket = aws_s3_bucket.b.id"
+			}]
+		}`)},
+		dir + "/worktree/infra/main.tf": &fstest.MapFile{Data: []byte(`provider "aws" {}
+
+resource "aws_s3_bucket_policy" "b" {
+  bucket = aws_s3_bucket.b.id
+  policy = data.aws_iam_policy_document.b.json
+}
+`)},
+	}
+	c, err := loadCaseFS(fsys, dir)
+	if err != nil {
+		t.Fatalf("loadCaseFS: %v", err)
+	}
+	cs := runCaseReplay(t, c)
+	s, ok := findSpec(cs, review.SpecTech)
+	if !ok {
+		t.Fatal("no tech score")
+	}
+	if s.RawSuggestionAttempts != 1 {
+		t.Fatalf("raw suggestion attempts = %d, want 1", s.RawSuggestionAttempts)
+	}
+	if s.SurvivingSuggestions != 0 {
+		t.Fatalf("surviving suggestions = %d, want 0 (schema gate reads the worktree fixture)", s.SurvivingSuggestions)
 	}
 }
 

@@ -76,6 +76,10 @@ type Case struct {
 	Evidence     string
 	Briefs       map[string]string // specialist -> brief markdown
 	Expectations Expectations
+	// WorktreeFiles is the optional fixture tree from corpus/<id>/worktree/,
+	// keyed by slash-separated path relative to that directory. RunCase
+	// materializes it so claim checks can read the files.
+	WorktreeFiles map[string]string
 	// Responses maps an agent name (specialist / pr-agent / "vibe-coach" /
 	// "repo-arbiter" / "convention-witness") to the canned raw model output
 	// the ReplayProvider replays. Empty for cases meant to run only against a
@@ -113,9 +117,13 @@ func LoadCorpus() ([]Case, error) {
 }
 
 func loadCase(dir string) (Case, error) {
+	return loadCaseFS(corpusFS, dir)
+}
+
+func loadCaseFS(fsys fs.FS, dir string) (Case, error) {
 	var c Case
 
-	metaRaw, err := fs.ReadFile(corpusFS, path.Join(dir, "case.json"))
+	metaRaw, err := fs.ReadFile(fsys, path.Join(dir, "case.json"))
 	if err != nil {
 		return c, fmt.Errorf("read case.json: %w", err)
 	}
@@ -126,27 +134,28 @@ func loadCase(dir string) (Case, error) {
 		c.Meta.ID = path.Base(dir)
 	}
 
-	diff, err := fs.ReadFile(corpusFS, path.Join(dir, "diff.patch"))
+	diff, err := fs.ReadFile(fsys, path.Join(dir, "diff.patch"))
 	if err != nil {
 		return c, fmt.Errorf("read diff.patch: %w", err)
 	}
 	c.Diff = string(diff)
 
 	// Optional single-file brief blocks.
-	c.RepoContext = optionalFile(dir, "repo-context.md")
-	c.TechSection = optionalFile(dir, "tech.md")
-	c.LangSection = optionalFile(dir, "lang.md")
-	c.Evidence = optionalFile(dir, "evidence.md")
+	c.RepoContext = optionalFile(fsys, dir, "repo-context.md")
+	c.TechSection = optionalFile(fsys, dir, "tech.md")
+	c.LangSection = optionalFile(fsys, dir, "lang.md")
+	c.Evidence = optionalFile(fsys, dir, "evidence.md")
 	if strings.TrimSpace(c.TechSection) != "" {
 		c.Meta.TechConfigured = true
 	}
 
 	// Optional per-specialist briefs.
-	c.Briefs = readDirMap(path.Join(dir, "briefs"))
+	c.Briefs = readDirMap(fsys, path.Join(dir, "briefs"))
 	// Canned responses for the ReplayProvider.
-	c.Responses = readDirMap(path.Join(dir, "responses"))
+	c.Responses = readDirMap(fsys, path.Join(dir, "responses"))
+	c.WorktreeFiles = readWorktree(fsys, dir)
 
-	expRaw, err := fs.ReadFile(corpusFS, path.Join(dir, "expectations.json"))
+	expRaw, err := fs.ReadFile(fsys, path.Join(dir, "expectations.json"))
 	if err != nil {
 		return c, fmt.Errorf("read expectations.json: %w", err)
 	}
@@ -157,8 +166,8 @@ func loadCase(dir string) (Case, error) {
 }
 
 // optionalFile returns the trimmed contents of dir/name, or "" when absent.
-func optionalFile(dir, name string) string {
-	b, err := fs.ReadFile(corpusFS, path.Join(dir, name))
+func optionalFile(fsys fs.FS, dir, name string) string {
+	b, err := fs.ReadFile(fsys, path.Join(dir, name))
 	if err != nil {
 		return ""
 	}
@@ -168,8 +177,8 @@ func optionalFile(dir, name string) string {
 // readDirMap reads every regular file in dir into a map keyed by the file name
 // with its extension stripped (so briefs/security.md -> "security",
 // responses/vibe-coach.json -> "vibe-coach"). Missing dir yields an empty map.
-func readDirMap(dir string) map[string]string {
-	entries, err := fs.ReadDir(corpusFS, dir)
+func readDirMap(fsys fs.FS, dir string) map[string]string {
+	entries, err := fs.ReadDir(fsys, dir)
 	if err != nil {
 		return map[string]string{}
 	}
@@ -178,12 +187,38 @@ func readDirMap(dir string) map[string]string {
 		if e.IsDir() {
 			continue
 		}
-		b, err := fs.ReadFile(corpusFS, path.Join(dir, e.Name()))
+		b, err := fs.ReadFile(fsys, path.Join(dir, e.Name()))
 		if err != nil {
 			continue
 		}
 		key := strings.TrimSuffix(e.Name(), path.Ext(e.Name()))
 		out[key] = string(b)
+	}
+	return out
+}
+
+// readWorktree reads corpus/<id>/worktree/ into slash-relative paths. A missing
+// directory yields nil so cases without a fixture stay unchanged.
+func readWorktree(fsys fs.FS, dir string) map[string]string {
+	root := path.Join(dir, "worktree")
+	out := map[string]string{}
+	err := fs.WalkDir(fsys, root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		rel := strings.TrimPrefix(p, root+"/")
+		if rel == "" || rel == p {
+			return nil
+		}
+		b, rerr := fs.ReadFile(fsys, p)
+		if rerr != nil {
+			return rerr
+		}
+		out[rel] = string(b)
+		return nil
+	})
+	if err != nil || len(out) == 0 {
+		return nil
 	}
 	return out
 }
