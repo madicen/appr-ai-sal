@@ -1,0 +1,13 @@
+{
+  "summary": "Login should hash tokens via the existing helper.",
+  "findings": [
+    {
+      "path": "auth/login.go",
+      "line": 3,
+      "side": "RIGHT",
+      "severity": "warning",
+      "comment": "Login ignores token hashing; call `HashToken` from auth/tokens.go before persisting.",
+      "anchor_excerpt": "func Login(user string) error {"
+    }
+  ]
+}

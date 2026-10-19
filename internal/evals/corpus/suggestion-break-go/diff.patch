@@ -1,0 +1,11 @@
+diff --git a/calc/sum.go b/calc/sum.go
+new file mode 100644
+--- /dev/null
++++ b/calc/sum.go
+@@ -0,0 +1,6 @@
++package calc
++
++func Sum(xs []int) int {
++	n := 0
++	return n
++}

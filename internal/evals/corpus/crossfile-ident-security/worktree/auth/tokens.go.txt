@@ -1,0 +1,5 @@
+package auth
+
+func HashToken(tok string) string {
+	return tok
+}

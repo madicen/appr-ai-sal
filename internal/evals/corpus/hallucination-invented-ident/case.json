@@ -1,0 +1,14 @@
+{
+  "id": "hallucination-invented-ident",
+  "title": "Add Login helper",
+  "target": "security",
+  "repo": "acme/auth",
+  "number": 201,
+  "author": "octocat",
+  "base_ref": "main",
+  "head_ref": "feature/login",
+  "body": "Adds Login.",
+  "strictness": "balanced",
+  "additions": 8,
+  "changed_files": 1
+}

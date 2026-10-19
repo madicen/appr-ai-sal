@@ -1,0 +1,10 @@
+{
+  "id": "crossfile-ident-docs",
+  "title": "Export Load",
+  "target": "docs",
+  "repo": "acme/cfg",
+  "number": 204,
+  "strictness": "balanced",
+  "additions": 4,
+  "changed_files": 1
+}

@@ -1,0 +1,11 @@
+{
+  "must_appear": [
+    {
+      "specialist": "testing",
+      "pattern": "(?i)raise|ValueError|empty",
+      "note": "seeded testing note"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": { "testing": true }
+}

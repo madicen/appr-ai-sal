@@ -1,0 +1,11 @@
+{
+  "must_appear": [
+    {
+      "specialist": "docs",
+      "pattern": "(?i)DefaultTimeout",
+      "note": "docs should mention existing constant"
+    }
+  ],
+  "must_not_appear": [],
+  "expect_json_first_try": { "docs": true }
+}

@@ -57,6 +57,19 @@ type SpecialistScore struct {
 	SurvivingSuggestions  int
 	AnchorHits            int
 
+	// UnsupportedClaims / ClaimsChecked are the Phase 4 unsupported-claim
+	// rate numerator/denominator for this agent (findings with ≥1 extractable
+	// ref that fail worktree resolution / findings with ≥1 extractable ref).
+	UnsupportedClaims int
+	ClaimsChecked     int
+
+	// CompileOK / CompileAttempted / CompileSkipped are the Phase 4
+	// suggestion-compile tallies (ok and fail count toward Attempted;
+	// tool_missing / no-file are Skipped and excluded from the rate).
+	CompileOK        int
+	CompileAttempted int
+	CompileSkipped   int
+
 	// JSONFirstTry records whether the model parsed on the first attempt and,
 	// when the case pinned an expectation, whether it matched.
 	JSONFirstTry        bool
@@ -79,6 +92,16 @@ func (s SpecialistScore) SuggestionSurvival() Ratio {
 
 // AnchorHitRate is anchor-correct / attempted model suggestions.
 func (s SpecialistScore) AnchorHitRate() Ratio { return Ratio{s.AnchorHits, s.RawSuggestionAttempts} }
+
+// UnsupportedClaimRate is findings with an unresolvable ref / findings checked.
+func (s SpecialistScore) UnsupportedClaimRate() Ratio {
+	return Ratio{s.UnsupportedClaims, s.ClaimsChecked}
+}
+
+// SuggestionCompileRate is compile-ok / compile-attempted (skips excluded).
+func (s SpecialistScore) SuggestionCompileRate() Ratio {
+	return Ratio{s.CompileOK, s.CompileAttempted}
+}
 
 // CaseScore is the full scoring of one case.
 type CaseScore struct {
@@ -118,9 +141,16 @@ func (c CaseScore) JSONFirstTryFailures() []string {
 	return out
 }
 
-// ScoreCase scores one observation against a case's expectations. It is pure:
-// no I/O, deterministic in the observation. This is the unit-tested core.
+// ScoreCase scores one observation against a case's expectations without a
+// worktree (claim/compile rates stay n/a). Prefer ScoreCaseAt when a fixture
+// tree is available.
 func ScoreCase(c Case, obs review.EvalObservation) CaseScore {
+	return ScoreCaseAt(c, obs, "")
+}
+
+// ScoreCaseAt scores one observation against expectations and, when worktree
+// is non-empty, computes unsupported-claim and suggestion-compile rates.
+func ScoreCaseAt(c Case, obs review.EvalObservation, worktree string) CaseScore {
 	exp := c.Expectations
 	appearBySpec := groupExpectations(exp.MustAppear)
 	forbidBySpec := groupExpectations(exp.MustNotAppear)
@@ -161,6 +191,9 @@ func ScoreCase(c Case, obs review.EvalObservation) CaseScore {
 				}
 			}
 		}
+
+		ss.UnsupportedClaims, ss.ClaimsChecked = resolveClaims(worktree, a.Findings)
+		ss.CompileOK, ss.CompileAttempted, ss.CompileSkipped = scoreCompiles(worktree, a.Findings)
 
 		// JSON-first-try expectation.
 		ss.JSONFirstTry = a.ParsedOK
@@ -253,6 +286,8 @@ type SpecialistAggregate struct {
 	SurvivalNum, SurvivalDen   int
 	AnchorNum, AnchorDen       int
 	FirstTryOK, FirstTryTotal  int
+	ClaimNum, ClaimDen         int
+	CompileNum, CompileDen     int
 }
 
 func (a SpecialistAggregate) Recall() Ratio    { return Ratio{a.RecallNum, a.RecallDen} }
@@ -260,6 +295,8 @@ func (a SpecialistAggregate) Precision() Ratio { return Ratio{a.PrecisionNum, a.
 func (a SpecialistAggregate) Survival() Ratio  { return Ratio{a.SurvivalNum, a.SurvivalDen} }
 func (a SpecialistAggregate) Anchor() Ratio    { return Ratio{a.AnchorNum, a.AnchorDen} }
 func (a SpecialistAggregate) FirstTry() Ratio  { return Ratio{a.FirstTryOK, a.FirstTryTotal} }
+func (a SpecialistAggregate) Claims() Ratio    { return Ratio{a.ClaimNum, a.ClaimDen} }
+func (a SpecialistAggregate) Compile() Ratio   { return Ratio{a.CompileNum, a.CompileDen} }
 
 // Aggregate rolls the per-case specialist scores up into one row per
 // specialist, in stable (sorted) order.
@@ -286,6 +323,10 @@ func (csr CorpusScore) Aggregate() []SpecialistAggregate {
 			a.SurvivalDen += s.SuggestionSurvival().Den
 			a.AnchorNum += s.AnchorHitRate().Num
 			a.AnchorDen += s.AnchorHitRate().Den
+			a.ClaimNum += s.UnsupportedClaimRate().Num
+			a.ClaimDen += s.UnsupportedClaimRate().Den
+			a.CompileNum += s.SuggestionCompileRate().Num
+			a.CompileDen += s.SuggestionCompileRate().Den
 			a.FirstTryTotal++
 			if s.JSONFirstTry {
 				a.FirstTryOK++
