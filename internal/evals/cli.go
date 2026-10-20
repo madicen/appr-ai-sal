@@ -31,16 +31,17 @@ import (
 func RunCLI(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("evals", flag.ContinueOnError)
 	var (
-		provider   = fs.String("provider", "", "AI backend (claude|gemini|ollama|openai_compatible); also honoured via PROVIDER / APPR_AI_SAL_AI_PROVIDER")
-		model      = fs.String("model", "", "model id for the selected provider")
-		baseURL    = fs.String("base-url", "", "HTTP base URL for gemini/ollama/openai_compatible")
-		strictness = fs.String("strictness", "", "default review strictness when a case does not pin one")
-		out        = fs.String("out", "", "write the markdown report here (default: stdout)")
-		promptsA   = fs.String("prompts-a", "", "config dir with a prompts/ override set for A/B slot A")
-		promptsB   = fs.String("prompts-b", "", "config dir with a prompts/ override set for A/B slot B")
-		force      = fs.Bool("force", false, "run even if the provider looks unconfigured (do not skip)")
-		replay     = fs.Bool("replay", false, "run offline against the corpus's canned outputs (deterministic; no provider/network) — exercises the gates + scorer + report")
-		dumpRaw    = fs.String("dump-raw", "", "write per-agent raw model text + findings as DIR/<case-id>/<agent>.json (optional; scoring unchanged when unset)")
+		provider    = fs.String("provider", "", "AI backend (claude|gemini|ollama|openai_compatible); also honoured via PROVIDER / APPR_AI_SAL_AI_PROVIDER")
+		model       = fs.String("model", "", "model id for the selected provider")
+		baseURL     = fs.String("base-url", "", "HTTP base URL for gemini/ollama/openai_compatible")
+		strictness  = fs.String("strictness", "", "default review strictness when a case does not pin one")
+		out         = fs.String("out", "", "write the markdown report here (default: stdout)")
+		promptsA    = fs.String("prompts-a", "", "config dir with a prompts/ override set for A/B slot A")
+		promptsB    = fs.String("prompts-b", "", "config dir with a prompts/ override set for A/B slot B")
+		force       = fs.Bool("force", false, "run even if the provider looks unconfigured (do not skip)")
+		replay      = fs.Bool("replay", false, "run offline against the corpus's canned outputs (deterministic; no provider/network) — exercises the gates + scorer + report")
+		dumpRaw     = fs.String("dump-raw", "", "write per-agent raw model text + findings as DIR/<case-id>/<agent>.json (optional; scoring unchanged when unset)")
+		metricsJSON = fs.String("metrics-json", "", "write Phase 5 gate metrics (unsupported-claim, breakage, original-12 recall, tokens) as JSON")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -69,6 +70,9 @@ func RunCLI(ctx context.Context, args []string) error {
 		defer closeFn()
 		report, dumpErr := runCorpusReplay(ctx, cases, dumpDir)
 		fmt.Fprint(w, RenderReport(report))
+		if err := maybeWriteMetricsJSON(*metricsJSON, report); err != nil {
+			return err
+		}
 		if dumpErr != nil {
 			return fmt.Errorf("dump-raw: %w", dumpErr)
 		}
@@ -101,6 +105,10 @@ func RunCLI(ctx context.Context, args []string) error {
 		runA, errA := runWithPromptDir(ctx, cfg, cases, "A", *promptsA, dumpDir)
 		runB, errB := runWithPromptDir(ctx, cfg, cases, "B", *promptsB, dumpDir)
 		fmt.Fprint(w, RenderABReport(runA, runB))
+		// A/B mode: metrics-json records slot B (treatment) when set.
+		if err := maybeWriteMetricsJSON(*metricsJSON, runB); err != nil {
+			return err
+		}
 		if errA != nil {
 			return fmt.Errorf("dump-raw A: %w", errA)
 		}
@@ -112,10 +120,21 @@ func RunCLI(ctx context.Context, args []string) error {
 
 	report, dumpErr := runCorpus(ctx, cfg, cases, "", dumpDir)
 	fmt.Fprint(w, RenderReport(report))
+	if err := maybeWriteMetricsJSON(*metricsJSON, report); err != nil {
+		return err
+	}
 	if dumpErr != nil {
 		return fmt.Errorf("dump-raw: %w", dumpErr)
 	}
 	return nil
+}
+
+func maybeWriteMetricsJSON(path string, csr CorpusScore) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	return WriteGateRunMetricsJSON(path, BuildGateRunMetrics(csr))
 }
 
 // runWithPromptDir points the prompt-override mechanism at dir (by setting

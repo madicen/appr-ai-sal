@@ -1,9 +1,18 @@
 # Eval control baselines
 
-Place frozen control-arm snapshots here **before** the first plugin treatment run
+Frozen control-arm snapshots live here **before** the first plugin treatment run
 (see `docs/evals/plugin-treatment-gate.json` → `baseline_protocol`).
 
-Suggested name: `<model>-ctx32768-balanced-v1.json` with per-rep unsupported-claim
-rate, suggestion-breakage rate, original-12 recall, and token totals.
+Committed files: `<model-tag>-ctx32768-balanced-v1.json` (one per model), each
+holding three repetitions of unsupported-claim, suggestion-breakage,
+original-12 recall, and token totals.
 
-Raw run artifacts stay under `/reports/` (gitignored).
+Produce a per-run metrics file with:
+
+```bash
+make evals PROVIDER=ollama \
+  EVAL_FLAGS="--model qwen2.5-coder:7b --strictness balanced --metrics-json reports/baselines/qwen2.5-coder-7b-r1.json" \
+  OUT=reports/baselines/qwen2.5-coder-7b-r1.md
+```
+
+Raw markdown / per-run JSON stay under `reports/` (gitignored).
