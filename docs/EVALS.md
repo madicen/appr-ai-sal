@@ -15,7 +15,11 @@ make evals PROVIDER=ollama OUT=report.md   # write the report to a file
 make evals EVAL_FLAGS=--replay             # offline, deterministic (no model / no network)
 make evals PROVIDER=ollama EVAL_FLAGS="--model llama3.1 --strictness strict"
 make evals PROVIDER=ollama EVAL_FLAGS="--prompts-a . --prompts-b ./experiments/v2"
+make evals PROVIDER=ollama EVAL_FLAGS="--corpus-dir docs/evals/held-out/cases --model qwen2.5-coder:14b"
 ```
+
+Held-out cases live under `docs/evals/held-out/` (see that README). Import with
+`./scripts/heldout-import.sh <pr>` and **label before** any live model run.
 
 Provider selection reuses `aiconfig` exactly like a normal run: `PROVIDER=`
 maps onto `APPR_AI_SAL_AI_PROVIDER`, and the `--model` / `--base-url` /

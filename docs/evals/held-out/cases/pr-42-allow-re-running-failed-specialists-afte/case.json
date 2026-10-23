@@ -1,0 +1,19 @@
+{
+  "id": "pr-42-allow-re-running-failed-specialists-afte",
+  "title": "Allow re-running failed specialists after pipeline",
+  "target": "held-out",
+  "repo": "madicen/appr-ai-sal",
+  "number": 42,
+  "author": "madicen",
+  "base_ref": "main",
+  "head_ref": "specialist-rerun-impl",
+  "body": "This PR introduces re-run functionality for failed specialists and PR agents post-pipeline, capturing RerunContext to enable manual re-execution without auto-cascading synthesis. Key changes include:\n\n- **RerunContext Capture**: Added to Draft to store pipeline inputs for re-execution.\n- **Review Package Helpers**: Extracted `RunSpecialistForDraft`, `RunPRAgentForDraft`, and `RunRepoArbiterForDraft` with support for RerunContext.\n- **TUI Integration**: Implemented keyboard (`r`, `R`) and mouse controls for re-running agents, with soft summary banners when synthesis is stale.\n\nFiles impacted include `draft.go`, `rerun.go`, `runner.go`, and TUI components in `review` package.",
+  "additions": 1650,
+  "deletions": 35,
+  "changed_files": 13,
+  "strictness": "balanced",
+  "run_pr_agents": false,
+  "run_witness": false,
+  "run_arbiter": false,
+  "run_vibe_coach": false
+}

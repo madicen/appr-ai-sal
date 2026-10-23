@@ -1,0 +1,19 @@
+{
+  "id": "pr-45-fix-tui-scroll-pr-list-on-mouse-wheel-wi",
+  "title": "fix(tui): scroll PR list on mouse wheel without Y hit-test",
+  "target": "held-out",
+  "repo": "madicen/appr-ai-sal",
+  "number": 45,
+  "author": "madicen",
+  "base_ref": "main",
+  "head_ref": "fix-list-mouse-wheel",
+  "body": "This change ensures that the PR list scrolls correctly even when the mouse wheel event reports a Y coordinate outside the visible area of the list widget. It addresses issues where the terminal's own scrollback took over instead of scrolling the list.\n\n- Fixed handling of mouse wheel events outside the list bounds\n- Ensured cursor movement in the list regardless of Y position\n- Updated tests to cover new behavior",
+  "additions": 118,
+  "deletions": 15,
+  "changed_files": 2,
+  "strictness": "balanced",
+  "run_pr_agents": false,
+  "run_witness": false,
+  "run_arbiter": false,
+  "run_vibe_coach": false
+}

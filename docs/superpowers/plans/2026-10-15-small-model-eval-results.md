@@ -163,3 +163,16 @@ Eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=inventory-v1`): inject worktree
 
 **Overall outcome: `measured-no-uplift`.** Gate not retuned. Inventory moved 14b claim rate more than grounding-v1 on average but still failed CI-exclude-zero and the recall guard.
 
+## Held-out
+
+Scaffolding landed 2026-10-23:
+
+- `docs/evals/held-out/README.md` + `--corpus-dir` on `appr-ai-sal evals`
+- `./scripts/heldout-import.sh` imports a PR skeleton (diff + empty expectations)
+- Seed skeletons (all `LABEL_STATUS.md: pending`, **no model runs yet**):
+  - `pr-42-allow-re-running-failed-specialists-afte`
+  - `pr-43-fix-controls-profile-dropdown-padding-is`
+  - `pr-45-fix-tui-scroll-pr-list-on-mouse-wheel-wi`
+
+**Blocked on human labels** in each `expectations.json` before any live held-out eval.
+

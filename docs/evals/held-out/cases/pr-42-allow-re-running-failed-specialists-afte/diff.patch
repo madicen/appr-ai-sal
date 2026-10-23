@@ -1,0 +1,1982 @@
+diff --git a/docs/superpowers/plans/2026-10-15-specialist-rerun.md b/docs/superpowers/plans/2026-10-15-specialist-rerun.md
+new file mode 100644
+index 0000000..8169394
+--- /dev/null
++++ b/docs/superpowers/plans/2026-10-15-specialist-rerun.md
+@@ -0,0 +1,309 @@
++# Specialist / synthesis re-run Implementation Plan
++
++> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
++
++**Goal:** After a review pipeline finishes, let the reviewer re-run failed specialists/PR agents and manually re-run arbiter/vibe-coach from the overlay (keyboard + mouse), with stale synthesis flags and a soft summary banner.
++
++**Architecture:** Capture a non-serialized `Draft.Rerun *RerunContext` at pipeline end with the exact agent inputs plus a pre-arbiter specialist snapshot. Expose `RunSpecialistForDraft` / `RunPRAgentForDraft` / `RunRepoArbiterForDraft` (vibe already has `RunVibeCoachForDraft`). TUI issues `tea.Cmd`s, replaces results, marks `ArbiterStale`/`VibeStale`, and offers `r`/`R` plus bubblezone click targets.
++
++**Tech Stack:** Go, Bubble Tea, bubblezone, existing `internal/review` stage retry helpers.
++
++## Global Constraints
++
++- Replace failed results in place; do not keep prior failed findings for synthesis.
++- Only failed specialists/PR agents are re-runnable; arbiter/vibe always when their rows exist and `Rerun != nil`.
++- Do not auto-cascade arbiter/vibe after specialist re-run — mark stale only.
++- Soft summary gate (banner, posting still allowed).
++- Circuit breaker off for manual re-runs; stage retries stay on.
++- Skipped (breaker) agents are not re-runnable in v1.
++- Restored drafts without `RerunContext` disable re-run actions.
++- YAGNI / lazy-ladder: smallest code that works; verify via naitv `build`/`vet`/`test`.
++- Do not commit unless the user asks.
++
++---
++
++## File structure
++
++| File | Role |
++| --- | --- |
++| `internal/review/rerun.go` | `RerunContext`, stale helpers, `ReplaceSpecialist`, `Run*ForDraft` |
++| `internal/review/rerun_test.go` | Unit tests for replace/stale/helpers |
++| `internal/review/draft.go` | `Rerun`, `ArbiterStale`, `VibeStale` fields |
++| `internal/review/runner.go` | Fill `RerunContext` + pre-arbiter snapshot before finalize |
++| `internal/tui/tabs/review/rerun.go` | Msgs, cmds, key/mouse handlers for re-run |
++| `internal/tui/tabs/review/rerun_test.go` | TUI key/mouse/banner tests |
++| `internal/tui/tabs/review/view.go` | Stale status, Re-run / Re-run all failed zones |
++| `internal/tui/tabs/review/model.go` | Wire keys + mouse into Update |
++| `internal/tui/tabs/review/summary.go` / progress help | Soft-gate banner + help text |
++
++---
++
++### Task 1: Draft fields + RerunContext + replace/stale helpers
++
++**Files:**
++- Create: `internal/review/rerun.go`
++- Create: `internal/review/rerun_test.go`
++- Modify: `internal/review/draft.go` (add fields on `Draft`)
++- Modify: `internal/review/pragents.go` or keep `PRAgentInput` referenced from `rerun.go`
++
++**Interfaces:**
++- Produces: `type RerunContext struct`, `Draft.Rerun`, `Draft.ArbiterStale`, `Draft.VibeStale`, `(*Draft).ReplaceAgent(name string, res SpecialistResult)`, `(*Draft).MarkSynthesisStale()`, `(*Draft).CanRerunAgent(name string) bool`, `(*Draft).FailedAgentNames() []string`
++
++- [ ] **Step 1: Write the failing test**
++
++```go
++package review
++
++import (
++	"errors"
++	"testing"
++)
++
++func TestReplaceAgentAndMarkSynthesisStale(t *testing.T) {
++	d := &Draft{
++		Specialists: []SpecialistResult{
++			{Specialist: SpecFormatting, Findings: []Finding{{Path: "a.go", Line: 1, Severity: SeverityWarning, Title: "x"}}},
++			{Specialist: SpecDesign, Err: errors.New("boom"), Outcome: OutcomeFailed},
++		},
++		Rerun: &RerunContext{
++			PreArbiterSpecialists: []SpecialistResult{
++				{Specialist: SpecFormatting, Findings: []Finding{{Path: "a.go", Line: 1, Severity: SeverityWarning, Title: "x"}}},
++				{Specialist: SpecDesign, Err: errors.New("boom"), Outcome: OutcomeFailed},
++			},
++		},
++		DemotedHidden: []FlatFinding{{Specialist: SpecFormatting}},
++	}
++	if !d.CanRerunAgent(SpecDesign) {
++		t.Fatal("failed design should be re-runnable")
++	}
++	if d.CanRerunAgent(SpecFormatting) {
++		t.Fatal("clean formatting must not be re-runnable")
++	}
++	ok := SpecialistResult{Specialist: SpecDesign, Findings: []Finding{{Path: "b.go", Line: 2, Severity: SeverityWarning, Title: "y"}}}
++	if err := d.ReplaceAgent(SpecDesign, ok); err != nil {
++		t.Fatal(err)
++	}
++	if d.Specialists[1].Err != nil || len(d.Specialists[1].Findings) != 1 {
++		t.Fatalf("replace failed: %+v", d.Specialists[1])
++	}
++	d.MarkSynthesisStale()
++	if !d.ArbiterStale || !d.VibeStale {
++		t.Fatalf("stale flags = arbiter:%v vibe:%v", d.ArbiterStale, d.VibeStale)
++	}
++	if len(d.DemotedHidden) != 0 {
++		t.Fatalf("DemotedHidden should clear on stale, got %d", len(d.DemotedHidden))
++	}
++}
++
++func TestStaleTransitionsOnArbiterAndVibe(t *testing.T) {
++	d := &Draft{ArbiterStale: true, VibeStale: true}
++	d.ClearArbiterStale() // sets VibeStale
++	if d.ArbiterStale || !d.VibeStale {
++		t.Fatalf("after arbiter clear: arbiter=%v vibe=%v", d.ArbiterStale, d.VibeStale)
++	}
++	d.ClearVibeStale()
++	if d.VibeStale {
++		t.Fatal("vibe should be clear")
++	}
++}
++```
++
++- [ ] **Step 2: Run test to verify it fails**
++
++Run: `go test ./internal/review/ -run 'TestReplaceAgentAndMarkSynthesisStale|TestStaleTransitionsOnArbiterAndVibe' -count=1`
++Expected: FAIL (undefined types/methods)
++
++- [ ] **Step 3: Minimal implementation**
++
++Add to `Draft` in `draft.go`:
++
++```go
++Rerun        *RerunContext `json:"-"`
++ArbiterStale bool          `json:"-"`
++VibeStale    bool          `json:"-"`
++```
++
++In `rerun.go`, define `RerunContext` with at least:
++
++```go
++type RerunContext struct {
++	SpecialistDiff   string
++	PRAgentDiff      string
++	PerAgent         map[string]string
++	PREvidence       string
++	StaticSection    string
++	StaticCleanFiles map[string]bool
++	LangSection      string
++	TechSection      string
++	IntentSection    string
++	ExpandedSection  string
++	RejectedMemory   string
++	PRAgentInput     PRAgentInput
++	// PreArbiterSpecialists is the specialist+PR-agent slice after dedupe +
++	// memory suppression and before FinalizeRepoArbiter. Re-runs rebase from here.
++	PreArbiterSpecialists []SpecialistResult
++	ParallelSpecialists   bool
++	ParallelPRAgents      bool
++	ConventionWitness     bool
++	RepoExpertPanel       bool
++	RepoArbiterDemotions  bool
++}
++```
++
++Implement `CanRerunAgent` (failed specialist/PR only; `overlayAgentRepoArbiter` / `SpecVibeCoach` handled in TUI), `FailedAgentNames`, `ReplaceAgent` (swap in both `Specialists` and `PreArbiterSpecialists` by name; then set `Specialists` from a copy of pre-arbiter with replace applied — re-run dedupe+memory in Task 2), `MarkSynthesisStale`, `ClearArbiterStale`, `ClearVibeStale`.
++
++For Task 1, `ReplaceAgent` may simply replace by name in both slices and clear `DemotedHidden` when `MarkSynthesisStale` is called. Dedupe/memory refresh lands in Task 2.
++
++- [ ] **Step 4: Run tests — expect PASS**
++
++- [ ] **Step 5: Commit only if user asks**
++
++---
++
++### Task 2: Run*ForDraft helpers + fill RerunContext in runner
++
++**Files:**
++- Modify: `internal/review/rerun.go`
++- Modify: `internal/review/runner.go` (capture inputs; set `final.Rerun`; snapshot pre-arbiter specialists)
++- Modify: `internal/review/rerun_test.go`
++- Optionally extract shared `runOne` from `runSpecialistsPhase` / `runPRAgentsPhase` into unexported helpers called by both phase and ForDraft
++
++**Interfaces:**
++- Consumes: `RerunContext`, `runReviewSpecialist`, `runPRAgent`, `RunRepoArbiter`, `FinalizeRepoArbiter`, `stageWithRetry`
++- Produces: `RunSpecialistForDraft`, `RunPRAgentForDraft`, `RunRepoArbiterForDraft`, `RefreshDraftAfterAgentReplace`
++
++- [ ] **Step 1: Failing test with fake provider** (reuse patterns from `retry_budget_test.go` / agent tests)
++
++```go
++func TestRunSpecialistForDraftUsesRerunDiff(t *testing.T) {
++	// Build Draft with Rerun.SpecialistDiff containing a unique marker path;
++	// use a recording fake Complete that fails if user prompt lacks marker.
++	// Call RunSpecialistForDraft(... SpecDocs ...) and assert Err==nil or that
++	// the fake saw the marker (match existing fake-provider style in package).
++}
++```
++
++- [ ] **Step 2: Run — expect FAIL**
++
++- [ ] **Step 3: Implement helpers**
++
++`RunSpecialistForDraft`: require `d.Rerun != nil`; run same retry/ensemble path as `runSpecialistsPhase`’s `runOne` **without** circuit breaker; no Progress channel required (optional notify only).
++
++`RunPRAgentForDraft`: same for PR agents using `Rerun.PRAgentDiff` + `PRAgentInput`.
++
++`RunRepoArbiterForDraft`: if `!Rerun.RepoExpertPanel` return nil result with err; else optionally refresh convention witness (reuse `runConventionWitnessPhase` logic with `breaker=nil` / no skip); call `RunRepoArbiter` + `FinalizeRepoArbiter`; `ClearArbiterStale()` (which sets `VibeStale`).
++
++`RefreshDraftAfterAgentReplace(d, name, res)`:
++1. Replace in `PreArbiterSpecialists`
++2. Copy → `dedupeInlineFindingsAcrossSpecialists` → `ApplyMemorySuppression` (reload memory via `LoadRepoMemory(d.PR)` or store memory section only — fail-open empty if needed)
++3. Assign to `d.Specialists`
++4. `MarkSynthesisStale()`
++
++Wire runner: before `FinalizeRepoArbiter`, snapshot `allSpecialists` into `Rerun.PreArbiterSpecialists`. After building `final`, set `final.Rerun = &RerunContext{...}` with all captured locals. Keep filling even when downstream skipped so failed-specialist re-run still works.
++
++- [ ] **Step 4: Tests PASS + `go test ./internal/review/ -count=1`**
++
++---
++
++### Task 3: TUI re-run commands (keyboard)
++
++**Files:**
++- Create: `internal/tui/tabs/review/rerun.go`
++- Create: `internal/tui/tabs/review/rerun_test.go`
++- Modify: `internal/tui/tabs/review/model.go` (Update key handling when draft ready / not `phaseRunning`)
++- Modify: help/footer strings in view or progress
++
++**Interfaces:**
++- Produces: `AgentRerunDoneMsg`, `startAgentRerunCmd`, `startFailedAgentsRerunCmd`, model methods `rerunFocusedAgent() tea.Cmd`, `rerunAllFailed() tea.Cmd`
++
++- [ ] **Step 1: Failing TUI test**
++
++```go
++func TestKeyRTriggersRerunOnFailedAgent(t *testing.T) {
++	// Build Model with completed draft, design row failed, cursor on design.
++	// Update with KeyMsg "r"; assert coach/rerun in-flight flag or that a Cmd is returned (non-nil).
++}
++
++func TestKeyRNoopOnCleanAgent(t *testing.T) {
++	// Cursor on clean formatting → Update "r" returns nil cmd / no in-flight.
++}
++```
++
++- [ ] **Step 2: Implement msgs/cmds mirroring `runVibeCoachCmd`**
++
++```go
++type AgentRerunDoneMsg struct {
++	Name   string
++	Result review.SpecialistResult
++	Kind   string // "specialist" | "pr-agent" | "arbiter" | "vibe"
++	Err    error
++	Batch  bool
++}
++
++func (AgentRerunDoneMsg) OverlayBound() {}
++```
++
++On done: `RefreshDraftAfterAgentReplace` or arbiter/vibe finalize; merge overlay row phase; `rebuildBody`.
++
++`r` → focused agent if `CanRerun` / arbiter / vibe.  
++`R` → all `FailedAgentNames()` (specialists parallel per `Rerun.ParallelSpecialists`, PR agents per `ParallelPRAgents` — simple v1: run all failed sequentially in one cmd to avoid complexity, or errgroup parallel; prefer parallel when flag set).
++
++Cancel/Esc: cancel context stored on model for in-flight re-run; restore snapshot.
++
++- [ ] **Step 3: Tests PASS**
++
++---
++
++### Task 4: Mouse affordances + stale UI + soft summary banner
++
++**Files:**
++- Modify: `internal/tui/tabs/review/view.go`
++- Modify: `internal/tui/tabs/review/model.go` (mouse zone hits)
++- Modify: `internal/tui/tabs/review/summary.go` or summary render path
++- Modify: `internal/tui/tabs/review/rerun_test.go`
++
++**Zones:** use package-local ids like `zoneOverlayAgentRerun(i)` and `zoneOverlayRerunAllFailed` (same pattern as `zoneOverlayAgent`).
++
++- [ ] **Step 1: Failing tests for zone names + banner string when `ArbiterStale`**
++
++- [ ] **Step 2: Render**
++  - Failed rows: append `zone.Mark(..., " Re-run (r) ")`
++  - Arbiter/vibe always (when rerun available): same control
++  - Stage header when `FailedAgentNames` non-empty: `Re-run all failed (R)`
++  - `agentStatusDetail`: show `stale` warning when draft flags set for arbiter/vibe
++  - Summary/approve entry: banner text from spec
++
++- [ ] **Step 3: Mouse handler** — if click in re-run zone, same as `r`/`R`
++
++- [ ] **Step 4: Tests PASS**
++
++---
++
++### Task 5: Integration verification
++
++- [ ] **Step 1:** `go test ./internal/review/ ./internal/tui/tabs/review/ -count=1`
++- [ ] **Step 2:** naitv `build` / `vet` / `test` on project root
++- [ ] **Step 3:** Manual checklist in PR description (failed design → `r` → stale arbiter/vibe → `r` each → banner clears)
++
++---
++
++## Spec coverage check
++
++| Spec item | Task |
++| --- | --- |
++| Post-pipeline repair | 3–4 |
++| Replace in place | 1–2 |
++| Failed-only + arbiter/vibe | 1, 3 |
++| Stale, no auto-cascade | 1–2 |
++| Per-agent + batch | 3–4 |
++| Keyboard + mouse | 3–4 |
++| Soft summary gate | 4 |
++| RerunContext / restore disable | 1–2, 3 |
++| Convention witness on arbiter re-run | 2 |
++| Circuit breaker off on manual | 2 |
++| Cancel restores snapshot | 3 |
++| Usage metering | 3 (best-effort attach existing usage if trivial; else overlay counter) |
++
++## Execution note
++
++Prefer sequential tasks in one session (inline). Commit only on user request.
+diff --git a/docs/superpowers/specs/2026-10-15-specialist-rerun-design.md b/docs/superpowers/specs/2026-10-15-specialist-rerun-design.md
+new file mode 100644
+index 0000000..8404e47
+--- /dev/null
++++ b/docs/superpowers/specs/2026-10-15-specialist-rerun-design.md
+@@ -0,0 +1,152 @@
++# Specialist / synthesis re-run (post-pipeline repair)
++
++## Goal
++
++After an automated review finishes, the reviewer can re-run failed specialists (and PR agents) and manually re-run the repo arbiter and vibe-coach, so a transient agent failure does not force either a full re-review or posting with a permanently missing lane.
++
++## Decisions (locked)
++
++| Topic | Choice |
++| --- | --- |
++| When | Full pipeline runs first (today’s behavior, including stage retries). Repair is post-pipeline. |
++| Failed agent result | Replace in place — prior failed `SpecialistResult` is discarded. |
++| Who is re-runnable | Failed specialists / PR agents only; arbiter and vibe-coach whenever their overlay rows exist for this run (repo expert panel on for arbiter; vibe row present even if the initial pass skipped/failed) and `RerunContext` exists. |
++| Synthesis after specialist re-run | Mark arbiter + vibe **stale**; do **not** auto-re-run them. |
++| Kickoff UX | Per-agent re-run **and** “re-run all failed”; keyboard **and** mouse. |
++| Summary gate | Soft gate: banner when synthesis is stale; posting still allowed. |
++| Approach | Extend the existing vibe-coach lazy re-run pattern (`RunVibeCoachForDraft` + TUI `tea.Cmd`). |
++
++## Out of scope
++
++- Pausing the pipeline before arbiter / vibe-coach.
++- Auto-cascading arbiter / vibe after a specialist re-run.
++- Re-running specialists that finished clean (no “force” path in v1).
++- Re-running agents skipped by the initial-run circuit breaker.
++- Re-run after session/draft restore when `RerunContext` was not persisted.
++
++## Architecture
++
++```
++Initial Run (unchanged)
++  specialists / PR agents → witness → arbiter → vibe → Draft + RerunContext
++
++Overlay repair
++  r / click  → Run*ForDraft → replace agent slot → mark synthesis stale
++  R / click  → batch failed specialists/PR agents → mark synthesis stale
++  r / click on arbiter → refresh witness if needed → RunRepoArbiterForDraft → clear ArbiterStale, set VibeStale
++  r / click on vibe    → RunVibeCoachForDraft → clear VibeStale
++```
++
++### `RerunContext` (on `Draft`)
++
++Non-serialized sidecar (`json:"-"`) captured at the end of the pipeline with the exact inputs the agents used:
++
++- Specialist / PR-agent shaped diffs (as used in the run, including incremental reduced diff when applicable)
++- Per-agent repo briefs, PR evidence, static section + clean-file set
++- Lang / tech / intent / expanded sections
++- Rejected-memory section for the arbiter
++- Anything else required so `runReviewSpecialist` / PR-agent / `RunRepoArbiter` paths are byte-faithful to the original run
++
++If `Draft.Rerun == nil` (e.g. restored cache without sidecar), re-run actions are disabled with a short reason: “re-run unavailable for restored session.”
++
++### Review-package helpers
++
++Extract the existing per-agent `runOne` bodies behind:
++
++- `RunSpecialistForDraft(ctx, cfg, d, name, notify) SpecialistResult`
++- `RunPRAgentForDraft(ctx, cfg, d, name, notify) SpecialistResult`
++- `RunRepoArbiterForDraft(ctx, cfg, d, notify) *RepoArbiterResult` — wraps `RunRepoArbiter` + `FinalizeRepoArbiter`
++- Keep `RunVibeCoachForDraft` as today
++
++Shared behavior:
++
++- Same `stageWithRetry` + per-stage timeout / ensemble routing as the pipeline.
++- Circuit breaker **off** for manual re-runs (user-initiated; do not skip the rest of a batch because one failed again).
++- Replace-in-place via `Draft.ReplaceSpecialist(name, res)` (or equivalent).
++- After a specialist/PR-agent replace: re-apply cross-specialist inline dedupe + reviewer-memory suppression so the draft stays consistent before the next arbiter pass.
++- When arbiter is marked stale: clear demotion/suppress bookkeeping that depended on the old arbiter result; arbiter re-run rebuilds via `FinalizeRepoArbiter`.
++
++### Stale flags
++
++On `Draft` (preferred over overlay-only so summary/post can see them):
++
++- `ArbiterStale bool`
++- `VibeStale bool`
++
++Transitions:
++
++| Event | ArbiterStale | VibeStale |
++| --- | --- | --- |
++| Specialist / PR-agent re-run finishes (success or fail) | set | set |
++| Arbiter re-run succeeds or fails | clear | set |
++| Vibe re-run succeeds or fails | unchanged | clear |
++
++Convention witness: refreshed as part of **arbiter** re-run when testing/docs/tech findings may have changed (same enablement gates as the pipeline). Specialist-only re-run does not run the witness until arbiter is requested.
++
++## TUI / UX
++
++### When enabled
++
++After the pipeline has produced a draft. Disabled while the initial run is still streaming. Disabled when `RerunContext` is missing.
++
++### Actions
++
++| Action | Keyboard | Mouse |
++| --- | --- | --- |
++| Re-run focused / target agent | Overview: `r`. Agent tab: `u` (`r`/`R` already mean refresh PR there). | **Re-run** on the overview row / agent-tab header (failed specialist/PR-agent, or arbiter/vibe) |
++| Re-run all failed specialists/PR-agents | Overview: `R`. Agent tab: `U`. | **Re-run all failed** on the overview status strip |
++
++Rules:
++
++- `r` / row Re-run: only if the agent is allowed (failed specialist/PR-agent, or arbiter/vibe when that row exists). Clean specialists: no-op. If the arbiter row is absent (`RepoExpertPanel` off), there is nothing to re-run for arbiter.
++- `R` / batch: every currently failed specialist/PR-agent; parallel iff repo config `ParallelSpecialists` (same as pipeline). Arbiter/vibe are not included in the batch.
++- Ignore duplicate kicks while that agent (or batch) is already running; optional dim “already running” hint.
++- Help footer lists `r` / `R` and the mouse affordances.
++
++### Row presentation
++
++- Failed → `failed` (existing).
++- Re-running → `running` + retry detail (existing progress merge).
++- Success → normal clean / finding-count presentation; prior failure discarded.
++- Arbiter/vibe stale → `stale` (warning color); prior content still readable; not shown as failed unless the last attempt failed.
++- Batch stale flip: set arbiter/vibe stale when the batch/command **completes** (not on each mid-batch specialist finish) to avoid thrashing.
++
++### Cancel
++
++Esc / context cancel aborts the in-flight re-run command. Restore the pre-re-run agent snapshot (no partial swap).
++
++### Approve / summary (soft gate)
++
++If `ArbiterStale` or `VibeStale`, show a persistent banner, e.g. “Arbiter/vibe out of date — re-run those rows, or continue with stale synthesis.” Posting remains allowed; the current arbiter/vibe values on the draft are what ship (same as today’s degraded runs).
++
++### Usage
++
++Re-run tokens append to the run usage accumulator when still attached; otherwise an overlay-local counter. Do not drop cost signal silently.
++
++## Error handling
++
++1. Re-run still fails → replace with the new failed result; synthesis stays/marks stale; user may retry.
++2. Initial-run circuit-breaker **skipped** agents are not failed and are not re-runnable in v1.
++3. Restored sessions without `RerunContext` → actions hidden/disabled with reason.
++
++## Testing
++
++Minimal runnable checks:
++
++1. Unit: stale-flag transitions and `ReplaceSpecialist` behavior.
++2. Unit: `RunSpecialistForDraft` consumes `RerunContext` (fake provider).
++3. TUI: `r` on failed row starts re-run; `r` on clean specialist no-ops; mouse Re-run hits the same path; summary banner when stale.
++
++## Implementation sketch (non-binding order)
++
++1. `RerunContext` + fill at end of `runner` pipeline; stale fields + replace helper.
++2. Extract `RunSpecialistForDraft` / `RunPRAgentForDraft` / `RunRepoArbiterForDraft`.
++3. Overlay: key + mouse actions, row states, batch, cancel snapshot.
++4. Summary soft-gate banner.
++5. Tests above.
++
++## Alternatives considered
++
++1. **Extend vibe-coach lazy pattern (chosen)** — smallest surface; matches existing TUI re-run.
++2. **Monolithic `review.Rerun(draft, targets)` API** — cleaner boundary, more new surface than needed.
++3. **Cached full re-pipeline skipping successes** — poor fit for arbiter-only / vibe-only re-runs.
+diff --git a/internal/review/draft.go b/internal/review/draft.go
+index 100c13d..bf675b0 100644
+--- a/internal/review/draft.go
++++ b/internal/review/draft.go
+@@ -93,6 +93,15 @@ type Draft struct {
+ 	// which earlier concerns the new commits addressed. Nil keeps the posting
+ 	// path byte-identical to a first review (no status replies).
+ 	PriorReview *CachedDraft `json:"-"`
++	// Rerun holds the exact inputs the pipeline used for specialists / PR
++	// agents / arbiter so the TUI can re-run failed agents after the run
++	// finishes. Nil on restored draft-cache sessions (re-run disabled).
++	Rerun *RerunContext `json:"-"`
++	// ArbiterStale / VibeStale are set when a specialist or PR-agent re-run
++	// changes the finding set (or when arbiter re-runs, which dirties vibe).
++	// The TUI shows a soft banner; posting is still allowed.
++	ArbiterStale bool `json:"-"`
++	VibeStale    bool `json:"-"`
+ }
+ 
+ // severityFloor returns the strictness floor recorded on the Draft, or
+diff --git a/internal/review/rerun.go b/internal/review/rerun.go
+new file mode 100644
+index 0000000..d71ea07
+--- /dev/null
++++ b/internal/review/rerun.go
+@@ -0,0 +1,318 @@
++package review
++
++import (
++	"context"
++	"fmt"
++	"strings"
++
++	"github.com/madicen/appr-ai-sal/internal/aiconfig"
++	"github.com/madicen/appr-ai-sal/internal/applog"
++	"github.com/madicen/appr-ai-sal/internal/review/conventionwitness"
++)
++
++// RerunContext carries the exact inputs the pipeline used for agent calls so
++// post-run re-runs stay faithful to the original pass. Never serialized —
++// restored draft-cache sessions leave Draft.Rerun nil and disable re-run.
++type RerunContext struct {
++	SpecialistDiff   string
++	PRAgentDiff      string
++	PerAgent         map[string]string
++	PREvidence       string
++	StaticSection    string
++	StaticCleanFiles map[string]bool
++	LangSection      string
++	TechSection      string
++	IntentSection    string
++	ExpandedSection  string
++	RejectedMemory   string
++	PRAgentInput     PRAgentInput
++	// PreArbiterSpecialists is the specialist+PR-agent slice after dedupe +
++	// memory suppression and before FinalizeRepoArbiter. Re-runs rebase from here.
++	PreArbiterSpecialists []SpecialistResult
++	ParallelSpecialists   bool
++	ParallelPRAgents      bool
++	ConventionWitness     bool
++	RepoExpertPanel       bool
++	RepoArbiterDemotions  bool
++}
++
++// CanRerunAgent reports whether name is a failed specialist/PR-agent eligible
++// for manual re-run. Arbiter and vibe-coach are gated in the TUI (always when
++// their rows exist and Rerun != nil). Skipped (circuit-breaker) agents are not
++// re-runnable.
++func (d *Draft) CanRerunAgent(name string) bool {
++	if d == nil || d.Rerun == nil {
++		return false
++	}
++	name = strings.TrimSpace(name)
++	if name == "" || (!IsPRAgent(name) && !isCodeSpecialistName(name)) {
++		return false
++	}
++	for _, s := range d.Specialists {
++		if s.Specialist != name {
++			continue
++		}
++		return s.EffectiveOutcome() == OutcomeFailed
++	}
++	return false
++}
++
++func isCodeSpecialistName(name string) bool {
++	for _, n := range AllSpecialists {
++		if n == name {
++			return true
++		}
++	}
++	return false
++}
++
++// FailedAgentNames returns specialist/PR-agent names that finished failed
++// (not skipped), in Draft.Specialists order.
++func (d *Draft) FailedAgentNames() []string {
++	if d == nil {
++		return nil
++	}
++	var out []string
++	for _, s := range d.Specialists {
++		if s.EffectiveOutcome() == OutcomeFailed {
++			out = append(out, s.Specialist)
++		}
++	}
++	return out
++}
++
++// ReplaceAgent swaps the named specialist/PR-agent result in place on both
++// Specialists and Rerun.PreArbiterSpecialists. Returns an error when the
++// draft cannot re-run (nil Rerun or unknown name).
++func (d *Draft) ReplaceAgent(name string, res SpecialistResult) error {
++	if d == nil {
++		return fmt.Errorf("replace agent: nil draft")
++	}
++	if d.Rerun == nil {
++		return fmt.Errorf("replace agent: re-run unavailable (no RerunContext)")
++	}
++	name = strings.TrimSpace(name)
++	if name == "" {
++		return fmt.Errorf("replace agent: empty name")
++	}
++	res.Specialist = name
++	if !replaceInSlice(&d.Rerun.PreArbiterSpecialists, name, res) {
++		// Added after a partial snapshot — append so re-runs still stick.
++		d.Rerun.PreArbiterSpecialists = append(d.Rerun.PreArbiterSpecialists, res)
++	}
++	if !replaceInSlice(&d.Specialists, name, res) {
++		d.Specialists = append(d.Specialists, res)
++	}
++	return nil
++}
++
++func replaceInSlice(slice *[]SpecialistResult, name string, res SpecialistResult) bool {
++	for i := range *slice {
++		if (*slice)[i].Specialist == name {
++			(*slice)[i] = res
++			return true
++		}
++	}
++	return false
++}
++
++// MarkSynthesisStale flags arbiter and vibe as out of date after a
++// specialist/PR-agent re-run and clears demotion bookkeeping that depended on
++// the previous arbiter pass.
++func (d *Draft) MarkSynthesisStale() {
++	if d == nil {
++		return
++	}
++	d.ArbiterStale = true
++	d.VibeStale = true
++	d.DemotedHidden = nil
++	d.UserPostDemotedKeys = nil
++}
++
++// ClearArbiterStale clears the arbiter stale flag and dirties vibe (downstream).
++func (d *Draft) ClearArbiterStale() {
++	if d == nil {
++		return
++	}
++	d.ArbiterStale = false
++	d.VibeStale = true
++}
++
++// ClearVibeStale clears the vibe stale flag.
++func (d *Draft) ClearVibeStale() {
++	if d == nil {
++		return
++	}
++	d.VibeStale = false
++}
++
++// SynthesisStale reports whether arbiter or vibe need a manual refresh.
++func (d *Draft) SynthesisStale() bool {
++	return d != nil && (d.ArbiterStale || d.VibeStale)
++}
++
++// RefreshDraftAfterAgentReplace installs res for name, rebuilds Specialists
++// from the pre-arbiter snapshot (dedupe + memory), and marks synthesis stale.
++func RefreshDraftAfterAgentReplace(d *Draft, name string, res SpecialistResult) error {
++	if err := d.ReplaceAgent(name, res); err != nil {
++		return err
++	}
++	base := append([]SpecialistResult(nil), d.Rerun.PreArbiterSpecialists...)
++	base = dedupeInlineFindingsAcrossSpecialists(base)
++	mem := LoadRepoMemory(d.PR)
++	var memSup []MemorySuppressedFinding
++	base, memSup = ApplyMemorySuppression(mem, base)
++	d.Specialists = base
++	d.MemorySuppressed = memSup
++	d.MarkSynthesisStale()
++	return nil
++}
++
++// RunSpecialistForDraft re-runs one code specialist using Draft.Rerun inputs.
++// No circuit breaker (user-initiated). notify may be nil.
++func RunSpecialistForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, name string, notify func(attempt int, err error)) SpecialistResult {
++	res := SpecialistResult{Specialist: name}
++	if d == nil || cfg == nil || d.Rerun == nil {
++		res.Err = fmt.Errorf("specialist re-run: nil draft, config, or RerunContext")
++		res.Outcome = OutcomeFailed
++		return res
++	}
++	if !isCodeSpecialistName(name) {
++		res.Err = fmt.Errorf("specialist re-run: %q is not a code specialist", name)
++		res.Outcome = OutcomeFailed
++		return res
++	}
++	if notify == nil {
++		notify = func(int, error) {}
++	}
++	rc := d.Rerun
++	repoCtx := ""
++	if rc.PerAgent != nil {
++		repoCtx = rc.PerAgent[name]
++	}
++	ev := ""
++	if specWantsEvidence(name) {
++		ev = rc.PREvidence
++	}
++	intent := ""
++	if specWantsIntent(name) {
++		intent = rc.IntentSection
++	}
++	runWith := func(stageCfg *aiconfig.Config) SpecialistResult {
++		var r SpecialistResult
++		_ = stageWithRetry(ctx, stageCfg, "specialist "+name, notify, func(sctx context.Context) error {
++			stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "specialist "+name), perStageBudget(stageCfg))
++			defer cancel()
++			r = runReviewSpecialist(stCtx, stageCfg, name, d.Worktree, d.PR, rc.SpecialistDiff, repoCtx, ev, rc.StaticSection, rc.StaticCleanFiles, rc.LangSection, rc.TechSection, intent, rc.ExpandedSection)
++			if r.Err != nil {
++				return r.Err
++			}
++			return nil
++		})
++		return r
++	}
++	if models := cfg.EnsembleModels(name); len(models) >= 2 {
++		res = runEnsemble(name, models, cfg, runWith)
++	} else {
++		res = runWith(cfg.ForStage(name))
++	}
++	if res.Err != nil {
++		res.Outcome = OutcomeFailed
++	}
++	return res
++}
++
++// RunPRAgentForDraft re-runs one PR agent using Draft.Rerun inputs.
++func RunPRAgentForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, name string, notify func(attempt int, err error)) SpecialistResult {
++	res := SpecialistResult{Specialist: name}
++	if d == nil || cfg == nil || d.Rerun == nil {
++		res.Err = fmt.Errorf("pr-agent re-run: nil draft, config, or RerunContext")
++		res.Outcome = OutcomeFailed
++		return res
++	}
++	if !IsPRAgent(name) {
++		res.Err = fmt.Errorf("pr-agent re-run: %q is not a PR agent", name)
++		res.Outcome = OutcomeFailed
++		return res
++	}
++	if notify == nil {
++		notify = func(int, error) {}
++	}
++	rc := d.Rerun
++	intent := ""
++	if specWantsIntent(name) {
++		intent = rc.IntentSection
++	}
++	runWith := func(stageCfg *aiconfig.Config) SpecialistResult {
++		var r SpecialistResult
++		_ = stageWithRetry(ctx, stageCfg, "pr-agent "+name, notify, func(sctx context.Context) error {
++			stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "pr-agent "+name), perStageBudget(stageCfg))
++			defer cancel()
++			r = runPRAgent(stCtx, stageCfg, name, d.Worktree, d.PR, rc.PRAgentDiff, rc.PRAgentInput, intent)
++			if r.Err != nil {
++				return r.Err
++			}
++			return nil
++		})
++		return r
++	}
++	if models := cfg.EnsembleModels(name); len(models) >= 2 {
++		res = runEnsemble(name, models, cfg, runWith)
++	} else {
++		res = runWith(cfg.ForStage(name))
++	}
++	if res.Err != nil {
++		res.Outcome = OutcomeFailed
++	}
++	return res
++}
++
++// RunRepoArbiterForDraft re-runs the repo arbiter (and convention witness when
++// enabled) against the draft's current specialists. Clears ArbiterStale and
++// marks vibe stale. Returns a non-nil result; Err is set on failure.
++func RunRepoArbiterForDraft(ctx context.Context, cfg *aiconfig.Config, d *Draft, notify func(attempt int, err error)) *RepoArbiterResult {
++	if d == nil || cfg == nil {
++		return &RepoArbiterResult{Err: fmt.Errorf("arbiter re-run: nil draft or config")}
++	}
++	if d.Rerun == nil || !d.Rerun.RepoExpertPanel {
++		return &RepoArbiterResult{Err: fmt.Errorf("arbiter re-run: unavailable")}
++	}
++	if notify == nil {
++		notify = func(int, error) {}
++	}
++	rc := d.Rerun
++	var witnesses []conventionwitness.Witness
++	if rc.ConventionWitness {
++		// code specialists only for witness inputs (same as pipeline)
++		var codeOnly []SpecialistResult
++		for _, s := range d.Specialists {
++			if isCodeSpecialistName(s.Specialist) {
++				codeOnly = append(codeOnly, s)
++			}
++		}
++		witnesses = runConventionWitnessPhase(ctx, cfg, nil, d.Worktree, d.PR, codeOnly, rc.PREvidence, nil)
++		d.ConventionWitness = witnesses
++	}
++	var arb *RepoArbiterResult
++	_ = stageWithRetry(ctx, cfg, "repo-arbiter", notify, func(sctx context.Context) error {
++		stCtx, cancel := context.WithTimeout(applog.WithStage(sctx, "repo-arbiter"), perStageBudget(cfg))
++		defer cancel()
++		arb = RunRepoArbiter(stCtx, cfg, d.Worktree, d.PR, d.Specialists, rc.PerAgent, rc.TechSection, witnesses, rc.RejectedMemory)
++		if arb != nil && arb.Err != nil {
++			return arb.Err
++		}
++		return nil
++	})
++	if arb == nil {
++		arb = &RepoArbiterResult{Err: fmt.Errorf("arbiter re-run: no result")}
++	}
++	if !rc.RepoArbiterDemotions {
++		arb.Demoted = nil
++	}
++	d.RepoArbiter = arb
++	if arb.Err == nil {
++		FinalizeRepoArbiter(arb, d)
++	}
++	d.ClearArbiterStale()
++	return arb
++}
+diff --git a/internal/review/rerun_test.go b/internal/review/rerun_test.go
+new file mode 100644
+index 0000000..85a737e
+--- /dev/null
++++ b/internal/review/rerun_test.go
+@@ -0,0 +1,154 @@
++package review
++
++import (
++	"context"
++	"errors"
++	"strings"
++	"testing"
++
++	"github.com/madicen/appr-ai-sal/internal/ai"
++	"github.com/madicen/appr-ai-sal/internal/aiconfig"
++	"github.com/madicen/appr-ai-sal/internal/gh"
++)
++
++// recordingJSONProvider returns fixed JSON and records the last user prompt.
++type recordingJSONProvider struct {
++	out      string
++	lastUser *string
++}
++
++func (recordingJSONProvider) Name() string                  { return "recording-json" }
++func (recordingJSONProvider) Capabilities() ai.Capabilities { return ai.Capabilities{} }
++func (p recordingJSONProvider) Complete(_ context.Context, req ai.Request) (ai.Result, error) {
++	if p.lastUser != nil {
++		*p.lastUser = req.User
++	}
++	return ai.Result{Text: p.out}, nil
++}
++
++func TestReplaceAgentAndMarkSynthesisStale(t *testing.T) {
++	d := &Draft{
++		Specialists: []SpecialistResult{
++			{Specialist: SpecFormatting, Findings: []Finding{{Path: "a.go", Line: 1, Severity: SeverityWarning, Comment: "x"}}},
++			{Specialist: SpecDesign, Err: errors.New("boom"), Outcome: OutcomeFailed},
++		},
++		Rerun: &RerunContext{
++			PreArbiterSpecialists: []SpecialistResult{
++				{Specialist: SpecFormatting, Findings: []Finding{{Path: "a.go", Line: 1, Severity: SeverityWarning, Comment: "x"}}},
++				{Specialist: SpecDesign, Err: errors.New("boom"), Outcome: OutcomeFailed},
++			},
++		},
++		DemotedHidden: []FlatFinding{{Specialist: SpecFormatting}},
++	}
++	if !d.CanRerunAgent(SpecDesign) {
++		t.Fatal("failed design should be re-runnable")
++	}
++	if d.CanRerunAgent(SpecFormatting) {
++		t.Fatal("clean formatting must not be re-runnable")
++	}
++	if d.CanRerunAgent(SpecDesign); d.Rerun == nil {
++		t.Fatal("sanity")
++	}
++	// Skipped agents are not re-runnable.
++	d.Specialists = append(d.Specialists, SpecialistResult{Specialist: SpecDocs, Outcome: OutcomeSkipped, OutcomeReason: "breaker"})
++	if d.CanRerunAgent(SpecDocs) {
++		t.Fatal("skipped docs must not be re-runnable")
++	}
++	d.Specialists = d.Specialists[:2]
++
++	ok := SpecialistResult{Specialist: SpecDesign, Findings: []Finding{{Path: "b.go", Line: 2, Severity: SeverityWarning, Comment: "y"}}}
++	if err := d.ReplaceAgent(SpecDesign, ok); err != nil {
++		t.Fatal(err)
++	}
++	if d.Specialists[1].Err != nil || len(d.Specialists[1].Findings) != 1 {
++		t.Fatalf("replace failed: %+v", d.Specialists[1])
++	}
++	if d.Rerun.PreArbiterSpecialists[1].Err != nil {
++		t.Fatal("pre-arbiter snapshot should also be replaced")
++	}
++	d.MarkSynthesisStale()
++	if !d.ArbiterStale || !d.VibeStale {
++		t.Fatalf("stale flags = arbiter:%v vibe:%v", d.ArbiterStale, d.VibeStale)
++	}
++	if len(d.DemotedHidden) != 0 {
++		t.Fatalf("DemotedHidden should clear on stale, got %d", len(d.DemotedHidden))
++	}
++	failed := d.FailedAgentNames()
++	if len(failed) != 0 {
++		t.Fatalf("FailedAgentNames after successful replace = %v, want none", failed)
++	}
++}
++
++func TestStaleTransitionsOnArbiterAndVibe(t *testing.T) {
++	d := &Draft{ArbiterStale: true, VibeStale: true}
++	d.ClearArbiterStale()
++	if d.ArbiterStale || !d.VibeStale {
++		t.Fatalf("after arbiter clear: arbiter=%v vibe=%v", d.ArbiterStale, d.VibeStale)
++	}
++	d.ClearVibeStale()
++	if d.VibeStale {
++		t.Fatal("vibe should be clear")
++	}
++}
++
++func TestCanRerunAgentNilRerun(t *testing.T) {
++	d := &Draft{
++		Specialists: []SpecialistResult{
++			{Specialist: SpecDesign, Err: errors.New("boom"), Outcome: OutcomeFailed},
++		},
++	}
++	if d.CanRerunAgent(SpecDesign) {
++		t.Fatal("without RerunContext, re-run must be disabled")
++	}
++	if err := d.ReplaceAgent(SpecDesign, SpecialistResult{Specialist: SpecDesign}); err == nil {
++		t.Fatal("ReplaceAgent without Rerun should error")
++	}
++}
++
++func TestRunSpecialistForDraftUsesRerunDiff(t *testing.T) {
++	const marker = "RERUN-DIFF-MARKER-xyzzy"
++	var sawUser string
++	restore := ai.SetBaseProviderForTest(func(*aiconfig.Config) (ai.Provider, error) {
++		return recordingJSONProvider{
++			out:      `{"summary":"clean","findings":[]}`,
++			lastUser: &sawUser,
++		}, nil
++	})
++	defer restore()
++
++	cfg := aiconfig.DefaultConfig()
++	cfg.Provider = aiconfig.ProviderClaude
++	cfg.ReviewStrictness = aiconfig.ReviewBalanced
++	cfg.RetryStageAttemptBudget = 1
++	cfg.RetryMaxAttempts = 1
++
++	d := &Draft{
++		PR:       &gh.PR{Repository: "o/r", Number: 1, Title: "t", Author: "a", BaseRef: "main", HeadRef: "feat"},
++		Worktree: "",
++		Specialists: []SpecialistResult{
++			{Specialist: SpecDocs, Err: errors.New("boom"), Outcome: OutcomeFailed},
++		},
++		Rerun: &RerunContext{
++			SpecialistDiff: "diff --git a/README.md b/README.md\n+++ b/README.md\n@@ -1 +1 @@\n+" + marker + "\n",
++			PreArbiterSpecialists: []SpecialistResult{
++				{Specialist: SpecDocs, Err: errors.New("boom"), Outcome: OutcomeFailed},
++			},
++		},
++	}
++	res := RunSpecialistForDraft(context.Background(), cfg, d, SpecDocs, nil)
++	if res.Err != nil {
++		t.Fatalf("RunSpecialistForDraft: %v", res.Err)
++	}
++	if !strings.Contains(sawUser, marker) {
++		t.Fatalf("user prompt must include Rerun.SpecialistDiff marker; got %q", sawUser)
++	}
++	if err := RefreshDraftAfterAgentReplace(d, SpecDocs, res); err != nil {
++		t.Fatal(err)
++	}
++	if !d.ArbiterStale || !d.VibeStale {
++		t.Fatal("refresh should mark synthesis stale")
++	}
++	if d.Specialists[0].Err != nil {
++		t.Fatalf("specialists should carry successful re-run, got %+v", d.Specialists[0])
++	}
++}
+diff --git a/internal/review/runner.go b/internal/review/runner.go
+index 6bfe3ae..e52e261 100644
+--- a/internal/review/runner.go
++++ b/internal/review/runner.go
+@@ -401,6 +401,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap)
+ 		}
+ 
+ 		var prAgents []SpecialistResult
++		var savedPRData PRAgentInput
+ 		prParallel := prAgentsEnabled && rc != nil && rc.ParallelPRAgents
+ 		var prWG sync.WaitGroup
+ 		if prParallel {
+@@ -412,6 +413,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap)
+ 				if plan != nil {
+ 					prData.PriorFindingsStatus = plan.priorStatus
+ 				}
++				savedPRData = prData
+ 				prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
+ 			}()
+ 		}
+@@ -444,6 +446,7 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap)
+ 			if plan != nil {
+ 				prData.PriorFindingsStatus = plan.priorStatus
+ 			}
++			savedPRData = prData
+ 			prAgents = sortedPRAgentResults(runPRAgentsPhase(ctx, runCfg, rc, worktree, pr, shapedDiff, prData, intentSection, breaker, out))
+ 		}
+ 
+@@ -478,8 +481,18 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap)
+ 			out <- Progress{Stage: "reviewer-memory", Detail: fmt.Sprintf("suppressed %d finding(s) matching repeatedly-skipped patterns", len(memSuppressed))}
+ 		}
+ 
++		// Snapshot pre-arbiter specialists for post-run re-runs (before
++		// FinalizeRepoArbiter mutates findings via demote/suppress).
++		preArbiterSpecialists := append([]SpecialistResult(nil), allSpecialists...)
++
+ 		skipDownstream := !SpecialistsHaveAnyFindings(allSpecialists)
+ 
++		parallelSpecs := rc != nil && rc.ParallelSpecialists
++		parallelPR := rc != nil && rc.ParallelPRAgents
++		convWitness := rc != nil && rc.ConventionWitness
++		repoPanel := rc != nil && rc.RepoExpertPanel
++		arbDemotions := rc != nil && rc.RepoArbiterDemotions
++
+ 		final := &Draft{
+ 			Ref:                        ref,
+ 			PR:                         pr,
+@@ -491,6 +504,26 @@ func Run(ctx context.Context, ref gh.Ref, cfg *aiconfig.Config, boot Bootstrap)
+ 			ContextVersusChangeSummary: cvSummary,
+ 			PRIntent:                   prIntent,
+ 			MemorySuppressed:           memSuppressed,
++			Rerun: &RerunContext{
++				SpecialistDiff:        specialistDiff,
++				PRAgentDiff:           shapedDiff,
++				PerAgent:              perAgent,
++				PREvidence:            prEvidence,
++				StaticSection:         staticSection,
++				StaticCleanFiles:      staticCleanFiles,
++				LangSection:           langSection,
++				TechSection:           techSection,
++				IntentSection:         intentSection,
++				ExpandedSection:       expandedSection,
++				RejectedMemory:        RejectedPatternsSection(repoMemory),
++				PRAgentInput:          savedPRData,
++				PreArbiterSpecialists: preArbiterSpecialists,
++				ParallelSpecialists:   parallelSpecs,
++				ParallelPRAgents:      parallelPR,
++				ConventionWitness:     convWitness,
++				RepoExpertPanel:       repoPanel,
++				RepoArbiterDemotions:  arbDemotions,
++			},
+ 		}
+ 		// B3: on a re-review, carry the prior cached review onto the Draft so
+ 		// the posting path can leave status replies on the tool's own prior
+@@ -936,11 +969,11 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc
+ 	// findings get their own identifier-style census evidence (Q6.5).
+ 	evidence = appendTechConventionEvidence(evidence, worktree, techFindings)
+ 	evidence = appendFormattingConventionEvidence(evidence, worktree, formattingFindings)
+-	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("start (%d findings)", len(inputs))}
++	emitProgress(out, Progress{Stage: "convention-witness", Detail: fmt.Sprintf("start (%d findings)", len(inputs))})
+ 	// Wrap in stageWithRetry so a transient parse/transport glitch on this
+ 	// (previously non-retried) path re-runs like every other AI stage.
+ 	notify := func(attempt int, err error) {
+-		out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))}
++		emitProgress(out, Progress{Stage: "convention-witness", Detail: fmt.Sprintf("retry %d (%s)", attempt, retryReason(err))})
+ 	}
+ 	var res conventionwitness.Result
+ 	_ = stageWithRetry(ctx, runCfg, "convention-witness", notify, func(sctx context.Context) error {
+@@ -952,13 +985,21 @@ func runConventionWitnessPhase(ctx context.Context, runCfg *aiconfig.Config, rc
+ 		return res.Err
+ 	})
+ 	if res.Err != nil {
+-		out <- Progress{Stage: "convention-witness", Detail: "warning: " + res.Err.Error()}
++		emitProgress(out, Progress{Stage: "convention-witness", Detail: "warning: " + res.Err.Error()})
+ 		return nil
+ 	}
+-	out <- Progress{Stage: "convention-witness", Detail: fmt.Sprintf("done (%d witnesses)", len(res.Witnesses))}
++	emitProgress(out, Progress{Stage: "convention-witness", Detail: fmt.Sprintf("done (%d witnesses)", len(res.Witnesses))})
+ 	return res.Witnesses
+ }
+ 
++// emitProgress sends p on out when out is non-nil (manual re-runs pass nil).
++func emitProgress(out chan<- Progress, p Progress) {
++	if out == nil {
++		return
++	}
++	out <- p
++}
++
+ // witnessInputsForSpecialists collects the convention-witness inputs from a
+ // specialist set: one FindingInput per witnessable finding, plus the tech and
+ // formatting findings that get their own harvested evidence blocks. Both
+diff --git a/internal/tui/tabs/review/model.go b/internal/tui/tabs/review/model.go
+index 655d0e8..dcc5981 100644
+--- a/internal/tui/tabs/review/model.go
++++ b/internal/tui/tabs/review/model.go
+@@ -1,6 +1,7 @@
+ package review
+ 
+ import (
++	"context"
+ 	"fmt"
+ 	"strings"
+ 	"time"
+@@ -579,6 +580,10 @@ type Model struct {
+ 	// header so the user knows the summary they're seeing may be stale
+ 	// or missing fix-prompts.
+ 	coachErr error
++	// rerunInFlight / rerunCancel guard post-pipeline specialist/arbiter/vibe
++	// re-runs started from the overlay (r/R/u or mouse).
++	rerunInFlight bool
++	rerunCancel   context.CancelFunc
+ 
+ 	// U2 draft-persistence bookkeeping. sessionDirty flags that a decision
+ 	// changed since the last write; sessionSaveSeq lets a later debounced save
+@@ -653,6 +658,20 @@ func zoneOverlayAgent(i int) string {
+ 	return fmt.Sprintf("zone:overlay:agent:%d", i)
+ }
+ 
++func zoneOverlayAgentRerun(i int) string {
++	return fmt.Sprintf("zone:overlay:agent-rerun:%d", i)
++}
++
++func zoneOverlayRerunAllFailed() string {
++	return "zone:overlay:rerun-all-failed"
++}
++
++// AgentRerunZoneName exports the per-row re-run zone id for tests.
++func AgentRerunZoneName(i int) string { return zoneOverlayAgentRerun(i) }
++
++// RerunAllFailedZoneName exports the batch re-run zone id for tests.
++func RerunAllFailedZoneName() string { return zoneOverlayRerunAllFailed() }
++
+ // digitKey reports whether the key message is a single ASCII digit and,
+ // if so, its numeric value (1-9, plus 0). Used for jump-to-tab shortcuts.
+ func digitKey(msg tea.KeyMsg) (int, bool) {
+@@ -1195,6 +1214,12 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+ 		m.onClipboardCopied(msg)
+ 		return m, nil
+ 
++	case AgentRerunDoneMsg:
++		return m, m.handleAgentRerunDone(msg)
++
++	case AgentRerunBatchDoneMsg:
++		return m, m.handleAgentRerunBatchDone(msg)
++
+ 	case VibeCoachDoneMsg:
+ 		m.coachInFlight = false
+ 		// If the user changed skips again between issue and completion,
+@@ -1319,7 +1344,23 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+ 				}
+ 			}
+ 			return m, nil
++		case "r":
++			// Post-pipeline: re-run focused failed agent / arbiter / vibe.
++			// During the initial run this is a no-op (rerunAvailable false).
++			if cmd := m.rerunFocusedAgent(); cmd != nil {
++				return m, cmd
++			}
++			return m, nil
++		case "R":
++			if cmd := m.rerunAllFailed(); cmd != nil {
++				return m, cmd
++			}
++			return m, nil
+ 		case "q", "esc":
++			if m.rerunInFlight {
++				m.cancelRerun()
++				return m, nil
++			}
+ 			// Abort: close the overlay even though the runner is still in flight.
+ 			// The goroutine continues; if it eventually finishes, m.draft on the
+ 			// root model is populated and the user can press 'a' to reopen
+@@ -1365,6 +1406,17 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+ 			return m.actPrev()
+ 		case "r", "R":
+ 			return m.actRefreshPR()
++		case "u":
++			// Agent-tab re-run (r/R already mean refresh PR here).
++			if cmd := m.rerunFocusedAgent(); cmd != nil {
++				return m, cmd
++			}
++			return m, nil
++		case "U":
++			if cmd := m.rerunAllFailed(); cmd != nil {
++				return m, cmd
++			}
++			return m, nil
+ 		case "F":
+ 			// File-level fallback: post the current finding as a
+ 			// subject_type=file comment when its line can't anchor on
+@@ -1382,6 +1434,10 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+ 			// anchor (emits JumpToDiffMsg for the root to handle).
+ 			return m.actJumpToDiff()
+ 		case "q", "esc":
++			if m.rerunInFlight {
++				m.cancelRerun()
++				return m, nil
++			}
+ 			return m, m.closeCmd()
+ 		}
+ 	case phaseGeneratingSummary:
+@@ -1484,7 +1540,20 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+ 		}
+ 		switch m.phase {
+ 		case phaseRunning:
++			if z := zone.Get(zoneOverlayRerunAllFailed()); z != nil && z.InBounds(msg) {
++				if cmd := m.rerunAllFailed(); cmd != nil {
++					return m, cmd
++				}
++				return m, nil
++			}
+ 			for i := range m.agents {
++				if z := zone.Get(zoneOverlayAgentRerun(i)); z != nil && z.InBounds(msg) {
++					m.cursor = i
++					if cmd := m.rerunFocusedAgent(); cmd != nil {
++						return m, cmd
++					}
++					return m, nil
++				}
+ 				if z := zone.Get(zoneOverlayAgent(i)); z != nil && z.InBounds(msg) {
+ 					m.cursor = i
+ 					if hasExpandableContent(&m.agents[i]) {
+@@ -1495,6 +1564,13 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+ 				}
+ 			}
+ 		case phaseApprove:
++			for i := range m.agents {
++				if z := zone.Get(zoneOverlayAgentRerun(i)); z != nil && z.InBounds(msg) {
++					if m.canRerunNamed(m.agents[i].name) {
++						return m, m.startAgentRerun(m.agents[i].name)
++					}
++				}
++			}
+ 			if z := zone.Get(zones.StagedPost); z != nil && z.InBounds(msg) {
+ 				return m.actPostCurrent()
+ 			}
+diff --git a/internal/tui/tabs/review/rerun.go b/internal/tui/tabs/review/rerun.go
+new file mode 100644
+index 0000000..17c7768
+--- /dev/null
++++ b/internal/tui/tabs/review/rerun.go
+@@ -0,0 +1,409 @@
++package review
++
++import (
++	"context"
++	"strings"
++	"sync"
++	"time"
++
++	tea "github.com/charmbracelet/bubbletea"
++
++	"github.com/madicen/appr-ai-sal/internal/review"
++	"github.com/madicen/appr-ai-sal/internal/tui/data"
++)
++
++// AgentRerunDoneMsg is delivered when a single post-pipeline agent re-run finishes.
++type AgentRerunDoneMsg struct {
++	Name     string
++	Kind     string // "specialist" | "pr-agent" | "arbiter" | "vibe"
++	Result   *review.SpecialistResult
++	Arbiter  *review.RepoArbiterResult
++	Vibe     *review.VibeCoachResult
++	Err      error
++	Snapshot *agentRowSnapshot
++	Canceled bool
++}
++
++func (AgentRerunDoneMsg) OverlayBound() {}
++
++var _ data.ForwardToOverlay = AgentRerunDoneMsg{}
++
++// AgentRerunBatchDoneMsg carries results for "re-run all failed".
++type AgentRerunBatchDoneMsg struct {
++	Items     []AgentRerunBatchItem
++	Snapshots map[string]*agentRowSnapshot
++	Canceled  bool
++}
++
++// AgentRerunBatchItem is one specialist/PR-agent result in a batch re-run.
++type AgentRerunBatchItem struct {
++	Name   string
++	Result review.SpecialistResult
++}
++
++func (AgentRerunBatchDoneMsg) OverlayBound() {}
++
++var _ data.ForwardToOverlay = AgentRerunBatchDoneMsg{}
++
++// agentRowSnapshot captures a row before a re-run so Esc can restore it.
++type agentRowSnapshot struct {
++	name       string
++	phase      int
++	err        error
++	summary    string
++	findingsN  int
++	findings   []review.Finding
++	verdict    string
++	retries    int
++	lastRetry  string
++	startedAt  time.Time
++	finishedAt time.Time
++}
++
++func snapshotAgentRow(a *overlayAgentRow) *agentRowSnapshot {
++	if a == nil {
++		return nil
++	}
++	return &agentRowSnapshot{
++		name:       a.name,
++		phase:      a.phase,
++		err:        a.err,
++		summary:    a.summary,
++		findingsN:  a.findingsN,
++		findings:   append([]review.Finding(nil), a.findings...),
++		verdict:    a.verdict,
++		retries:    a.retries,
++		lastRetry:  a.lastRetry,
++		startedAt:  a.startedAt,
++		finishedAt: a.finishedAt,
++	}
++}
++
++func (s *agentRowSnapshot) restore(a *overlayAgentRow) {
++	if s == nil || a == nil {
++		return
++	}
++	a.phase = s.phase
++	a.err = s.err
++	a.summary = s.summary
++	a.findingsN = s.findingsN
++	a.findings = append([]review.Finding(nil), s.findings...)
++	a.verdict = s.verdict
++	a.retries = s.retries
++	a.lastRetry = s.lastRetry
++	a.startedAt = s.startedAt
++	a.finishedAt = s.finishedAt
++}
++
++func (m *Model) rerunAvailable() bool {
++	return m != nil && m.done && m.draft != nil && m.draft.Rerun != nil && m.aiConfig != nil
++}
++
++func (m *Model) canRerunNamed(name string) bool {
++	if !m.rerunAvailable() {
++		return false
++	}
++	switch name {
++	case overlayAgentRepoArbiter:
++		return m.draft.Rerun.RepoExpertPanel
++	case review.SpecVibeCoach:
++		return true
++	default:
++		return m.draft.CanRerunAgent(name)
++	}
++}
++
++func (m *Model) cancelRerun() {
++	if m.rerunCancel != nil {
++		m.rerunCancel()
++		m.rerunCancel = nil
++	}
++}
++
++func (m *Model) markRowRunning(name string) *agentRowSnapshot {
++	i := m.agentIndex(name)
++	if i < 0 {
++		return nil
++	}
++	snap := snapshotAgentRow(&m.agents[i])
++	m.agents[i].phase = oaRunning
++	m.agents[i].err = nil
++	m.agents[i].startedAt = time.Now()
++	m.agents[i].finishedAt = time.Time{}
++	m.agents[i].retries = 0
++	m.agents[i].lastRetry = ""
++	return snap
++}
++
++// rerunFocusedAgent starts a re-run for the overview cursor agent or active agent tab.
++func (m *Model) rerunFocusedAgent() tea.Cmd {
++	if !m.rerunAvailable() || m.rerunInFlight {
++		return nil
++	}
++	name := ""
++	if m.phase == phaseRunning && m.cursor >= 0 && m.cursor < len(m.agents) {
++		name = m.agents[m.cursor].name
++	} else if m.phase == phaseApprove {
++		name = m.activeAgent()
++	}
++	if name == "" || !m.canRerunNamed(name) {
++		return nil
++	}
++	return m.startAgentRerun(name)
++}
++
++// rerunAllFailed starts re-runs for every currently failed specialist/PR agent.
++func (m *Model) rerunAllFailed() tea.Cmd {
++	if !m.rerunAvailable() || m.rerunInFlight {
++		return nil
++	}
++	names := m.draft.FailedAgentNames()
++	if len(names) == 0 {
++		return nil
++	}
++	return m.startFailedAgentsRerun(names)
++}
++
++func (m *Model) startAgentRerun(name string) tea.Cmd {
++	snap := m.markRowRunning(name)
++	m.rerunInFlight = true
++	ctx, cancel := context.WithCancel(context.Background())
++	m.rerunCancel = cancel
++	m.rebuildBody()
++
++	draft := m.draft
++	cfg := m.aiConfig
++	return func() tea.Msg {
++		msg := AgentRerunDoneMsg{Name: name, Snapshot: snap}
++		switch {
++		case name == overlayAgentRepoArbiter:
++			msg.Kind = "arbiter"
++			arb := review.RunRepoArbiterForDraft(ctx, cfg, draft, nil)
++			msg.Arbiter = arb
++			if arb != nil {
++				msg.Err = arb.Err
++			}
++		case name == review.SpecVibeCoach:
++			msg.Kind = "vibe"
++			vibe := review.RunVibeCoachForDraft(ctx, cfg, draft, nil)
++			msg.Vibe = vibe
++			if vibe != nil {
++				msg.Err = vibe.Err
++			}
++		case review.IsPRAgent(name):
++			msg.Kind = "pr-agent"
++			res := review.RunPRAgentForDraft(ctx, cfg, draft, name, nil)
++			msg.Result = &res
++			msg.Err = res.Err
++		default:
++			msg.Kind = "specialist"
++			res := review.RunSpecialistForDraft(ctx, cfg, draft, name, nil)
++			msg.Result = &res
++			msg.Err = res.Err
++		}
++		if ctx.Err() != nil {
++			msg.Canceled = true
++			msg.Err = ctx.Err()
++		}
++		return msg
++	}
++}
++
++func (m *Model) startFailedAgentsRerun(names []string) tea.Cmd {
++	snaps := make(map[string]*agentRowSnapshot, len(names))
++	for _, name := range names {
++		snaps[name] = m.markRowRunning(name)
++	}
++	m.rerunInFlight = true
++	ctx, cancel := context.WithCancel(context.Background())
++	m.rerunCancel = cancel
++	m.rebuildBody()
++
++	draft := m.draft
++	cfg := m.aiConfig
++	parallel := draft.Rerun != nil && draft.Rerun.ParallelSpecialists
++	return func() tea.Msg {
++		items := make([]AgentRerunBatchItem, len(names))
++		runOne := func(i int, name string) {
++			var res review.SpecialistResult
++			if review.IsPRAgent(name) {
++				res = review.RunPRAgentForDraft(ctx, cfg, draft, name, nil)
++			} else {
++				res = review.RunSpecialistForDraft(ctx, cfg, draft, name, nil)
++			}
++			items[i] = AgentRerunBatchItem{Name: name, Result: res}
++		}
++		if parallel && len(names) > 1 {
++			var wg sync.WaitGroup
++			for i, name := range names {
++				wg.Add(1)
++				i, name := i, name
++				go func() {
++					defer wg.Done()
++					runOne(i, name)
++				}()
++			}
++			wg.Wait()
++		} else {
++			for i, name := range names {
++				if ctx.Err() != nil {
++					break
++				}
++				runOne(i, name)
++			}
++		}
++		return AgentRerunBatchDoneMsg{
++			Items:     items,
++			Snapshots: snaps,
++			Canceled:  ctx.Err() != nil,
++		}
++	}
++}
++
++func (m *Model) handleAgentRerunDone(msg AgentRerunDoneMsg) tea.Cmd {
++	m.rerunInFlight = false
++	m.rerunCancel = nil
++	if msg.Canceled {
++		if i := m.agentIndex(msg.Name); i >= 0 {
++			msg.Snapshot.restore(&m.agents[i])
++		}
++		m.rebuildBody()
++		return nil
++	}
++	switch msg.Kind {
++	case "arbiter":
++		m.hydrateAgentRowsFromDraft(m.draft)
++		m.rebuildCardsFromDraft()
++	case "vibe":
++		if m.draft != nil && msg.Vibe != nil {
++			m.draft.VibeCoach = msg.Vibe
++			m.draft.ClearVibeStale()
++		}
++		if i := m.agentIndex(review.SpecVibeCoach); i >= 0 {
++			row := &m.agents[i]
++			row.finishedAt = time.Now()
++			if msg.Err != nil {
++				row.phase = oaErr
++				row.err = msg.Err
++			} else {
++				row.phase = oaDone
++				row.err = nil
++				if msg.Vibe != nil {
++					row.summary = msg.Vibe.Summary
++					row.verdict = msg.Vibe.Verdict
++					row.findingsN = len(msg.Vibe.Prompts)
++				}
++			}
++		}
++		if m.draft != nil && m.draft.VibeCoach != nil {
++			m.lastCoachHash = skipSetHash(m.draft.UserSkipPostKeys)
++		}
++	default:
++		if msg.Result != nil && m.draft != nil {
++			_ = review.RefreshDraftAfterAgentReplace(m.draft, msg.Name, *msg.Result)
++		}
++		m.applySpecialistResultToRow(msg.Name, msg.Result, msg.Err)
++		m.rebuildCardsFromDraft()
++		m.lastCoachHash = "" // vibe is stale
++	}
++	m.rebuildBody()
++	return nil
++}
++
++func (m *Model) handleAgentRerunBatchDone(msg AgentRerunBatchDoneMsg) tea.Cmd {
++	m.rerunInFlight = false
++	m.rerunCancel = nil
++	if msg.Canceled {
++		for name, snap := range msg.Snapshots {
++			if i := m.agentIndex(name); i >= 0 {
++				snap.restore(&m.agents[i])
++			}
++		}
++		m.rebuildBody()
++		return nil
++	}
++	for _, it := range msg.Items {
++		if it.Name == "" {
++			continue
++		}
++		_ = review.RefreshDraftAfterAgentReplace(m.draft, it.Name, it.Result)
++		err := it.Result.Err
++		res := it.Result
++		m.applySpecialistResultToRow(it.Name, &res, err)
++	}
++	// Mark stale once after the whole batch (spec: avoid thrashing mid-batch).
++	if m.draft != nil {
++		m.draft.MarkSynthesisStale()
++	}
++	m.rebuildCardsFromDraft()
++	m.lastCoachHash = ""
++	m.rebuildBody()
++	return nil
++}
++
++func (m *Model) applySpecialistResultToRow(name string, res *review.SpecialistResult, err error) {
++	i := m.agentIndex(name)
++	if i < 0 {
++		return
++	}
++	row := &m.agents[i]
++	row.finishedAt = time.Now()
++	if err != nil || (res != nil && res.Err != nil) {
++		row.phase = oaErr
++		if err != nil {
++			row.err = err
++		} else {
++			row.err = res.Err
++		}
++		return
++	}
++	row.phase = oaDone
++	row.err = nil
++	if res != nil {
++		row.summary = res.Summary
++		row.findings = append([]review.Finding(nil), res.Findings...)
++		row.findingsN = len(res.Findings)
++	}
++}
++
++// rebuildCardsFromDraft rebuilds approval cards from the current draft without
++// changing tab focus (used after a specialist re-run changes findings).
++func (m *Model) rebuildCardsFromDraft() {
++	d := m.draft
++	if d == nil {
++		return
++	}
++	m.files = review.ParseDiff(d.Diff)
++	flat := d.FlatPostableFindingsForPost()
++	m.cards = make([]approvalCard, 0, len(flat)+len(d.DemotedHidden)+len(d.MemorySuppressed))
++	for _, f := range flat {
++		card := approvalCard{finding: f}
++		anchorCardToDiff(&card, m.files)
++		m.cards = append(m.cards, card)
++	}
++	for i, ms := range d.MemorySuppressed {
++		if strings.TrimSpace(ms.Finding.Path) == "" || ms.Finding.Line <= 0 {
++			continue
++		}
++		card := approvalCard{
++			finding:             review.FlatFinding{Specialist: ms.Specialist, Finding: ms.Finding},
++			memorySuppressed:    true,
++			memorySuppIdx:       i,
++			memorySuppSkipCount: ms.SkipCount,
++			state:               cardSkipped,
++		}
++		anchorCardToDiff(&card, m.files)
++		m.cards = append(m.cards, card)
++	}
++	for _, f := range d.DemotedHidden {
++		if strings.TrimSpace(f.Finding.Path) == "" || f.Finding.Line <= 0 {
++			continue
++		}
++		card := approvalCard{finding: f, demoted: true, state: cardSkipped}
++		anchorCardToDiff(&card, m.files)
++		m.cards = append(m.cards, card)
++	}
++	if m.activeTab >= 0 && m.activeTab < len(m.tabs) && m.tabs[m.activeTab].kind == tabAgent {
++		m.idx = m.firstCardForAgent(m.activeAgent())
++	}
++}
+diff --git a/internal/tui/tabs/review/rerun_test.go b/internal/tui/tabs/review/rerun_test.go
+new file mode 100644
+index 0000000..210cbf1
+--- /dev/null
++++ b/internal/tui/tabs/review/rerun_test.go
+@@ -0,0 +1,99 @@
++package review
++
++import (
++	"errors"
++	"strings"
++	"testing"
++
++	tea "github.com/charmbracelet/bubbletea"
++
++	"github.com/madicen/appr-ai-sal/internal/aiconfig"
++	"github.com/madicen/appr-ai-sal/internal/review"
++)
++
++func testOverlayWithFailedDesign(t *testing.T) *Model {
++	t.Helper()
++	cfg := aiconfig.DefaultConfig()
++	ro := New(80, 40, true, false, false, cfg, true)
++	d := &review.Draft{
++		Diff: "",
++		Specialists: []review.SpecialistResult{
++			{Specialist: review.SpecFormatting, Findings: nil},
++			{Specialist: review.SpecDesign, Err: errors.New("boom"), Outcome: review.OutcomeFailed},
++		},
++		Rerun: &review.RerunContext{
++			PreArbiterSpecialists: []review.SpecialistResult{
++				{Specialist: review.SpecFormatting},
++				{Specialist: review.SpecDesign, Err: errors.New("boom"), Outcome: review.OutcomeFailed},
++			},
++			RepoExpertPanel: true,
++		},
++		VibeCoach: &review.VibeCoachResult{Summary: "ok", Prompts: nil},
++	}
++	_ = ro.AdoptDraft(d)
++	// Stay on overview for r/R tests.
++	_ = ro.focusTab(0)
++	// Point cursor at design.
++	for i := range ro.agents {
++		if ro.agents[i].name == review.SpecDesign {
++			ro.agents[i].phase = oaErr
++			ro.agents[i].err = errors.New("boom")
++			ro.cursor = i
++			break
++		}
++	}
++	return ro
++}
++
++func TestKeyRTriggersRerunOnFailedAgent(t *testing.T) {
++	ro := testOverlayWithFailedDesign(t)
++	if !ro.canRerunNamed(review.SpecDesign) {
++		t.Fatal("design should be re-runnable")
++	}
++	_, cmd := ro.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
++	if cmd == nil {
++		t.Fatal("r on failed design should return a re-run cmd")
++	}
++	if !ro.rerunInFlight {
++		t.Fatal("rerunInFlight should be set")
++	}
++}
++
++func TestKeyRNoopOnCleanAgent(t *testing.T) {
++	ro := testOverlayWithFailedDesign(t)
++	for i := range ro.agents {
++		if ro.agents[i].name == review.SpecFormatting {
++			ro.agents[i].phase = oaDone
++			ro.cursor = i
++			break
++		}
++	}
++	_, cmd := ro.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
++	if cmd != nil {
++		t.Fatal("r on clean formatting must be a no-op")
++	}
++	if ro.rerunInFlight {
++		t.Fatal("must not start re-run")
++	}
++}
++
++func TestSummaryBannerWhenSynthesisStale(t *testing.T) {
++	ro := testOverlayWithFailedDesign(t)
++	ro.draft.MarkSynthesisStale()
++	_ = ro.focusTab(ro.summaryTabIndex())
++	body := ro.renderSummaryBody()
++	if !strings.Contains(body, "Arbiter/vibe out of date") {
++		t.Fatalf("summary should show stale banner, got:\n%s", body)
++	}
++}
++
++func TestOverviewShowsRerunAllFailedZone(t *testing.T) {
++	ro := testOverlayWithFailedDesign(t)
++	body := ro.renderRunningBody()
++	if !strings.Contains(body, "Re-run all failed") {
++		t.Fatalf("overview should offer batch re-run, got:\n%s", body)
++	}
++	if RerunAllFailedZoneName() == "" {
++		t.Fatal("zone name helper")
++	}
++}
+diff --git a/internal/tui/tabs/review/summary.go b/internal/tui/tabs/review/summary.go
+index 4df0e6f..9a84758 100644
+--- a/internal/tui/tabs/review/summary.go
++++ b/internal/tui/tabs/review/summary.go
+@@ -74,6 +74,9 @@ func (m *Model) renderSummaryBody() string {
+ 	rowW := max(8, m.vp.Width)
+ 	var b strings.Builder
+ 	b.WriteString(styles.BoldStyle.Render("Final step — post the review summary") + "\n\n")
++	if m.draft != nil && m.draft.SynthesisStale() {
++		b.WriteString(styles.WarnStyle.Render("Arbiter/vibe out of date — re-run those rows (overview: r/R, agent tab: u/U), or continue with stale synthesis.") + "\n\n")
++	}
+ 	if banner := formatPriorActivityBanner(m.priorActivity); banner != "" {
+ 		b.WriteString(banner + "\n\n")
+ 	}
+@@ -348,6 +351,9 @@ func (m *Model) spinnerForPhase() string {
+ func (m *Model) helpForPhase() string {
+ 	switch m.phase {
+ 	case phaseRunning:
++		if m.done && m.rerunAvailable() {
++			return "tab/[ ] switch tab · j/k focus · r re-run · R re-run failed · space expand · q close · wheel"
++		}
+ 		return "tab/[ ] switch tab · j/k focus row · space expand · q abort · ↑/↓ scroll · wheel"
+ 	case phaseApprove:
+ 		if m.challengeActive {
+@@ -356,7 +362,7 @@ func (m *Model) helpForPhase() string {
+ 		if !m.done {
+ 			return "tab/[ ] switch tab · ↑/↓ scroll · q abort · wheel"
+ 		}
+-		return "tab/[ ] switch tab · y post · n/s skip · c challenge · x resurface · ←/→ finding · R refresh PR · q abort · wheel"
++		return "tab/[ ] switch tab · y post · n/s skip · c challenge · x resurface · ←/→ finding · u re-run agent · R refresh PR · q abort · wheel"
+ 	case phaseGeneratingSummary:
+ 		return "refining summary with your final selections… · q abort"
+ 	case phaseSummary:
+diff --git a/internal/tui/tabs/review/summary_sections_test.go b/internal/tui/tabs/review/summary_sections_test.go
+index d2558e0..c233fe8 100644
+--- a/internal/tui/tabs/review/summary_sections_test.go
++++ b/internal/tui/tabs/review/summary_sections_test.go
+@@ -353,19 +353,33 @@ func TestSummaryYStillPosts(t *testing.T) {
+ 	}
+ }
+ 
+-// summaryZone renders + scans the overlay and polls (bubblezone registers
+-// bounds asynchronously after Scan) until the zone id is available.
++// summaryZone renders + scans the overlay and polls until the zone id is
++// available with valid bounds. bubblezone applies Scan() on a background
++// worker — an immediate Get() can be nil or stale, especially under -race.
++// View() only includes the viewport window, so ids for off-screen cards will
++// never appear; callers must target a zone that is currently painted.
+ func summaryZone(t *testing.T, ro *Model, id string) *zone.ZoneInfo {
+ 	t.Helper()
+-	zone.Scan(ro.View())
+-	deadline := time.Now().Add(time.Second)
+-	for zone.Get(id) == nil {
+-		if time.Now().After(deadline) {
+-			t.Fatalf("zone %q not registered after render", id)
++	deadline := time.Now().Add(2 * time.Second)
++	for time.Now().Before(deadline) {
++		zone.Scan(ro.View())
++		for i := 0; i < 32; i++ {
++			runtime.Gosched()
+ 		}
+-		runtime.Gosched()
++		if z := zone.Get(id); summaryZoneReady(z) {
++			return z
++		}
++		time.Sleep(5 * time.Millisecond)
+ 	}
+-	return zone.Get(id)
++	t.Fatalf("zone %q not registered after render", id)
++	return nil
++}
++
++func summaryZoneReady(z *zone.ZoneInfo) bool {
++	if z == nil {
++		return false
++	}
++	return z.StartX <= z.EndX && z.StartY <= z.EndY
+ }
+ 
+ func summaryClick(t *testing.T, ro *Model, z *zone.ZoneInfo) *Model {
+@@ -417,21 +431,14 @@ func TestSummarySectionMouseToggleAndExpand(t *testing.T) {
+ 		t.Fatalf("edit click: editing=%v id=%q", ro.summaryEditing, ro.summaryEditID)
+ 	}
+ 
+-	// While editing, card clicks are swallowed.
+-	other := -1
+-	for i, s := range ro.summarySections {
+-		if i != idx && !s.Fixed {
+-			other = i
+-			break
+-		}
+-	}
+-	if other >= 0 {
+-		os := ro.summarySections[other]
+-		before := ro.sectionIncluded(os)
+-		ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionCheck(os.ID)))
+-		if ro.sectionIncluded(os) != before || !ro.summaryEditing {
+-			t.Fatalf("clicks while editing must be swallowed")
+-		}
++	// While editing, card clicks are swallowed. Click this section's own
++	// check (still on-screen above the textarea) — another section's zone
++	// may have scrolled out of the viewport once the editor opened, and
++	// View() only exposes currently painted markers to bubblezone.
++	before := ro.sectionIncluded(sec)
++	ro = summaryClick(t, ro, summaryZone(t, ro, zones.SummarySectionCheck(sec.ID)))
++	if ro.sectionIncluded(sec) != before || !ro.summaryEditing {
++		t.Fatalf("clicks while editing must be swallowed")
+ 	}
+ }
+ 
+diff --git a/internal/tui/tabs/review/tabs_test.go b/internal/tui/tabs/review/tabs_test.go
+index 9b4c50f..f5aabf2 100644
+--- a/internal/tui/tabs/review/tabs_test.go
++++ b/internal/tui/tabs/review/tabs_test.go
+@@ -446,7 +446,7 @@ func TestAgentRowCountReflectsFinalDraftNotStreamed(t *testing.T) {
+ 	if got := ro.agents[i].findingsN; got != 1 {
+ 		t.Fatalf("testing row findingsN = %d, want 1 (0 surviving + 1 demoted)", got)
+ 	}
+-	detail := ansi.Strip(agentStatusDetail(&ro.agents[i]))
++	detail := ansi.Strip(ro.agentStatusDetail(&ro.agents[i]))
+ 	if !strings.Contains(detail, "1 finding(s)") {
+ 		t.Fatalf("testing row detail should report 1 finding(s), got %q", detail)
+ 	}
+@@ -512,7 +512,7 @@ func TestVibeCoachRowLabelsPromptsNotFindings(t *testing.T) {
+ 		name: review.SpecVibeCoach, stage: stageGroupVibe, phase: oaDone,
+ 		findingsN: 3, verdict: review.VibeVerdictRequestChanges,
+ 	}
+-	got := ansi.Strip(agentStatusDetail(row))
++	got := ansi.Strip((&Model{}).agentStatusDetail(row))
+ 	if strings.Contains(got, "finding") {
+ 		t.Fatalf("vibe-coach row must not call prompts findings: %q", got)
+ 	}
+diff --git a/internal/tui/tabs/review/view.go b/internal/tui/tabs/review/view.go
+index ed8b6ec..1b720ab 100644
+--- a/internal/tui/tabs/review/view.go
++++ b/internal/tui/tabs/review/view.go
+@@ -241,8 +241,12 @@ func (m *Model) renderAgentTab(name string) string {
+ 	row := &m.agents[i]
+ 	var b strings.Builder
+ 
+-	// Header: agent tag + status detail.
+-	b.WriteString(styles.RenderTag(name) + "  " + agentStatusDetail(row) + "\n")
++	// Header: agent tag + status detail (+ re-run when allowed).
++	header := styles.RenderTag(name) + "  " + m.agentStatusDetail(row)
++	if m.canRerunNamed(name) && row.phase != oaRunning {
++		header += "  " + zone.Mark(zoneOverlayAgentRerun(i), styles.BoldStyle.Render("Re-run (u)"))
++	}
++	b.WriteString(header + "\n")
+ 	verdict := row.verdict
+ 	if verdict == "" && name == review.SpecVibeCoach && m.draft != nil && m.draft.VibeCoach != nil {
+ 		verdict = m.draft.VibeCoach.Verdict
+@@ -649,6 +653,13 @@ func (m *Model) renderRunningBody() string {
+ 		headline += "  ·  " + styles.ErrStyle.Render(fmt.Sprintf("%d failed", failedN))
+ 	}
+ 	b.WriteString(headline + "\n")
++	if m.done && m.draft != nil && m.draft.SynthesisStale() {
++		b.WriteString(styles.WarnStyle.Render("Arbiter/vibe out of date — re-run those rows, or continue with stale synthesis.") + "\n")
++	}
++	if m.done && m.rerunAvailable() && m.draft != nil && len(m.draft.FailedAgentNames()) > 0 {
++		btn := zone.Mark(zoneOverlayRerunAllFailed(), styles.BoldStyle.Render(" Re-run all failed (R) "))
++		b.WriteString(btn + "\n")
++	}
+ 	if m.runErr != nil {
+ 		b.WriteString(styles.ErrStyle.Render("Run failed: "+m.runErr.Error()) + "\n")
+ 		b.WriteString(styles.DimStyle.Render("Press q to close · scroll down for recent log") + "\n")
+@@ -851,7 +862,7 @@ func (m *Model) renderAgentRow(i int, a *overlayAgentRow, rowW, bodyIndentW int)
+ 	}
+ 	icon := agentStatusIcon(a)
+ 	tag := styles.RenderTag(a.name)
+-	right := agentStatusDetail(a)
++	right := m.agentStatusDetail(a)
+ 	chev := " "
+ 	if hasExpandableContent(a) {
+ 		chev = "▶"
+@@ -868,6 +879,9 @@ func (m *Model) renderAgentRow(i int, a *overlayAgentRow, rowW, bodyIndentW int)
+ 		pad = 1
+ 	}
+ 	header := prefix + strings.Repeat(" ", pad) + right
++	if m.canRerunNamed(a.name) && a.phase != oaRunning {
++		header += "  " + zone.Mark(zoneOverlayAgentRerun(i), styles.BoldStyle.Render("Re-run"))
++	}
+ 	hdrLine := lipgloss.NewStyle().Width(rowW).Align(lipgloss.Left).Render(header)
+ 	if ansi.StringWidth(hdrLine) > rowW {
+ 		hdrLine = ansi.Truncate(hdrLine, rowW, "")
+@@ -926,7 +940,7 @@ func agentStatusIcon(a *overlayAgentRow) string {
+ 
+ // agentStatusDetail renders the right-side detail for the row: elapsed time
+ // + result counts when applicable, with retry annotation when present.
+-func agentStatusDetail(a *overlayAgentRow) string {
++func (m *Model) agentStatusDetail(a *overlayAgentRow) string {
+ 	switch a.phase {
+ 	case oaPending:
+ 		return styles.DimStyle.Render("queued")
+@@ -942,6 +956,10 @@ func agentStatusDetail(a *overlayAgentRow) string {
+ 		}
+ 		return base
+ 	case oaDone:
++		if stale := m.synthesisStaleLabel(a.name); stale != "" {
++			dur := humanElapsed(a.finishedAt.Sub(a.startedAt))
++			return styles.WarnStyle.Render("stale") + styles.DimStyle.Render(" · "+dur)
++		}
+ 		dur := humanElapsed(a.finishedAt.Sub(a.startedAt))
+ 		count := ""
+ 		switch {
+@@ -1003,6 +1021,23 @@ func agentStatusDetail(a *overlayAgentRow) string {
+ 	return ""
+ }
+ 
++func (m *Model) synthesisStaleLabel(name string) string {
++	if m == nil || m.draft == nil {
++		return ""
++	}
++	switch name {
++	case overlayAgentRepoArbiter:
++		if m.draft.ArbiterStale {
++			return "stale"
++		}
++	case review.SpecVibeCoach:
++		if m.draft.VibeStale {
++			return "stale"
++		}
++	}
++	return ""
++}
++
+ // humanElapsed renders a Duration as a short human string ("12s", "1m 30s").
+ // Negative durations and uninitialized starts (zero) fall back to "—" so the
+ // renderer can call this unconditionally without guarding every call site.

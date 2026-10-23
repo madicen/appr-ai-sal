@@ -1,0 +1,19 @@
+{
+  "id": "pr-43-fix-controls-profile-dropdown-padding-is",
+  "title": "Fix controls profile dropdown padding issue",
+  "target": "held-out",
+  "repo": "madicen/appr-ai-sal",
+  "number": 43,
+  "author": "madicen",
+  "base_ref": "main",
+  "head_ref": "fix-controls-profile-dropdown-padding",
+  "body": "This PR addresses an overflow issue when opening the controls profile dropdown, ensuring it fits within the terminal height without padding the detail body.\n\n- Adjusted `ContentTop` for the dropdown panel to account for content offsets.\n- Modified `overlayControlsProfile` to use the correct view height and adjust row positioning accordingly.",
+  "additions": 50,
+  "deletions": 7,
+  "changed_files": 2,
+  "strictness": "balanced",
+  "run_pr_agents": false,
+  "run_witness": false,
+  "run_arbiter": false,
+  "run_vibe_coach": false
+}
