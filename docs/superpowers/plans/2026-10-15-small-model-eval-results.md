@@ -174,5 +174,5 @@ Scaffolding landed 2026-10-23:
   - `pr-43-fix-controls-profile-dropdown-padding-is`
   - `pr-45-fix-tui-scroll-pr-list-on-mouse-wheel-wi`
 
-**Blocked on human labels** in each `expectations.json` before any live held-out eval.
+Labels filled 2026-10-23 (design must_appear + scar must_not_appear per case; worktrees from merge commits). Ready for live held-out runs via `--corpus-dir docs/evals/held-out/cases`.
 

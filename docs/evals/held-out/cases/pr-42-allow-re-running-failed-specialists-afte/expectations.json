@@ -1,4 +1,18 @@
 {
-  "must_appear": [],
-  "must_not_appear": []
+  "must_appear": [
+    {
+      "specialist": "design",
+      "path": "internal/review/rerun.go",
+      "pattern": "draft.?cache|Rerun.*nil|not serializ|re-?run.*disabled|restored",
+      "line_tolerance": 80,
+      "note": "RerunContext is not persisted; draft-cache restore leaves re-run disabled"
+    }
+  ],
+  "must_not_appear": [
+    {
+      "specialist": "design",
+      "pattern": "agent_pool\\.go|AgentPool",
+      "note": "scar: invented agent-pool module not in this PR"
+    }
+  ]
 }

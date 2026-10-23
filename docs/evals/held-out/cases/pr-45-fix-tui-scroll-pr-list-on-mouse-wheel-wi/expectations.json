@@ -1,4 +1,18 @@
 {
-  "must_appear": [],
-  "must_not_appear": []
+  "must_appear": [
+    {
+      "specialist": "design",
+      "path": "internal/tui/model/mouse.go",
+      "pattern": "wheel|Y\\s*[=<>]|hit-?test|listFocus|bounds",
+      "line_tolerance": 40,
+      "note": "List wheel must not require cursor Y inside the list widget (terminals may report Y=0)"
+    }
+  ],
+  "must_not_appear": [
+    {
+      "specialist": "design",
+      "pattern": "scroll_controller\\.go|ScrollController",
+      "note": "scar: invented scroll-controller module not in this PR"
+    }
+  ]
 }

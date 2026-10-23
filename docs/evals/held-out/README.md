@@ -13,6 +13,7 @@ docs/evals/held-out/cases/<id>/
   expectations.json   # must_appear / must_not_appear — fill by hand
   LABEL_STATUS.md     # labelled | pending
   worktree/           # optional; required for unsupported-claim / compile rates
+                      # store Go as *.go.txt (materialize restores .go)
 ```
 
 ## Import a PR skeleton (no model, no labels)

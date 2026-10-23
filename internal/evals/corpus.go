@@ -153,10 +153,6 @@ func loadCorpusFS(fsys fs.FS, root string) ([]Case, error) {
 	return cases, nil
 }
 
-func loadCase(dir string) (Case, error) {
-	return loadCaseFS(corpusFS, dir)
-}
-
 func loadCaseFS(fsys fs.FS, dir string) (Case, error) {
 	var c Case
 
