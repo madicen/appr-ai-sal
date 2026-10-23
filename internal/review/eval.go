@@ -161,9 +161,16 @@ func EvalRun(ctx context.Context, cfg *aiconfig.Config, in EvalInput) EvalObserv
 	specResults := make([]SpecialistResult, 0)
 	for _, name := range ActiveSpecialists(in.TechConfigured) {
 		sctx := applog.WithStage(ctx, "specialist "+name)
-		brief := ""
+		// RepoContext is the case-wide brief; PerAgentBriefs override/extend it.
+		brief := strings.TrimSpace(in.RepoContext)
 		if in.PerAgentBriefs != nil {
-			brief = in.PerAgentBriefs[name]
+			if b := strings.TrimSpace(in.PerAgentBriefs[name]); b != "" {
+				if brief != "" {
+					brief += "\n\n" + b
+				} else {
+					brief = b
+				}
+			}
 		}
 		ev := ""
 		if specWantsEvidence(name) {

@@ -79,6 +79,7 @@ func runCase(ctx context.Context, cfg *aiconfig.Config, c Case, dumpDir string) 
 		return CaseScore{ID: c.Meta.ID, Title: "worktree fixture: " + err.Error()}, err
 	}
 	in.Worktree = dir
+	in.RepoContext = applyEvalTreatment(dir, in.RepoContext)
 	rc := caseConfig(cfg, c)
 	obs := review.EvalRun(ctx, rc, in)
 	cs := ScoreCaseAt(c, obs, dir)
