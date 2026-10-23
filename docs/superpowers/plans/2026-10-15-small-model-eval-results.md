@@ -100,3 +100,44 @@ Empty case×model (no findings from any agent in that case dir): 3b×security, 3
 
 14b’s must-appear outcomes are **not** “mostly described in different words.” The dominant failure modes are silence on the target specialist, wrong-specialist hits, and one clear wording/pattern miss on 7b testing (`unit test.*divide` order). **Stop before changing any matcher pattern.** Revisit the testing pattern and specialist routing only after Phase 3 fixtures / Phase 4 metrics land.
 
+## Phase 5
+
+Pre-registered plugin treatment gate written 2026-10-19 into:
+
+- `docs/evals/plugin-treatment-gate.json` (immutable machine copy)
+- `docs/evals/plugin-treatment-gate.md` (human summary)
+
+Thresholds (locked): unsupported-claim ↓ ≥10pp with CI excluding zero across 3 reps; suggestion-breakage must not rise; original-12 recall regression ≤2pp; token inflation ≤25%. Outcomes: `measured-helpful` | `measured-no-uplift` | `pending`.
+
+### Control baselines (2026-10-20)
+
+Setup: `OLLAMA_CONTEXT_LENGTH=32768` (confirmed on serve). Server `/api/version` **0.23.0**. Full embedded corpus (22 cases). Strictness balanced. Explicit `--model`. Three reps each. Per-run markdown + `--metrics-json` under `reports/baselines/` (gitignored). Frozen snapshots:
+
+- `docs/evals/baselines/qwen2.5-coder-3b-ctx32768-balanced-v1.json`
+- `docs/evals/baselines/qwen2.5-coder-7b-ctx32768-balanced-v1.json`
+- `docs/evals/baselines/qwen2.5-coder-14b-ctx32768-balanced-v1.json`
+
+Wall clock (sequential): 3b ~18m/rep, 7b ~36m/rep, 14b ~96m/rep; total ~7h.
+
+| Model | Rep | Unsupported-claim | Suggestion-breakage | Recall (original 12) | Tokens (in+out) |
+|---|---|---|---|---|---|
+| qwen2.5-coder:3b | r1 | 33.3% (1/3) | 100% (1/1) | 0% (0/11) | 852802 |
+| qwen2.5-coder:3b | r2 | n/a (0/0) | n/a (0/0) | 0% (0/11) | 849343 |
+| qwen2.5-coder:3b | r3 | 50% (1/2) | 66.7% (2/3) | 9.1% (1/11) | 852744 |
+| qwen2.5-coder:7b | r1 | 0% (0/1) | 66.7% (2/3) | 0% (0/11) | 851010 |
+| qwen2.5-coder:7b | r2 | 0% (0/2) | n/a (0/0) | 9.1% (1/11) | 848467 |
+| qwen2.5-coder:7b | r3 | 0% (0/2) | 75% (3/4) | 0% (0/11) | 847831 |
+| qwen2.5-coder:14b | r1 | 33.3% (1/3) | 66.7% (2/3) | 27.3% (3/11) | 858855 |
+| qwen2.5-coder:14b | r2 | 0% (0/5) | 40% (2/5) | 18.2% (2/11) | 865661 |
+| qwen2.5-coder:14b | r3 | 45.5% (5/11) | 33.3% (1/3) | 27.3% (3/11) | 862567 |
+
+Means (n/a reps excluded from rate means):
+
+| Model | Unsupported-claim | Suggestion-breakage | Recall (original 12) | Tokens |
+|---|---|---|---|---|
+| qwen2.5-coder:3b | 41.7% | 83.3% | 3.0% | 851630 |
+| qwen2.5-coder:7b | 0.0% | 70.8% | 3.0% | 849103 |
+| qwen2.5-coder:14b | 26.3% | 46.7% | 24.2% | 862361 |
+
+**Current outcome: still `pending` for treatments** (gate not yet scored against a treatment arm). Control baselines are frozen; next step is treatment runs without editing the gate. Note: 7b control unsupported-claim mean is already 0%, so a −10pp reduction is impossible on that model — record honestly if treatment is tried there.
+

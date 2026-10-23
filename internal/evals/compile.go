@@ -82,9 +82,8 @@ func checkSuggestionCompile(worktree string, f review.Finding) compileResult {
 			return compileResult{Status: compileSkipTool, Err: err}
 		}
 		mod := filepath.Dir(dst)
-		if init := runCompileCmd("terraform", []string{"init", "-backend=false", "-input=false"}, &mod); init.Status != compileOK {
-			// init may fail without providers; still try validate
-		}
+		// init may fail without providers; still try validate
+		_ = runCompileCmd("terraform", []string{"init", "-backend=false", "-input=false"}, &mod)
 		return runCompileCmd("terraform", []string{"validate"}, &mod)
 	default:
 		return compileResult{Status: compileSkipNoFile}
