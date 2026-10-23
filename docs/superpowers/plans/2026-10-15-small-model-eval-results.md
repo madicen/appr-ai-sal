@@ -139,5 +139,15 @@ Means (n/a reps excluded from rate means):
 | qwen2.5-coder:7b | 0.0% | 70.8% | 3.0% | 849103 |
 | qwen2.5-coder:14b | 26.3% | 46.7% | 24.2% | 862361 |
 
-**Current outcome: still `pending` for treatments** (gate not yet scored against a treatment arm). Control baselines are frozen; next step is treatment runs without editing the gate. Note: 7b control unsupported-claim mean is already 0%, so a −10pp reduction is impossible on that model — record honestly if treatment is tried there.
+### Treatment: grounding-v1 (2026-10-21)
+
+Prompt treatment under `experiments/grounding-v1/` (embedded specialist/generator prompts + Evidence grounding section). Same provider/model/ctx/strictness/reps as control. Raw under `reports/treatments/grounding-v1/`. Gate score: `docs/evals/treatments/grounding-v1-ctx32768-balanced-v1.json`.
+
+| Model | Unsupported-claim (mean Δ pp) | Breakage Δ pp | Recall orig-12 Δ pp | Token infl. % | Outcome |
+|---|---|---|---|---|---|
+| qwen2.5-coder:3b | 0.0 (CI not excl. 0) | +16.7 | −6.1 (improved) | +2.0 | `measured-no-uplift` |
+| qwen2.5-coder:7b | −16.7 (worse; baseline was 0%) | −37.5 | −6.1 | +2.1 | `measured-no-uplift` |
+| qwen2.5-coder:14b | +15.4 (≥10) but CI includes 0 | −30.0 | +12.1 (regressed) | +1.8 | `measured-no-uplift` |
+
+**Overall outcome: `measured-no-uplift`.** Gate not retuned. 14b moved claim rate in the right direction on average but failed CI-exclude-zero and the recall guard.
 
