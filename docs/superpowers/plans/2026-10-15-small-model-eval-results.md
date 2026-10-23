@@ -151,3 +151,15 @@ Prompt treatment under `experiments/grounding-v1/` (embedded specialist/generato
 
 **Overall outcome: `measured-no-uplift`.** Gate not retuned. 14b moved claim rate in the right direction on average but failed CI-exclude-zero and the recall guard.
 
+### Treatment: inventory-v1 (2026-10-22)
+
+Eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=inventory-v1`): inject worktree file + identifier inventory into every specialist's repo-context brief. Harness: `internal/evals/inventory.go`; EvalRun now threads `RepoContext`. Raw under `reports/treatments/inventory-v1/`. Gate score: `docs/evals/treatments/inventory-v1-ctx32768-balanced-v1.json`.
+
+| Model | Unsupported-claim (mean Δ pp) | Breakage Δ pp | Recall orig-12 Δ pp | Token infl. % | Outcome |
+|---|---|---|---|---|---|
+| qwen2.5-coder:3b | −3.3 (worse) | +33.3 | +3.0 (regressed) | +2.2 | `measured-no-uplift` |
+| qwen2.5-coder:7b | −50 (worse; baseline 0%) | −66.7 | −6.1 | +2.3 | `measured-no-uplift` |
+| qwen2.5-coder:14b | +19.6 (≥10) but CI includes 0 | −20.5 | +3.0 (regressed) | +2.0 | `measured-no-uplift` |
+
+**Overall outcome: `measured-no-uplift`.** Gate not retuned. Inventory moved 14b claim rate more than grounding-v1 on average but still failed CI-exclude-zero and the recall guard.
+
