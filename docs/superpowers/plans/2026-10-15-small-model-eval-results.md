@@ -165,14 +165,41 @@ Eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=inventory-v1`): inject worktree
 
 ## Held-out
 
-Scaffolding landed 2026-10-23:
+Scaffolding + labels + worktrees landed in #55 (2026-10-23):
 
 - `docs/evals/held-out/README.md` + `--corpus-dir` on `appr-ai-sal evals`
-- `./scripts/heldout-import.sh` imports a PR skeleton (diff + empty expectations)
-- Seed skeletons (all `LABEL_STATUS.md: pending`, **no model runs yet**):
-  - `pr-42-allow-re-running-failed-specialists-afte`
-  - `pr-43-fix-controls-profile-dropdown-padding-is`
-  - `pr-45-fix-tui-scroll-pr-list-on-mouse-wheel-wi`
+- `./scripts/heldout-import.sh`; Go worktree fixtures as `*.go.txt`
+- Cases (labelled): `pr-42-…`, `pr-43-…`, `pr-45-…` (design must_appear + scar must_not_appear)
 
-Labels filled 2026-10-23 (design must_appear + scar must_not_appear per case; worktrees from merge commits). Ready for live held-out runs via `--corpus-dir docs/evals/held-out/cases`.
+### Control baselines (2026-10-24)
+
+Setup: `OLLAMA_CONTEXT_LENGTH=32768`, Ollama `/api/version` **0.23.0**, strictness balanced, 3 labelled cases, 3 reps × {3b,7b,14b}. Raw under `reports/held-out/` (gitignored). Frozen snapshots:
+
+- `docs/evals/held-out/qwen2.5-coder-3b-ctx32768-balanced-v1.json`
+- `docs/evals/held-out/qwen2.5-coder-7b-ctx32768-balanced-v1.json`
+- `docs/evals/held-out/qwen2.5-coder-14b-ctx32768-balanced-v1.json`
+
+Wall clock (sequential): 3b ~8–9m/rep, 7b ~17–18m/rep, 14b ~34–35m/rep; total ~3h.
+
+| Model | Rep | Unsupported-claim | Suggestion-breakage | Recall (full) | Tokens (in+out) |
+|---|---|---|---|---|---|
+| qwen2.5-coder:3b | r1 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 230073 |
+| qwen2.5-coder:3b | r2 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 229766 |
+| qwen2.5-coder:3b | r3 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 201373 |
+| qwen2.5-coder:7b | r1 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 230311 |
+| qwen2.5-coder:7b | r2 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 229870 |
+| qwen2.5-coder:7b | r3 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 240304 |
+| qwen2.5-coder:14b | r1 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 230003 |
+| qwen2.5-coder:14b | r2 | n/a (0/0) | 100% (1/1) | 0% (0/3) | 229897 |
+| qwen2.5-coder:14b | r3 | 100% (1/1) | n/a (0/0) | 0% (0/3) | 235026 |
+
+Means (n/a reps excluded from rate means):
+
+| Model | Unsupported-claim | Suggestion-breakage | Recall (full) | Tokens |
+|---|---|---|---|---|
+| qwen2.5-coder:3b | n/a | n/a | 0.0% | 220404 |
+| qwen2.5-coder:7b | n/a | n/a | 0.0% | 233495 |
+| qwen2.5-coder:14b | 100% (1 defined rep) | 100% (1 defined rep) | 0.0% | 231642 |
+
+**Readout:** every model missed all three labelled design must_appear findings (0/3 recall across 9 runs). Claim/breakage denominators were mostly empty — not enough free-text claims to score. Do **not** retune the Phase 5 gate from held-out. Soft treatments already scored `measured-no-uplift` on the corpus; held-out does not certify them either. Next product step (if any) is a hard/deterministic treatment (e.g. claim stripper), not another soft prompt — and only after deciding whether zero held-out recall is an expectation/matcher issue vs model ceiling.
 

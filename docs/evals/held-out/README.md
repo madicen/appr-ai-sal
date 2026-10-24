@@ -32,3 +32,13 @@ make evals PROVIDER=ollama \
 ```
 
 Do **not** retune the Phase 5 gate from held-out results.
+
+## Freeze control baselines
+
+After a full 3×3 grid under `reports/held-out/`:
+
+```bash
+python3 reports/held-out/aggregate.py
+```
+
+Writes `docs/evals/held-out/qwen2.5-coder-{3b,7b,14b}-ctx32768-balanced-v1.json`.
