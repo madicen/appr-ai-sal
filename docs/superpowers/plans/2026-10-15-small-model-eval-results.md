@@ -201,5 +201,27 @@ Means (n/a reps excluded from rate means):
 | qwen2.5-coder:7b | n/a | n/a | 0.0% | 233495 |
 | qwen2.5-coder:14b | 100% (1 defined rep) | 100% (1 defined rep) | 0.0% | 231642 |
 
-**Readout:** every model missed all three labelled design must_appear findings (0/3 recall across 9 runs). Claim/breakage denominators were mostly empty — not enough free-text claims to score. Do **not** retune the Phase 5 gate from held-out. Soft treatments already scored `measured-no-uplift` on the corpus; held-out does not certify them either. Next product step (if any) is a hard/deterministic treatment (e.g. claim stripper), not another soft prompt — and only after deciding whether zero held-out recall is an expectation/matcher issue vs model ceiling.
+**Readout:** every model missed all three labelled design must_appear findings (0/3 recall across 9 runs). Claim/breakage denominators were mostly empty — not enough free-text claims to score. Do **not** retune the Phase 5 gate from held-out. Soft treatments already scored `measured-no-uplift` on the corpus; held-out does not certify them either.
+
+### Zero-recall audit (2026-10-24, 14b `--dump-raw`)
+
+One live dump under `reports/held-out/audit-14b/` (gitignored). Design raw on all three cases was exactly:
+
+```json
+{ "summary": "The design of this diff looks sound.", "findings": [] }
+```
+
+That string is the empty-success template in `internal/review/prompts/design.md`. Post-gate `findings` were `[]` — **no candidate comments for matchers to miss.** Verdict: **not a matcher issue.**
+
+| Case | Label intent | Audit read |
+|---|---|---|
+| pr-42 | Residual: `RerunContext` not persisted / restore disables re-run | Fair lingering design note; model still empty → **model empty-bias / ceiling on residuals** |
+| pr-43 | `bodyH` vs `host.Height()` overflow | Diff already fixes it; empty design is consistent with the prompt → **label vs fixed-diff mismatch** |
+| pr-45 | List wheel must not Y-hit-test | Diff already removes the Y bounds check → **label vs fixed-diff mismatch** |
+
+Corpus audit dumps (`reports/audit/`) show the same design empty-bias (many `looks sound` / `findings: []`). Formatting sometimes emitted `info` nits that balanced strictness dropped — unrelated to design recall.
+
+**Do not** retune matchers or the Phase 5 gate. **Do not** invent another soft prompt. Claim stripper would not move this recall.
+
+**Next:** relabel held-out before any treatment work — either (1) residual-only must_appear that still hold on the merged diff, or (2) re-import cases from the **broken parent** commit so must_appear describes bugs still present in the reviewed tree. Then re-run the 3×3 control; only after non-zero baseline recall consider a hard treatment.
 
