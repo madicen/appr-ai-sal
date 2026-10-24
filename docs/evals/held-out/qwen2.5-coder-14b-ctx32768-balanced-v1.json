@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "arm": "held-out-control",
+  "corpus": "docs/evals/held-out/cases",
+  "case_count": 3,
+  "provider": "ollama",
+  "model": "qwen2.5-coder:14b",
+  "context_length": 32768,
+  "strictness": "balanced",
+  "recorded_at": "2026-10-24",
+  "ollama_server_version": "0.23.0",
+  "repetitions": [
+    {
+      "rep": 1,
+      "report": "reports/held-out/qwen2.5-coder-14b-r1.md",
+      "metrics_json": "reports/held-out/qwen2.5-coder-14b-r1.json",
+      "unsupported_claim": {
+        "num": 0,
+        "den": 0,
+        "rate": null
+      },
+      "suggestion_breakage": {
+        "num": 0,
+        "den": 0,
+        "rate": null
+      },
+      "suggestion_compile": {
+        "num": 0,
+        "den": 0,
+        "rate": null
+      },
+      "recall_full": {
+        "num": 0,
+        "den": 3,
+        "rate": 0.0
+      },
+      "calls": 15,
+      "input_tokens": 229466,
+      "output_tokens": 537,
+      "token_count": 230003,
+      "case_count": 3
+    },
+    {
+      "rep": 2,
+      "report": "reports/held-out/qwen2.5-coder-14b-r2.md",
+      "metrics_json": "reports/held-out/qwen2.5-coder-14b-r2.json",
+      "unsupported_claim": {
+        "num": 0,
+        "den": 0,
+        "rate": null
+      },
+      "suggestion_breakage": {
+        "num": 1,
+        "den": 1,
+        "rate": 1.0
+      },
+      "suggestion_compile": {
+        "num": 0,
+        "den": 1,
+        "rate": 0.0
+      },
+      "recall_full": {
+        "num": 0,
+        "den": 3,
+        "rate": 0.0
+      },
+      "calls": 15,
+      "input_tokens": 229466,
+      "output_tokens": 431,
+      "token_count": 229897,
+      "case_count": 3
+    },
+    {
+      "rep": 3,
+      "report": "reports/held-out/qwen2.5-coder-14b-r3.md",
+      "metrics_json": "reports/held-out/qwen2.5-coder-14b-r3.json",
+      "unsupported_claim": {
+        "num": 1,
+        "den": 1,
+        "rate": 1.0
+      },
+      "suggestion_breakage": {
+        "num": 0,
+        "den": 0,
+        "rate": null
+      },
+      "suggestion_compile": {
+        "num": 0,
+        "den": 0,
+        "rate": null
+      },
+      "recall_full": {
+        "num": 0,
+        "den": 3,
+        "rate": 0.0
+      },
+      "calls": 16,
+      "input_tokens": 234118,
+      "output_tokens": 908,
+      "token_count": 235026,
+      "case_count": 3
+    }
+  ],
+  "means": {
+    "unsupported_claim_rate": 1.0,
+    "suggestion_breakage_rate": 1.0,
+    "suggestion_compile_rate": 0.0,
+    "recall_full": 0.0,
+    "token_count": 231642.0
+  }
+}
