@@ -42,6 +42,7 @@ func RunCLI(ctx context.Context, args []string) error {
 		replay      = fs.Bool("replay", false, "run offline against the corpus's canned outputs (deterministic; no provider/network) — exercises the gates + scorer + report")
 		dumpRaw     = fs.String("dump-raw", "", "write per-agent raw model text + findings as DIR/<case-id>/<agent>.json (optional; scoring unchanged when unset)")
 		metricsJSON = fs.String("metrics-json", "", "write Phase 5 gate metrics (unsupported-claim, breakage, original-12 recall, tokens) as JSON")
+		corpusDir   = fs.String("corpus-dir", "", "load cases from this on-disk directory instead of the embedded corpus (held-out set)")
 	)
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -53,7 +54,15 @@ func RunCLI(ctx context.Context, args []string) error {
 		_ = os.Setenv("APPR_AI_SAL_AI_PROVIDER", p)
 	}
 
-	cases, err := LoadCorpus()
+	var (
+		cases []Case
+		err   error
+	)
+	if d := strings.TrimSpace(*corpusDir); d != "" {
+		cases, err = LoadCorpusDir(d)
+	} else {
+		cases, err = LoadCorpus()
+	}
 	if err != nil {
 		return fmt.Errorf("load corpus: %w", err)
 	}

@@ -21,7 +21,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -91,20 +93,55 @@ type Case struct {
 // ordering. An unreadable / malformed case fails the whole load so a broken
 // fixture can never silently drop out of the suite.
 func LoadCorpus() ([]Case, error) {
-	entries, err := fs.ReadDir(corpusFS, corpusRoot)
+	return loadCorpusFS(corpusFS, corpusRoot)
+}
+
+// LoadCorpusDir reads cases from an on-disk directory (held-out set). Layout
+// matches the embedded corpus: <root>/<id>/{case.json,diff.patch,expectations.json,…}.
+func LoadCorpusDir(root string) ([]Case, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return nil, fmt.Errorf("corpus dir is empty")
+	}
+	abs, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("corpus dir %s is not a directory", abs)
+	}
+	return loadCorpusFS(os.DirFS(abs), ".")
+}
+
+func loadCorpusFS(fsys fs.FS, root string) ([]Case, error) {
+	entries, err := fs.ReadDir(fsys, root)
 	if err != nil {
 		return nil, fmt.Errorf("read corpus: %w", err)
 	}
 	var ids []string
 	for _, e := range entries {
-		if e.IsDir() {
-			ids = append(ids, e.Name())
+		if !e.IsDir() {
+			continue
 		}
+		name := e.Name()
+		// Skip scaffolding / docs sitting beside case dirs.
+		if strings.HasPrefix(name, ".") || name == "README.md" {
+			continue
+		}
+		// A case dir must contain case.json.
+		if _, err := fs.Stat(fsys, path.Join(root, name, "case.json")); err != nil {
+			continue
+		}
+		ids = append(ids, name)
 	}
 	sort.Strings(ids)
 	cases := make([]Case, 0, len(ids))
 	for _, id := range ids {
-		c, err := loadCase(path.Join(corpusRoot, id))
+		c, err := loadCaseFS(fsys, path.Join(root, id))
 		if err != nil {
 			return nil, fmt.Errorf("load case %q: %w", id, err)
 		}
@@ -114,10 +151,6 @@ func LoadCorpus() ([]Case, error) {
 		return nil, fmt.Errorf("corpus is empty")
 	}
 	return cases, nil
-}
-
-func loadCase(dir string) (Case, error) {
-	return loadCaseFS(corpusFS, dir)
 }
 
 func loadCaseFS(fsys fs.FS, dir string) (Case, error) {

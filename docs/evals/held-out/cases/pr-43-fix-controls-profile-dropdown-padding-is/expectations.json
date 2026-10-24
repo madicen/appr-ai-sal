@@ -1,0 +1,18 @@
+{
+  "must_appear": [
+    {
+      "specialist": "design",
+      "path": "internal/tui/tabs/detail/controls_panel.go",
+      "pattern": "bodyH|host\\.Height|viewH|ContentTop|terminal height",
+      "line_tolerance": 40,
+      "note": "Profile dropdown composite height must be bodyH, not host.Height(), or the view overflows"
+    }
+  ],
+  "must_not_appear": [
+    {
+      "specialist": "design",
+      "pattern": "overlay_manager\\.go|OverlayManager",
+      "note": "scar: invented overlay manager file not in this PR"
+    }
+  ]
+}
