@@ -3,9 +3,9 @@
     {
       "specialist": "design",
       "path": "internal/review/rerun.go",
-      "pattern": "draft.?cache|Rerun.*nil|not serializ|re-?run.*disabled|restored",
+      "pattern": "draft.?cache|Rerun.*nil|not serializ|re-?run.*disabled|restored|json:\"-\"",
       "line_tolerance": 80,
-      "note": "RerunContext is not persisted; draft-cache restore leaves re-run disabled"
+      "note": "residual on feature PR: RerunContext is not persisted; draft-cache restore leaves re-run disabled"
     }
   ],
   "must_not_appear": [

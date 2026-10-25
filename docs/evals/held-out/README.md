@@ -16,6 +16,20 @@ docs/evals/held-out/cases/<id>/
                       # store Go as *.go.txt (materialize restores .go)
 ```
 
+## Framing (after zero-recall audit)
+
+Fix PRs that already land the correction will get empty design findings (prompt
+template: "looks sound"). For those, use **broken-parent / revert-of-fix**:
+
+```bash
+# base = merge parent (buggy), head = fix tip
+git diff "$head" "$base" > cases/<id>/diff.patch   # reintroduces the bug
+# worktree = files at $base (*.go → *.go.txt)
+```
+
+Feature PRs with a lasting residual (e.g. #42 `RerunContext` not persisted) keep
+the forward diff and a residual `must_appear`.
+
 ## Import a PR skeleton (no model, no labels)
 
 ```bash

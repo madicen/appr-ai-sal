@@ -1,151 +1,151 @@
 diff --git a/internal/tui/model/list_wheel_test.go b/internal/tui/model/list_wheel_test.go
-new file mode 100644
-index 0000000..3863b5c
---- /dev/null
-+++ b/internal/tui/model/list_wheel_test.go
-@@ -0,0 +1,101 @@
-+package model
-+
-+import (
-+	"testing"
-+
-+	tea "github.com/charmbracelet/bubbletea"
-+	zone "github.com/lrstanley/bubblezone"
-+
-+	"github.com/madicen/appr-ai-sal/internal/gh"
-+	"github.com/madicen/appr-ai-sal/internal/tui/data"
-+)
-+
-+func listWithPRs(t *testing.T, n int) *Model {
-+	t.Helper()
-+	zone.NewGlobal()
-+	m := New(Options{})
-+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
-+	prs := make([]gh.PR, n)
-+	for i := range prs {
-+		prs[i] = gh.PR{Number: i + 1, Title: "t", Repository: "o/r", Owner: "o", Repo: "r", Author: "a"}
-+	}
-+	m.Update(data.PRListMsg{PRs: prs})
-+	_ = m.View()
-+	return m
-+}
-+
-+func TestListMouseWheelMovesCursor(t *testing.T) {
-+	m := listWithPRs(t, 20)
-+	listTop := m.listBodyOriginY()
-+	y := listTop + m.list.Height()/2
-+	before := m.list.Index()
-+
-+	out, _ := m.handleMouse(tea.MouseMsg{
-+		X: 40, Y: y,
-+		Action: tea.MouseActionPress,
-+		Button: tea.MouseButtonWheelDown,
-+	})
-+	m2 := out.(*Model)
-+	if m2.list.Index() != before+1 {
-+		t.Fatalf("wheel down over list: index got %d want %d", m2.list.Index(), before+1)
-+	}
-+}
-+
-+// Wheel must move the list even when Y is outside the list widget (filter
-+// strip, status bar, or a terminal that reports Y=0 for wheel). The old
-+// Y-bounds check dropped those events, so the cursor never moved and the
-+// terminal's own scrollback took over.
-+func TestListMouseWheelMovesCursorOutsideListBounds(t *testing.T) {
-+	m := listWithPRs(t, 20)
-+	before := m.list.Index()
-+
-+	out, _ := m.handleMouse(tea.MouseMsg{
-+		X: 40, Y: 0, // above the list body
-+		Action: tea.MouseActionPress,
-+		Button: tea.MouseButtonWheelDown,
-+	})
-+	m2 := out.(*Model)
-+	if m2.list.Index() != before+1 {
-+		t.Fatalf("wheel down at Y=0: index got %d want %d (Y-bounds drop?)", m2.list.Index(), before+1)
-+	}
-+
-+	out, _ = m2.handleMouse(tea.MouseMsg{
-+		X: 40, Y: m2.height - 1, // status row
-+		Action: tea.MouseActionPress,
-+		Button: tea.MouseButtonWheelUp,
-+	})
-+	m3 := out.(*Model)
-+	if m3.list.Index() != before {
-+		t.Fatalf("wheel up at status row: index got %d want %d", m3.list.Index(), before)
-+	}
-+}
-+
-+func TestListMouseWheelIgnoredWhenInputFocused(t *testing.T) {
-+	m := listWithPRs(t, 20)
-+	m.focusSearchInput()
-+	before := m.list.Index()
-+
-+	out, _ := m.handleMouse(tea.MouseMsg{
-+		X: 40, Y: 0,
-+		Action: tea.MouseActionPress,
-+		Button: tea.MouseButtonWheelDown,
-+	})
-+	m2 := out.(*Model)
-+	if m2.list.Index() != before {
-+		t.Fatalf("wheel with search focused must not move list; got %d want %d", m2.list.Index(), before)
-+	}
-+}
-+
-+func TestListMouseWheelViaRootUpdate(t *testing.T) {
-+	m := listWithPRs(t, 20)
-+	before := m.list.Index()
-+	out, _ := m.Update(tea.MouseMsg{
-+		X: 40, Y: 0,
-+		Action: tea.MouseActionPress,
-+		Button: tea.MouseButtonWheelDown,
-+	})
-+	m2 := out.(*Model)
-+	if m2.list.Index() != before+1 {
-+		t.Fatalf("Update wheel down: index got %d want %d", m2.list.Index(), before+1)
-+	}
-+}
+deleted file mode 100644
+index 3863b5cd..00000000
+--- a/internal/tui/model/list_wheel_test.go
++++ /dev/null
+@@ -1,101 +0,0 @@
+-package model
+-
+-import (
+-	"testing"
+-
+-	tea "github.com/charmbracelet/bubbletea"
+-	zone "github.com/lrstanley/bubblezone"
+-
+-	"github.com/madicen/appr-ai-sal/internal/gh"
+-	"github.com/madicen/appr-ai-sal/internal/tui/data"
+-)
+-
+-func listWithPRs(t *testing.T, n int) *Model {
+-	t.Helper()
+-	zone.NewGlobal()
+-	m := New(Options{})
+-	m.Update(tea.WindowSizeMsg{Width: 160, Height: 42})
+-	prs := make([]gh.PR, n)
+-	for i := range prs {
+-		prs[i] = gh.PR{Number: i + 1, Title: "t", Repository: "o/r", Owner: "o", Repo: "r", Author: "a"}
+-	}
+-	m.Update(data.PRListMsg{PRs: prs})
+-	_ = m.View()
+-	return m
+-}
+-
+-func TestListMouseWheelMovesCursor(t *testing.T) {
+-	m := listWithPRs(t, 20)
+-	listTop := m.listBodyOriginY()
+-	y := listTop + m.list.Height()/2
+-	before := m.list.Index()
+-
+-	out, _ := m.handleMouse(tea.MouseMsg{
+-		X: 40, Y: y,
+-		Action: tea.MouseActionPress,
+-		Button: tea.MouseButtonWheelDown,
+-	})
+-	m2 := out.(*Model)
+-	if m2.list.Index() != before+1 {
+-		t.Fatalf("wheel down over list: index got %d want %d", m2.list.Index(), before+1)
+-	}
+-}
+-
+-// Wheel must move the list even when Y is outside the list widget (filter
+-// strip, status bar, or a terminal that reports Y=0 for wheel). The old
+-// Y-bounds check dropped those events, so the cursor never moved and the
+-// terminal's own scrollback took over.
+-func TestListMouseWheelMovesCursorOutsideListBounds(t *testing.T) {
+-	m := listWithPRs(t, 20)
+-	before := m.list.Index()
+-
+-	out, _ := m.handleMouse(tea.MouseMsg{
+-		X: 40, Y: 0, // above the list body
+-		Action: tea.MouseActionPress,
+-		Button: tea.MouseButtonWheelDown,
+-	})
+-	m2 := out.(*Model)
+-	if m2.list.Index() != before+1 {
+-		t.Fatalf("wheel down at Y=0: index got %d want %d (Y-bounds drop?)", m2.list.Index(), before+1)
+-	}
+-
+-	out, _ = m2.handleMouse(tea.MouseMsg{
+-		X: 40, Y: m2.height - 1, // status row
+-		Action: tea.MouseActionPress,
+-		Button: tea.MouseButtonWheelUp,
+-	})
+-	m3 := out.(*Model)
+-	if m3.list.Index() != before {
+-		t.Fatalf("wheel up at status row: index got %d want %d", m3.list.Index(), before)
+-	}
+-}
+-
+-func TestListMouseWheelIgnoredWhenInputFocused(t *testing.T) {
+-	m := listWithPRs(t, 20)
+-	m.focusSearchInput()
+-	before := m.list.Index()
+-
+-	out, _ := m.handleMouse(tea.MouseMsg{
+-		X: 40, Y: 0,
+-		Action: tea.MouseActionPress,
+-		Button: tea.MouseButtonWheelDown,
+-	})
+-	m2 := out.(*Model)
+-	if m2.list.Index() != before {
+-		t.Fatalf("wheel with search focused must not move list; got %d want %d", m2.list.Index(), before)
+-	}
+-}
+-
+-func TestListMouseWheelViaRootUpdate(t *testing.T) {
+-	m := listWithPRs(t, 20)
+-	before := m.list.Index()
+-	out, _ := m.Update(tea.MouseMsg{
+-		X: 40, Y: 0,
+-		Action: tea.MouseActionPress,
+-		Button: tea.MouseButtonWheelDown,
+-	})
+-	m2 := out.(*Model)
+-	if m2.list.Index() != before+1 {
+-		t.Fatalf("Update wheel down: index got %d want %d", m2.list.Index(), before+1)
+-	}
+-}
 diff --git a/internal/tui/model/mouse.go b/internal/tui/model/mouse.go
-index f937b38..a562550 100644
+index a5625501..f937b385 100644
 --- a/internal/tui/model/mouse.go
 +++ b/internal/tui/model/mouse.go
-@@ -91,22 +91,24 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+@@ -91,24 +91,22 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
  		if !wheel && msg.Action != tea.MouseActionPress {
  			return m, nil
  		}
--		listTop := m.listBodyOriginY()
--		// Wheel scroll is only meaningful for the list pane and only
--		// when no inline input is focused — otherwise the search /
--		// URL field would silently lose its caret position whenever
--		// the user spun the wheel over the list.
--		if wheel && m.listFocus == focusList && msg.Y >= listTop && msg.Y < listTop+m.list.Height() {
--			switch msg.Button {
--			case tea.MouseButtonWheelDown:
--				m.resetListClickTracking()
--				m.list.CursorDown()
--				return m, nil
--			case tea.MouseButtonWheelUp:
--				m.resetListClickTracking()
--				m.list.CursorUp()
--				return m, nil
-+		// Wheel moves the list whenever it owns focus. Do not require the
-+		// cursor to sit inside the list widget: some terminals report Y=0
-+		// for wheel ticks, and wheeling over the filter strip / status bar
-+		// should still scroll the queue. Dropping those events left the
-+		// terminal's own scrollback to take over (j/k still worked).
-+		// Skip when search/URL is focused so the caret isn't yanked away.
-+		if wheel {
-+			if m.listFocus == focusList {
-+				switch msg.Button {
-+				case tea.MouseButtonWheelDown, tea.MouseButtonWheelRight:
-+					m.resetListClickTracking()
-+					m.list.CursorDown()
-+				case tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft:
-+					m.resetListClickTracking()
-+					m.list.CursorUp()
-+				}
+-		// Wheel moves the list whenever it owns focus. Do not require the
+-		// cursor to sit inside the list widget: some terminals report Y=0
+-		// for wheel ticks, and wheeling over the filter strip / status bar
+-		// should still scroll the queue. Dropping those events left the
+-		// terminal's own scrollback to take over (j/k still worked).
+-		// Skip when search/URL is focused so the caret isn't yanked away.
+-		if wheel {
+-			if m.listFocus == focusList {
+-				switch msg.Button {
+-				case tea.MouseButtonWheelDown, tea.MouseButtonWheelRight:
+-					m.resetListClickTracking()
+-					m.list.CursorDown()
+-				case tea.MouseButtonWheelUp, tea.MouseButtonWheelLeft:
+-					m.resetListClickTracking()
+-					m.list.CursorUp()
+-				}
++		listTop := m.listBodyOriginY()
++		// Wheel scroll is only meaningful for the list pane and only
++		// when no inline input is focused — otherwise the search /
++		// URL field would silently lose its caret position whenever
++		// the user spun the wheel over the list.
++		if wheel && m.listFocus == focusList && msg.Y >= listTop && msg.Y < listTop+m.list.Height() {
++			switch msg.Button {
++			case tea.MouseButtonWheelDown:
++				m.resetListClickTracking()
++				m.list.CursorDown()
++				return m, nil
++			case tea.MouseButtonWheelUp:
++				m.resetListClickTracking()
++				m.list.CursorUp()
++				return m, nil
  			}
-+			return m, nil
+-			return m, nil
  		}
  		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
  			for _, chip := range filterChips {

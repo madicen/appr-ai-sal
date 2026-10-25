@@ -107,5 +107,7 @@
     "suggestion_compile_rate": 0.0,
     "recall_full": 0.0,
     "token_count": 231642.0
-  }
+  },
+  "superseded": true,
+  "superseded_reason": "held-out relabel 2026-10-24: #43/#45 broken-parent revert-of-fix; re-run 3x3 before treatment compare"
 }

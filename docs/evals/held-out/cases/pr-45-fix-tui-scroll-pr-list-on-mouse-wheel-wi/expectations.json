@@ -3,9 +3,16 @@
     {
       "specialist": "design",
       "path": "internal/tui/model/mouse.go",
-      "pattern": "wheel|Y\\s*[=<>]|hit-?test|listFocus|bounds",
+      "pattern": "wheel|Y\\s*[=<>]|hit-?test|listFocus|bounds|listTop",
       "line_tolerance": 40,
-      "note": "List wheel must not require cursor Y inside the list widget (terminals may report Y=0)"
+      "note": "broken-parent: reintroduces Y hit-test on list wheel (terminals may report Y=0)"
+    },
+    {
+      "specialist": "formatting",
+      "path": "internal/tui/model/list_wheel_test.go",
+      "pattern": "Wheel|list_wheel|OutsideListBounds|Y.?bound|Removal of|deletes",
+      "line_tolerance": 80,
+      "note": "broken-parent: deletes list mouse-wheel regression test"
     }
   ],
   "must_not_appear": [

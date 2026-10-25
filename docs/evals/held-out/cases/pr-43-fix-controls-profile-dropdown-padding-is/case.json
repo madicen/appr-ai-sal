@@ -1,6 +1,6 @@
 {
   "id": "pr-43-fix-controls-profile-dropdown-padding-is",
-  "title": "Fix controls profile dropdown padding issue",
+  "title": "Fix controls profile dropdown padding issue [held-out: broken-parent / revert-of-fix]",
   "target": "held-out",
   "repo": "madicen/appr-ai-sal",
   "number": 43,
