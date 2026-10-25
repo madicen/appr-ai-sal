@@ -171,37 +171,9 @@ Scaffolding + labels + worktrees landed in #55 (2026-10-23):
 - `./scripts/heldout-import.sh`; Go worktree fixtures as `*.go.txt`
 - Cases (labelled): `pr-42-…`, `pr-43-…`, `pr-45-…` (design must_appear + scar must_not_appear)
 
-### Control baselines (2026-10-24)
+### Control baselines v1 (2026-10-24) — superseded
 
-Setup: `OLLAMA_CONTEXT_LENGTH=32768`, Ollama `/api/version` **0.23.0**, strictness balanced, 3 labelled cases, 3 reps × {3b,7b,14b}. Raw under `reports/held-out/` (gitignored). Frozen snapshots:
-
-- `docs/evals/held-out/qwen2.5-coder-3b-ctx32768-balanced-v1.json`
-- `docs/evals/held-out/qwen2.5-coder-7b-ctx32768-balanced-v1.json`
-- `docs/evals/held-out/qwen2.5-coder-14b-ctx32768-balanced-v1.json`
-
-Wall clock (sequential): 3b ~8–9m/rep, 7b ~17–18m/rep, 14b ~34–35m/rep; total ~3h.
-
-| Model | Rep | Unsupported-claim | Suggestion-breakage | Recall (full) | Tokens (in+out) |
-|---|---|---|---|---|---|
-| qwen2.5-coder:3b | r1 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 230073 |
-| qwen2.5-coder:3b | r2 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 229766 |
-| qwen2.5-coder:3b | r3 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 201373 |
-| qwen2.5-coder:7b | r1 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 230311 |
-| qwen2.5-coder:7b | r2 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 229870 |
-| qwen2.5-coder:7b | r3 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 240304 |
-| qwen2.5-coder:14b | r1 | n/a (0/0) | n/a (0/0) | 0% (0/3) | 230003 |
-| qwen2.5-coder:14b | r2 | n/a (0/0) | 100% (1/1) | 0% (0/3) | 229897 |
-| qwen2.5-coder:14b | r3 | 100% (1/1) | n/a (0/0) | 0% (0/3) | 235026 |
-
-Means (n/a reps excluded from rate means):
-
-| Model | Unsupported-claim | Suggestion-breakage | Recall (full) | Tokens |
-|---|---|---|---|---|
-| qwen2.5-coder:3b | n/a | n/a | 0.0% | 220404 |
-| qwen2.5-coder:7b | n/a | n/a | 0.0% | 233495 |
-| qwen2.5-coder:14b | 100% (1 defined rep) | 100% (1 defined rep) | 0.0% | 231642 |
-
-**Readout:** every model missed all three labelled design must_appear findings (0/3 recall across 9 runs). Claim/breakage denominators were mostly empty — not enough free-text claims to score. Do **not** retune the Phase 5 gate from held-out. Soft treatments already scored `measured-no-uplift` on the corpus; held-out does not certify them either.
+Pre-relabel (fix-PR framing). All models **0/3** full recall. Superseded by broken-parent relabel + v2 freeze below. Raw kept under `reports/held-out/pre-relabel/` (gitignored).
 
 ### Zero-recall audit (2026-10-24, 14b `--dump-raw`)
 
@@ -233,5 +205,37 @@ Corpus audit dumps (`reports/audit/`) show the same design empty-bias (many `loo
 
 See `docs/evals/held-out/README.md` framing section.
 
-**14b smoke** (`reports/held-out/relabel-smoke/`, 1 rep): design still empty-template on all three (ceiling). Formatting **did** flag deletion of `TestControlsProfileDropdownOpenFitsTerminalHeight` on #43 → offline match **1/5** must_appear after pointing that label at `formatting`. #45 test deletion still missed. Relabel unblocks non-zero recall; full 3×3 is the next control refresh.
+**14b smoke** (`reports/held-out/relabel-smoke/`, 1 rep): design still empty-template on all three (ceiling). Formatting **did** flag deletion of `TestControlsProfileDropdownOpenFitsTerminalHeight` on #43 → offline match **1/5** must_appear after pointing that label at `formatting`. #45 test deletion still missed.
+
+### Control baselines v2 (2026-10-25, post-relabel)
+
+Setup: same as v1 (`OLLAMA_CONTEXT_LENGTH=32768`, Ollama **0.23.0**, balanced), after broken-parent relabel (5 must_appear rows). Frozen snapshots (replaced v1 files):
+
+- `docs/evals/held-out/qwen2.5-coder-3b-ctx32768-balanced-v1.json` (`label: post-relabel-broken-parent`)
+- `docs/evals/held-out/qwen2.5-coder-7b-ctx32768-balanced-v1.json`
+- `docs/evals/held-out/qwen2.5-coder-14b-ctx32768-balanced-v1.json`
+
+Wall clock: 3b ~6m/rep, 7b ~12m/rep, 14b ~27–29m/rep; total ~2.3h.
+
+| Model | Rep | Unsupported-claim | Suggestion-breakage | Recall (full) | Tokens (in+out) |
+|---|---|---|---|---|---|
+| qwen2.5-coder:3b | r1 | n/a (0/0) | n/a (0/0) | 0% (0/5) | 229892 |
+| qwen2.5-coder:3b | r2 | n/a (0/0) | n/a (0/0) | 0% (0/5) | 230116 |
+| qwen2.5-coder:3b | r3 | n/a (0/0) | n/a (0/0) | 20% (1/5) | 230958 |
+| qwen2.5-coder:7b | r1 | 0% (0/1) | 100% (1/1) | 0% (0/5) | 230923 |
+| qwen2.5-coder:7b | r2 | 0% (0/2) | n/a (0/0) | 0% (0/5) | 230370 |
+| qwen2.5-coder:7b | r3 | n/a (0/0) | n/a (0/0) | 0% (0/5) | 231019 |
+| qwen2.5-coder:14b | r1 | 0% (0/2) | n/a (0/0) | 20% (1/5) | 250832 |
+| qwen2.5-coder:14b | r2 | 50% (1/2) | n/a (0/0) | 20% (1/5) | 236120 |
+| qwen2.5-coder:14b | r3 | 0% (0/1) | n/a (0/0) | 20% (1/5) | 236615 |
+
+Means (n/a reps excluded from rate means):
+
+| Model | Unsupported-claim | Suggestion-breakage | Recall (full) | Tokens |
+|---|---|---|---|---|
+| qwen2.5-coder:3b | n/a | n/a | 6.7% | 230322 |
+| qwen2.5-coder:7b | 0.0% | 100% (1 defined) | 0.0% | 230770 |
+| qwen2.5-coder:14b | 16.7% | n/a | 20.0% | 241189 |
+
+**Readout:** relabel gave a non-zero held-out floor (14b stable **1/5** = formatting hit on #43 test deletion). Design must_appear still never hits. Gate not retuned. Soft treatments remain `measured-no-uplift` on corpus; held-out does not certify them. Optional next: hard/deterministic treatment measured against this v2 floor — not another soft prompt.
 

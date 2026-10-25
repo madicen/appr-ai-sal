@@ -7,7 +7,7 @@
   "model": "qwen2.5-coder:7b",
   "context_length": 32768,
   "strictness": "balanced",
-  "recorded_at": "2026-10-24",
+  "recorded_at": "2026-10-25",
   "ollama_server_version": "0.23.0",
   "repetitions": [
     {
@@ -16,28 +16,28 @@
       "metrics_json": "reports/held-out/qwen2.5-coder-7b-r1.json",
       "unsupported_claim": {
         "num": 0,
-        "den": 0,
-        "rate": null
+        "den": 1,
+        "rate": 0.0
       },
       "suggestion_breakage": {
-        "num": 0,
-        "den": 0,
-        "rate": null
+        "num": 1,
+        "den": 1,
+        "rate": 1.0
       },
       "suggestion_compile": {
         "num": 0,
-        "den": 0,
-        "rate": null
+        "den": 1,
+        "rate": 0.0
       },
       "recall_full": {
         "num": 0,
-        "den": 3,
+        "den": 5,
         "rate": 0.0
       },
       "calls": 15,
-      "input_tokens": 229466,
-      "output_tokens": 845,
-      "token_count": 230311,
+      "input_tokens": 229596,
+      "output_tokens": 1327,
+      "token_count": 230923,
       "case_count": 3
     },
     {
@@ -46,8 +46,8 @@
       "metrics_json": "reports/held-out/qwen2.5-coder-7b-r2.json",
       "unsupported_claim": {
         "num": 0,
-        "den": 0,
-        "rate": null
+        "den": 2,
+        "rate": 0.0
       },
       "suggestion_breakage": {
         "num": 0,
@@ -61,13 +61,13 @@
       },
       "recall_full": {
         "num": 0,
-        "den": 3,
+        "den": 5,
         "rate": 0.0
       },
       "calls": 15,
-      "input_tokens": 229466,
-      "output_tokens": 404,
-      "token_count": 229870,
+      "input_tokens": 229596,
+      "output_tokens": 774,
+      "token_count": 230370,
       "case_count": 3
     },
     {
@@ -91,23 +91,22 @@
       },
       "recall_full": {
         "num": 0,
-        "den": 3,
+        "den": 5,
         "rate": 0.0
       },
       "calls": 16,
-      "input_tokens": 238601,
-      "output_tokens": 1703,
-      "token_count": 240304,
+      "input_tokens": 230417,
+      "output_tokens": 602,
+      "token_count": 231019,
       "case_count": 3
     }
   ],
   "means": {
-    "unsupported_claim_rate": null,
-    "suggestion_breakage_rate": null,
-    "suggestion_compile_rate": null,
+    "unsupported_claim_rate": 0.0,
+    "suggestion_breakage_rate": 1.0,
+    "suggestion_compile_rate": 0.0,
     "recall_full": 0.0,
-    "token_count": 233495.0
+    "token_count": 230770.66666666666
   },
-  "superseded": true,
-  "superseded_reason": "held-out relabel 2026-10-24: #43/#45 broken-parent revert-of-fix; re-run 3x3 before treatment compare"
+  "label": "post-relabel-broken-parent"
 }
