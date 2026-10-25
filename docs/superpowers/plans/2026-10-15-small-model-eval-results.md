@@ -223,5 +223,15 @@ Corpus audit dumps (`reports/audit/`) show the same design empty-bias (many `loo
 
 **Do not** retune matchers or the Phase 5 gate. **Do not** invent another soft prompt. Claim stripper would not move this recall.
 
-**Next:** relabel held-out before any treatment work — either (1) residual-only must_appear that still hold on the merged diff, or (2) re-import cases from the **broken parent** commit so must_appear describes bugs still present in the reviewed tree. Then re-run the 3×3 control; only after non-zero baseline recall consider a hard treatment.
+**Next (done 2026-10-24):** relabel held-out before any treatment work.
+
+### Relabel: broken-parent for #43/#45 (2026-10-24)
+
+- **pr-43 / pr-45:** `diff.patch` = `git diff <fix-head> <buggy-base>` (revert-of-fix); `worktree/` = files at buggy base (`*.go.txt`). Expectations: design (reintroduced bug) + formatting (deleted regression test).
+- **pr-42:** unchanged feature-residual (`RerunContext` not persisted).
+- Prior control snapshots (`docs/evals/held-out/*-ctx32768-balanced-v1.json`) marked `superseded: true` — re-run 3×3 after this relabel before comparing treatments.
+
+See `docs/evals/held-out/README.md` framing section.
+
+**14b smoke** (`reports/held-out/relabel-smoke/`, 1 rep): design still empty-template on all three (ceiling). Formatting **did** flag deletion of `TestControlsProfileDropdownOpenFitsTerminalHeight` on #43 → offline match **1/5** must_appear after pointing that label at `formatting`. #45 test deletion still missed. Relabel unblocks non-zero recall; full 3×3 is the next control refresh.
 

@@ -102,9 +102,8 @@ func (m *Model) refreshControlsProfileDropdown() {
 	}
 	if m.controlsProfileDD == nil {
 		m.controlsProfileDD = dropdown.New("profile")
-		// Panel is composited onto the detail body (not the full screen);
-		// ContentTop shifts mouse Y into body-local space (see Host.Forward).
-		m.controlsProfileDD.ContentTop = m.contentTop
+		// Coordinates are absolute (the panel is composited at the root),
+		// so no ContentTop offset is needed.
 		m.controlsProfileDD.OnSelect = func(idx int) tea.Cmd {
 			m.applyControlsProfileSelection(idx)
 			return nil
@@ -162,29 +161,18 @@ func (m *Model) applyControlsProfileSelection(idx int) {
 }
 
 // overlayControlsProfile composites the open profile dropdown panel onto the
-// detail body. Trigger position comes from the latest bubblezone scan while
-// closed (screen-absolute → body-local via contentTop) and is frozen while
-// open. viewH must be bodyH — passing host.Height() pads the body to the
-// full terminal, JoinVertical(header, body, status) overflows, the screen
-// scrolls, and mouse zones drift.
+// full-screen view. The trigger's absolute position is read from the most
+// recent bubblezone scan while closed and frozen while open (the layout does
+// not move during a selection), so the panel anchors to the trigger.
 func (m *Model) overlayControlsProfile(main string) string {
 	if !m.controlsProfileDD.Built() {
 		return main
 	}
-	m.controlsProfileDD.ContentTop = m.contentTop
 	if z := zone.Get(zones.ControlsProfileDD); z != nil && !m.controlsProfileDD.Open() {
-		row := z.StartY - m.contentTop
-		if row < 0 {
-			row = 0
-		}
-		m.controlsProfileDDRow = row
+		m.controlsProfileDDRow = z.StartY
 		m.controlsProfileDDCol = z.StartX
 	}
-	viewH := m.bodyH
-	if viewH <= 0 {
-		viewH = strings.Count(main, "\n") + 1
-	}
-	return m.controlsProfileDD.Composite(main, m.controlsProfileDDRow, m.controlsProfileDDCol, m.width, viewH)
+	return m.controlsProfileDD.Composite(main, m.controlsProfileDDRow, m.controlsProfileDDCol, m.width, m.host.Height())
 }
 
 func (m *Model) renderControlsAgents(width int) string {

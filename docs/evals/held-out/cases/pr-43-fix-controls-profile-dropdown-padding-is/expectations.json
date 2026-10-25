@@ -3,9 +3,16 @@
     {
       "specialist": "design",
       "path": "internal/tui/tabs/detail/controls_panel.go",
-      "pattern": "bodyH|host\\.Height|viewH|ContentTop|terminal height",
+      "pattern": "bodyH|host\\.Height|viewH|ContentTop|terminal height|overflow|pad",
       "line_tolerance": 40,
-      "note": "Profile dropdown composite height must be bodyH, not host.Height(), or the view overflows"
+      "note": "broken-parent: reintroduces Composite(..., host.Height()) which pads body past terminal height"
+    },
+    {
+      "specialist": "formatting",
+      "path": "internal/tui/model/controls_panel_test.go",
+      "pattern": "FitsTerminalHeight|terminal height|dropdown.*height|Removal of Test",
+      "line_tolerance": 80,
+      "note": "broken-parent: deletes TestControlsProfileDropdownOpenFitsTerminalHeight regression"
     }
   ],
   "must_not_appear": [
