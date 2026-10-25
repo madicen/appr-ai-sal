@@ -7,7 +7,7 @@
   "model": "qwen2.5-coder:3b",
   "context_length": 32768,
   "strictness": "balanced",
-  "recorded_at": "2026-10-24",
+  "recorded_at": "2026-10-25",
   "ollama_server_version": "0.23.0",
   "repetitions": [
     {
@@ -31,13 +31,13 @@
       },
       "recall_full": {
         "num": 0,
-        "den": 3,
+        "den": 5,
         "rate": 0.0
       },
       "calls": 15,
-      "input_tokens": 229466,
-      "output_tokens": 607,
-      "token_count": 230073,
+      "input_tokens": 229596,
+      "output_tokens": 296,
+      "token_count": 229892,
       "case_count": 3
     },
     {
@@ -61,13 +61,13 @@
       },
       "recall_full": {
         "num": 0,
-        "den": 3,
+        "den": 5,
         "rate": 0.0
       },
       "calls": 15,
-      "input_tokens": 229466,
-      "output_tokens": 300,
-      "token_count": 229766,
+      "input_tokens": 229596,
+      "output_tokens": 520,
+      "token_count": 230116,
       "case_count": 3
     },
     {
@@ -90,14 +90,14 @@
         "rate": null
       },
       "recall_full": {
-        "num": 0,
-        "den": 3,
-        "rate": 0.0
+        "num": 1,
+        "den": 5,
+        "rate": 0.2
       },
-      "calls": 15,
-      "input_tokens": 199717,
-      "output_tokens": 1656,
-      "token_count": 201373,
+      "calls": 16,
+      "input_tokens": 230433,
+      "output_tokens": 525,
+      "token_count": 230958,
       "case_count": 3
     }
   ],
@@ -105,9 +105,8 @@
     "unsupported_claim_rate": null,
     "suggestion_breakage_rate": null,
     "suggestion_compile_rate": null,
-    "recall_full": 0.0,
-    "token_count": 220404.0
+    "recall_full": 0.06666666666666667,
+    "token_count": 230322.0
   },
-  "superseded": true,
-  "superseded_reason": "held-out relabel 2026-10-24: #43/#45 broken-parent revert-of-fix; re-run 3x3 before treatment compare"
+  "label": "post-relabel-broken-parent"
 }

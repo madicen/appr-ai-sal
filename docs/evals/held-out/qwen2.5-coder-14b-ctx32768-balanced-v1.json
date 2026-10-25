@@ -7,7 +7,7 @@
   "model": "qwen2.5-coder:14b",
   "context_length": 32768,
   "strictness": "balanced",
-  "recorded_at": "2026-10-24",
+  "recorded_at": "2026-10-25",
   "ollama_server_version": "0.23.0",
   "repetitions": [
     {
@@ -16,8 +16,8 @@
       "metrics_json": "reports/held-out/qwen2.5-coder-14b-r1.json",
       "unsupported_claim": {
         "num": 0,
-        "den": 0,
-        "rate": null
+        "den": 2,
+        "rate": 0.0
       },
       "suggestion_breakage": {
         "num": 0,
@@ -30,14 +30,14 @@
         "rate": null
       },
       "recall_full": {
-        "num": 0,
-        "den": 3,
-        "rate": 0.0
+        "num": 1,
+        "den": 5,
+        "rate": 0.2
       },
-      "calls": 15,
-      "input_tokens": 229466,
-      "output_tokens": 537,
-      "token_count": 230003,
+      "calls": 17,
+      "input_tokens": 248350,
+      "output_tokens": 2482,
+      "token_count": 250832,
       "case_count": 3
     },
     {
@@ -45,29 +45,29 @@
       "report": "reports/held-out/qwen2.5-coder-14b-r2.md",
       "metrics_json": "reports/held-out/qwen2.5-coder-14b-r2.json",
       "unsupported_claim": {
+        "num": 1,
+        "den": 2,
+        "rate": 0.5
+      },
+      "suggestion_breakage": {
         "num": 0,
         "den": 0,
         "rate": null
       },
-      "suggestion_breakage": {
-        "num": 1,
-        "den": 1,
-        "rate": 1.0
-      },
       "suggestion_compile": {
         "num": 0,
-        "den": 1,
-        "rate": 0.0
+        "den": 0,
+        "rate": null
       },
       "recall_full": {
-        "num": 0,
-        "den": 3,
-        "rate": 0.0
+        "num": 1,
+        "den": 5,
+        "rate": 0.2
       },
-      "calls": 15,
-      "input_tokens": 229466,
-      "output_tokens": 431,
-      "token_count": 229897,
+      "calls": 17,
+      "input_tokens": 235072,
+      "output_tokens": 1048,
+      "token_count": 236120,
       "case_count": 3
     },
     {
@@ -75,9 +75,9 @@
       "report": "reports/held-out/qwen2.5-coder-14b-r3.md",
       "metrics_json": "reports/held-out/qwen2.5-coder-14b-r3.json",
       "unsupported_claim": {
-        "num": 1,
+        "num": 0,
         "den": 1,
-        "rate": 1.0
+        "rate": 0.0
       },
       "suggestion_breakage": {
         "num": 0,
@@ -90,24 +90,23 @@
         "rate": null
       },
       "recall_full": {
-        "num": 0,
-        "den": 3,
-        "rate": 0.0
+        "num": 1,
+        "den": 5,
+        "rate": 0.2
       },
-      "calls": 16,
-      "input_tokens": 234118,
-      "output_tokens": 908,
-      "token_count": 235026,
+      "calls": 17,
+      "input_tokens": 235375,
+      "output_tokens": 1240,
+      "token_count": 236615,
       "case_count": 3
     }
   ],
   "means": {
-    "unsupported_claim_rate": 1.0,
-    "suggestion_breakage_rate": 1.0,
-    "suggestion_compile_rate": 0.0,
-    "recall_full": 0.0,
-    "token_count": 231642.0
+    "unsupported_claim_rate": 0.16666666666666666,
+    "suggestion_breakage_rate": null,
+    "suggestion_compile_rate": null,
+    "recall_full": 0.20000000000000004,
+    "token_count": 241189.0
   },
-  "superseded": true,
-  "superseded_reason": "held-out relabel 2026-10-24: #43/#45 broken-parent revert-of-fix; re-run 3x3 before treatment compare"
+  "label": "post-relabel-broken-parent"
 }
