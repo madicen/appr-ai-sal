@@ -163,9 +163,17 @@ Eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=inventory-v1`): inject worktree
 
 **Overall outcome: `measured-no-uplift`.** Gate not retuned. Inventory moved 14b claim rate more than grounding-v1 on average but still failed CI-exclude-zero and the recall guard.
 
-### Treatment: claim-strip-v1 (2026-10-25)
+### Treatment: claim-strip-v1 (2026-10-26)
 
-Hard / deterministic eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=claim-strip-v1`): after `EvalRun`, drop findings with ≥1 worktree-unresolvable claim ref. Harness: `internal/evals/claim_strip.go`. Scripts: `experiments/claim-strip-v1/`. Gate score pending live 3×3 corpus + held-out grids (vs control baselines + held-out v2 floor).
+Hard / deterministic eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=claim-strip-v1`): after `EvalRun`, drop findings with ≥1 worktree-unresolvable claim ref. Harness: `internal/evals/claim_strip.go`. Scripts: `experiments/claim-strip-v1/`. Gate score: `docs/evals/treatments/claim-strip-v1-ctx32768-balanced-v1.json`.
+
+| Model | Unsupported-claim (mean Δ pp) | Breakage Δ pp | Recall orig-12 Δ pp | Token infl. % | Outcome |
+|---|---|---|---|---|---|
+| qwen2.5-coder:3b | n/a (treatment den=0) | −33.3 | −3.0 (improved) | ~0 | `measured-no-uplift` |
+| qwen2.5-coder:7b | 0.0 (baseline already 0%) | +29.2 | 0.0 | +0.3 | `measured-no-uplift` |
+| qwen2.5-coder:14b | +26.3 (≥10, CI excl. 0) | −18.3 | +3.0 (regressed; max 2) | +2.2 | `measured-no-uplift` |
+
+**Overall outcome: `measured-no-uplift`.** Gate not retuned. 14b zeroed unsupported-claim (CI excludes 0) but failed the recall guard; 3b left no claim-bearing findings to score; 7b had no claim headroom and raised breakage. Held-out floor check pending.
 
 ## Held-out
 
