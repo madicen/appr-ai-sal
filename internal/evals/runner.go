@@ -82,6 +82,7 @@ func runCase(ctx context.Context, cfg *aiconfig.Config, c Case, dumpDir string) 
 	in.RepoContext = applyEvalTreatment(dir, in.RepoContext)
 	rc := caseConfig(cfg, c)
 	obs := review.EvalRun(ctx, rc, in)
+	obs = applyPostEvalTreatment(dir, obs)
 	cs := ScoreCaseAt(c, obs, dir)
 	// Dump after scoring so a write failure never changes CaseScore.
 	return cs, writeCaseDumps(dumpDir, rc, c, obs)

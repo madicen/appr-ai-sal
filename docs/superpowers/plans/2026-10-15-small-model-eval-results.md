@@ -163,6 +163,10 @@ Eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=inventory-v1`): inject worktree
 
 **Overall outcome: `measured-no-uplift`.** Gate not retuned. Inventory moved 14b claim rate more than grounding-v1 on average but still failed CI-exclude-zero and the recall guard.
 
+### Treatment: claim-strip-v1 (2026-10-25)
+
+Hard / deterministic eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=claim-strip-v1`): after `EvalRun`, drop findings with ≥1 worktree-unresolvable claim ref. Harness: `internal/evals/claim_strip.go`. Scripts: `experiments/claim-strip-v1/`. Gate score pending live 3×3 corpus + held-out grids (vs control baselines + held-out v2 floor).
+
 ## Held-out
 
 Scaffolding + labels + worktrees landed in #55 (2026-10-23):
