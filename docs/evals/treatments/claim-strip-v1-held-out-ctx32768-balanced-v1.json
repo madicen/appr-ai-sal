@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "treatment": "claim-strip-v1",
+  "arm": "held-out-treatment",
+  "corpus": "docs/evals/held-out/cases",
+  "control_baselines": "docs/evals/held-out/*-ctx32768-balanced-v1.json (post-relabel-broken-parent / v2 floor)",
+  "recorded_at": "2026-10-26",
+  "overall_outcome": "measured-no-uplift",
+  "note": "All models 0/5 mean recall_full; below v2 floor for 14b (20%) and 3b (6.7%). Claim strip zeroes unsupported-claim dens but removes the formatting hit that was the v2 floor signal.",
+  "models": [
+    {
+      "model": "qwen2.5-coder:3b",
+      "control_mean_recall_full": 0.06666666666666667,
+      "treatment_mean_recall_full": 0.0,
+      "treatment_reps": [
+        {"rep": 1, "recall_full": "0/5", "unsupported_claim": "0/0"},
+        {"rep": 2, "recall_full": "0/5", "unsupported_claim": "0/0"},
+        {"rep": 3, "recall_full": "0/5", "unsupported_claim": "0/0"}
+      ],
+      "outcome": "below-floor"
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "control_mean_recall_full": 0.0,
+      "treatment_mean_recall_full": 0.0,
+      "treatment_reps": [
+        {"rep": 1, "recall_full": "0/5", "unsupported_claim": "0/2"},
+        {"rep": 2, "recall_full": "0/5", "unsupported_claim": "0/0"},
+        {"rep": 3, "recall_full": "0/5", "unsupported_claim": "0/0"}
+      ],
+      "outcome": "flat-at-zero"
+    },
+    {
+      "model": "qwen2.5-coder:14b",
+      "control_mean_recall_full": 0.20000000000000004,
+      "treatment_mean_recall_full": 0.0,
+      "treatment_reps": [
+        {"rep": 1, "recall_full": "0/5", "unsupported_claim": "0/1"},
+        {"rep": 2, "recall_full": "0/5", "unsupported_claim": "0/1"},
+        {"rep": 3, "recall_full": "0/5", "unsupported_claim": "0/0"}
+      ],
+      "outcome": "below-floor"
+    }
+  ]
+}
