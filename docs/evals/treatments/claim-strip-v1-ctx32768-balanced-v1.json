@@ -1,0 +1,182 @@
+{
+  "schema_version": 1,
+  "treatment": "claim-strip-v1",
+  "gate": "docs/evals/plugin-treatment-gate.json",
+  "recorded_at": "2026-10-26",
+  "overall_outcome": "measured-no-uplift",
+  "models": [
+    {
+      "model": "qwen2.5-coder:3b",
+      "treatment": "claim-strip-v1",
+      "baseline": "docs/evals/baselines/qwen2.5-coder-3b-ctx32768-balanced-v1.json",
+      "baseline_mean_unsupported_claim_rate": 0.41666666666666663,
+      "predicates": {
+        "unsupported_claim_reduction_pp": {
+          "value": null,
+          "need_ge": 10,
+          "pass": false
+        },
+        "ci_excludes_zero_on_claim_delta": {
+          "deltas": [],
+          "pass": false
+        },
+        "suggestion_breakage_not_up": {
+          "mean_increase_pp": -33.33333333333333,
+          "pass": true
+        },
+        "recall_regression_pp": {
+          "value": -3.0303030303030303,
+          "max": 2,
+          "pass": true
+        },
+        "token_inflation_pct": {
+          "value": -0.0029355482762616347,
+          "max": 25,
+          "pass": true
+        }
+      },
+      "outcome": "measured-no-uplift",
+      "treatment_reps": [
+        {
+          "rep": 1,
+          "unsupported_claim": null,
+          "suggestion_breakage": 1.0,
+          "recall_original_12": 0.09090909090909091,
+          "token_count": 851313
+        },
+        {
+          "rep": 2,
+          "unsupported_claim": null,
+          "suggestion_breakage": 0.0,
+          "recall_original_12": 0.09090909090909091,
+          "token_count": 853102
+        },
+        {
+          "rep": 3,
+          "unsupported_claim": null,
+          "suggestion_breakage": null,
+          "recall_original_12": 0.0,
+          "token_count": 850399
+        }
+      ]
+    },
+    {
+      "model": "qwen2.5-coder:7b",
+      "treatment": "claim-strip-v1",
+      "baseline": "docs/evals/baselines/qwen2.5-coder-7b-ctx32768-balanced-v1.json",
+      "baseline_mean_unsupported_claim_rate": 0.0,
+      "predicates": {
+        "unsupported_claim_reduction_pp": {
+          "value": 0.0,
+          "need_ge": 10,
+          "pass": false
+        },
+        "ci_excludes_zero_on_claim_delta": {
+          "deltas": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "pass": false
+        },
+        "suggestion_breakage_not_up": {
+          "mean_increase_pp": 29.166666666666675,
+          "pass": false
+        },
+        "recall_regression_pp": {
+          "value": 0.0,
+          "max": 2,
+          "pass": true
+        },
+        "token_inflation_pct": {
+          "value": 0.29501732809695813,
+          "max": 25,
+          "pass": true
+        }
+      },
+      "outcome": "measured-no-uplift",
+      "treatment_reps": [
+        {
+          "rep": 1,
+          "unsupported_claim": 0.0,
+          "suggestion_breakage": null,
+          "recall_original_12": 0.0,
+          "token_count": 852384
+        },
+        {
+          "rep": 2,
+          "unsupported_claim": 0.0,
+          "suggestion_breakage": 1.0,
+          "recall_original_12": 0.0,
+          "token_count": 850382
+        },
+        {
+          "rep": 3,
+          "unsupported_claim": 0.0,
+          "suggestion_breakage": 1.0,
+          "recall_original_12": 0.09090909090909091,
+          "token_count": 852057
+        }
+      ]
+    },
+    {
+      "model": "qwen2.5-coder:14b",
+      "treatment": "claim-strip-v1",
+      "baseline": "docs/evals/baselines/qwen2.5-coder-14b-ctx32768-balanced-v1.json",
+      "baseline_mean_unsupported_claim_rate": 0.2626262626262626,
+      "predicates": {
+        "unsupported_claim_reduction_pp": {
+          "value": 26.26262626262626,
+          "need_ge": 10,
+          "pass": true
+        },
+        "ci_excludes_zero_on_claim_delta": {
+          "deltas": [
+            0.2626262626262626,
+            0.2626262626262626,
+            0.2626262626262626
+          ],
+          "pass": true
+        },
+        "suggestion_breakage_not_up": {
+          "mean_increase_pp": -18.33333333333333,
+          "pass": true
+        },
+        "recall_regression_pp": {
+          "value": 3.0303030303030303,
+          "max": 2,
+          "pass": false
+        },
+        "token_inflation_pct": {
+          "value": 2.207660133053335,
+          "max": 25,
+          "pass": true
+        }
+      },
+      "outcome": "measured-no-uplift",
+      "treatment_reps": [
+        {
+          "rep": 1,
+          "unsupported_claim": 0.0,
+          "suggestion_breakage": 0.6,
+          "recall_original_12": 0.18181818181818182,
+          "token_count": 898623
+        },
+        {
+          "rep": 2,
+          "unsupported_claim": 0.0,
+          "suggestion_breakage": 0.25,
+          "recall_original_12": 0.2727272727272727,
+          "token_count": 866172
+        },
+        {
+          "rep": 3,
+          "unsupported_claim": 0.0,
+          "suggestion_breakage": 0.0,
+          "recall_original_12": 0.18181818181818182,
+          "token_count": 879402
+        }
+      ]
+    }
+  ]
+}

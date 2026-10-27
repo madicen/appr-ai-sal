@@ -19,9 +19,9 @@ var (
 	backtickID = regexp.MustCompile("`" + `([A-Za-z_][\w.]{0,64})` + "`")
 )
 
-// applyEvalTreatment mutates in for the selected eval treatment. inventory-v1
-// appends a worktree path/identifier inventory to RepoContext so every
-// specialist sees the same factual anchor (EvalRun must thread RepoContext).
+// applyEvalTreatment mutates pre-run inputs for the selected eval treatment.
+// inventory-v1 appends a worktree path/identifier inventory to RepoContext.
+// claim-strip-v1 is applied post-run (see applyPostEvalTreatment).
 func applyEvalTreatment(worktree string, repoContext string) string {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(evalTreatmentEnv))) {
 	case "inventory-v1":

@@ -163,6 +163,34 @@ Eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=inventory-v1`): inject worktree
 
 **Overall outcome: `measured-no-uplift`.** Gate not retuned. Inventory moved 14b claim rate more than grounding-v1 on average but still failed CI-exclude-zero and the recall guard.
 
+### Treatment: claim-strip-v1 (2026-10-26)
+
+Hard / deterministic eval-only treatment (`APPR_AI_SAL_EVAL_TREATMENT=claim-strip-v1`): after `EvalRun`, drop findings with ≥1 worktree-unresolvable claim ref. Harness: `internal/evals/claim_strip.go`. Scripts: `experiments/claim-strip-v1/`. Gate score: `docs/evals/treatments/claim-strip-v1-ctx32768-balanced-v1.json`.
+
+| Model | Unsupported-claim (mean Δ pp) | Breakage Δ pp | Recall orig-12 Δ pp | Token infl. % | Outcome |
+|---|---|---|---|---|---|
+| qwen2.5-coder:3b | n/a (treatment den=0) | −33.3 | −3.0 (improved) | ~0 | `measured-no-uplift` |
+| qwen2.5-coder:7b | 0.0 (baseline already 0%) | +29.2 | 0.0 | +0.3 | `measured-no-uplift` |
+| qwen2.5-coder:14b | +26.3 (≥10, CI excl. 0) | −18.3 | +3.0 (regressed; max 2) | +2.2 | `measured-no-uplift` |
+
+**Overall outcome: `measured-no-uplift`.** Gate not retuned. 14b zeroed unsupported-claim (CI excludes 0) but failed the recall guard; 3b left no claim-bearing findings to score; 7b had no claim headroom and raised breakage.
+
+Held-out vs v2 floor (`docs/evals/treatments/claim-strip-v1-held-out-ctx32768-balanced-v1.json`): all models **0/5** mean recall_full — below floor for 14b (20%→0%) and 3b (6.7%→0%). Strip removes the formatting hit that was the v2 signal.
+
+## Program verdict (2026-10-27)
+
+Phase 5 claim-treatment loop is **closed**. Under the locked gate (no retune) and no matcher edits:
+
+| Arm | Kind | Corpus gate | Held-out vs v2 floor |
+|---|---|---|---|
+| grounding-v1 | soft prompt | `measured-no-uplift` | not certified |
+| inventory-v1 | soft context | `measured-no-uplift` | not certified |
+| claim-strip-v1 | hard post-filter | `measured-no-uplift` | below floor |
+
+**Do not ship** small-model unsupported-claim treatment plugins for qwen2.5-coder 3b/7b/14b on this gate. Soft prompts failed CI/recall; hard strip traded claim rate for recall (corpus + held-out).
+
+Eval harness, frozen baselines, held-out v2 floor, and treatment score JSON stay as the record. Next work is a **new plan** if pursued (e.g. design-agent empty-template / held-out recall, or a different model family with fresh baselines) — not another Phase 5 claim arm.
+
 ## Held-out
 
 Scaffolding + labels + worktrees landed in #55 (2026-10-23):
@@ -237,5 +265,5 @@ Means (n/a reps excluded from rate means):
 | qwen2.5-coder:7b | 0.0% | 100% (1 defined) | 0.0% | 230770 |
 | qwen2.5-coder:14b | 16.7% | n/a | 20.0% | 241189 |
 
-**Readout:** relabel gave a non-zero held-out floor (14b stable **1/5** = formatting hit on #43 test deletion). Design must_appear still never hits. Gate not retuned. Soft treatments remain `measured-no-uplift` on corpus; held-out does not certify them. Optional next: hard/deterministic treatment measured against this v2 floor — not another soft prompt.
+**Readout:** relabel gave a non-zero held-out floor (14b stable **1/5** = formatting hit on #43 test deletion). Design must_appear still never hits. Gate not retuned. Soft treatments remain `measured-no-uplift` on corpus; held-out does not certify them. Hard treatment claim-strip-v1 also `measured-no-uplift` on corpus and fell below this v2 floor on held-out (see claim-strip-v1 section above).
 
